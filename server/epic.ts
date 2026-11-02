@@ -15,6 +15,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import type { Plugin } from 'vite';
 import {
   errorSurface,
@@ -177,26 +178,53 @@ async function relay(response: ServerResponse, res: Response): Promise<void> {
 async function proxyMedia(config: EpicConfig, request: IncomingMessage, response: ServerResponse, path: string): Promise<void> {
   const extra: Record<string, string> = {};
   if (typeof request.headers.range === 'string') extra.range = request.headers.range;
-  const res = await fetch(upstream(config, path), { headers: headers(config, extra), signal: AbortSignal.timeout(30_000) });
-  response.statusCode = res.status;
-  for (const name of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag']) {
-    const value = res.headers.get(name);
-    if (value) response.setHeader(name, value);
+  // Give up on the upstream if it does not answer, or if the browser goes away mid-video.
+  const abort = new AbortController();
+  const headerTimer = setTimeout(() => abort.abort(), 30_000);
+  const onClose = () => abort.abort();
+  response.on('close', onClose);
+  try {
+    const res = await fetch(upstream(config, path), { headers: headers(config, extra), signal: abort.signal });
+    clearTimeout(headerTimer);
+    response.statusCode = res.status;
+    for (const name of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag']) {
+      const value = res.headers.get(name);
+      if (value) response.setHeader(name, value);
+    }
+    response.setHeader('x-content-type-options', 'nosniff');
+    response.setHeader('cache-control', 'private, max-age=60');
+    if (!res.body || request.method === 'HEAD') {
+      await res.body?.cancel().catch(() => undefined);
+      response.end();
+      return;
+    }
+    // Own the response until the last byte is written. Returning earlier would let the next
+    // middleware (Vite's HTML fallback) answer the same request.
+    await pipeline(Readable.fromWeb(res.body as never), response);
+  } catch (error) {
+    if (abort.signal.aborted && response.destroyed) return; // the browser left (seeking, tab closed)
+    if (!response.headersSent) throw error;
+    response.destroy(); // headers are out: the only honest signal left is a broken stream
+  } finally {
+    clearTimeout(headerTimer);
+    response.off('close', onClose);
   }
-  response.setHeader('x-content-type-options', 'nosniff');
-  response.setHeader('cache-control', 'private, max-age=60');
-  if (!res.body || request.method === 'HEAD') {
-    response.end();
-    return;
-  }
-  Readable.fromWeb(res.body as never).pipe(response);
 }
 
 const ACTIONS = new Set(['confirm', 'generic', 'reject', 'restyle', 'delete']);
 
-export async function handleEpicRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+/**
+ * Returns true when the request belonged to this bridge (the response is then finished or
+ * destroyed and nobody else may touch it), false when it is not an /api/epic/ request.
+ */
+export async function handleEpicRequest(request: IncomingMessage, response: ServerResponse): Promise<boolean> {
   const url = new URL(request.url ?? '/', 'http://localhost');
-  if (!url.pathname.startsWith('/api/epic/')) return;
+  if (!url.pathname.startsWith('/api/epic/')) return false;
+  await dispatchEpic(request, response, url);
+  return true;
+}
+
+async function dispatchEpic(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
   const config = readEpicConfig();
   const lang = langOf(url);
   const method = request.method ?? 'GET';
@@ -327,7 +355,7 @@ export async function handleEpicRequest(request: IncomingMessage, response: Serv
     json(response, 404, { error: 'Not found' });
   } catch (error) {
     if (response.headersSent) {
-      response.end();
+      if (!response.writableEnded) response.destroy();
       return;
     }
     json(response, 502, { error: { code: 'upstream_unreachable', message: error instanceof Error ? error.message : 'Epic Replay request failed' } });
@@ -337,9 +365,15 @@ export async function handleEpicRequest(request: IncomingMessage, response: Serv
 export function epicBridgePlugin(): Plugin {
   const attach = (server: { middlewares: { use: (fn: (req: IncomingMessage, res: ServerResponse, next: () => void) => void) => void } }) => {
     server.middlewares.use((request, response, next) => {
-      void handleEpicRequest(request, response).then(() => {
-        if (!response.writableEnded && !response.headersSent) next();
-      });
+      handleEpicRequest(request, response).then(
+        handled => {
+          if (!handled) next();
+        },
+        () => {
+          if (!response.headersSent) response.statusCode = 500;
+          response.end();
+        }
+      );
     });
   };
   return {

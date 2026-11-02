@@ -100,6 +100,8 @@ frames are plain HTTP through the bridge, because A2UI describes screens and doe
 The video pipeline (FFmpeg, Chromium, DeepSeek, ElevenLabs) stays on the Epic Replay server.
 Web only; there is no Android work in this branch. Specs: `specs/002-epic-replay-a2ui/`.
 
+The start page has the same options as Epic Replay's own page that matter here: narrator, language, optional name, "Remove the clip's own sound" and "Past replays". Past replays reads Epic Replay's server-rendered `/past` page (it has no JSON form), so a changed page would show an empty list.
+
 ### Run it with the real Epic Replay server
 
 1. Set up and start Epic Replay as its README describes. Keep it on localhost, it has no login:

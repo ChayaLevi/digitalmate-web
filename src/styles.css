@@ -6719,3 +6719,8 @@ a {
 .epic-download { justify-self: start; text-decoration: none; }
 @keyframes epic-pulse { 50% { transform: scale(1.4); opacity: .5; } }
 @media (prefers-reduced-motion: reduce) { .epic-step.is-running .epic-step-dot { animation: none; } }
+
+.epic-replays { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 12px 0; }
+.epic-replay { display: grid; gap: 4px; padding: 6px; text-align: start; border-radius: 12px; border: 1px solid var(--line, rgba(128,128,128,.35)); background: transparent; color: inherit; cursor: pointer; min-height: 44px; }
+.epic-replay img, .epic-replay-blank { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: rgba(128,128,128,.2); display: block; }
+.epic-replay em { font-style: normal; font-size: 12px; opacity: .7; }

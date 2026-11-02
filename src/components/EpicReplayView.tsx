@@ -48,6 +48,7 @@ export function EpicReplayView({ onNotice }: { onNotice: (message: string) => vo
   const [form, setForm] = useState<Record<string, unknown>>({});
   const [busy, setBusy] = useState(false);
   const [runId, setRunId] = useState<string | null>(readRun);
+  const [showPast, setShowPast] = useState(false);
 
   const apply = useCallback((text: string) => {
     const parsed = parseA2uiJsonl(text);
@@ -77,11 +78,21 @@ export function EpicReplayView({ onNotice }: { onNotice: (message: string) => vo
     }
   }, [apply, lang, onNotice, tr]);
 
+  const loadPast = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/epic/past?lang=${lang}`);
+      if (!res.ok) return onNotice(await errorText(res));
+      apply(await res.text());
+    } catch {
+      onNotice(tr('Could not reach the DigitalMate bridge.', '无法连接 DigitalMate 桥接服务。'));
+    }
+  }, [apply, lang, onNotice, tr]);
+
   useEffect(() => {
     if (runId) return undefined;
-    void loadStart();
+    void (showPast ? loadPast() : loadStart());
     return undefined;
-  }, [runId, loadStart]);
+  }, [runId, showPast, loadStart, loadPast]);
 
   useEffect(() => {
     if (!runId) return undefined;
@@ -98,7 +109,25 @@ export function EpicReplayView({ onNotice }: { onNotice: (message: string) => vo
     if (busy) return;
     setBusy(true);
     try {
+      if (action.id === 'epic.past') {
+        writeRun(null);
+        stage.current = '';
+        setForm({});
+        setRunId(null);
+        setShowPast(true);
+        if (!runId && showPast) await loadPast();
+        return;
+      }
+      if (action.id.startsWith('epic.open:')) {
+        const id = action.id.slice('epic.open:'.length);
+        writeRun(id);
+        stage.current = '';
+        setShowPast(false);
+        setRunId(id);
+        return;
+      }
       if (action.id === 'epic.new') {
+        setShowPast(false);
         writeRun(null);
         stage.current = '';
         setRunId(null);
@@ -112,6 +141,7 @@ export function EpicReplayView({ onNotice }: { onNotice: (message: string) => vo
         if (form.consent !== true) return onNotice(tr('Tick the consent box first.', '请先勾选同意。'));
         const data = new FormData();
         data.append('consent', 'true');
+        data.append('keep_original_audio', form.mute === true ? 'false' : 'true');
         data.append('style', String(form.style ?? ''));
         data.append('language', String(form.language ?? lang));
         const player = String(form.player_name ?? '').trim();

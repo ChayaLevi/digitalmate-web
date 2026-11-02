@@ -12,7 +12,8 @@ start form, progress, "is this what happened?" check, finished video, restyle, d
 2. Progress: see the eight Epic Replay steps move live.
 3. Check: see the key-moment frame and other candidate moments, pick one, edit activity, outcome and name, keep or drop events marked "Check this", confirm, use a general call, or stop.
 4. Result: play the finished MP4 in the app, download it, tell it in another narrator style, make another, or delete it.
-5. A run survives a page reload (the run id is kept in local storage).
+5. Start page also has Epic Replay's "Remove the clip's own sound" checkbox (sends `keep_original_audio=false`; default keeps the sound) and a "Past replays" button (shown when there are any) that lists finished videos and opens one.
+6. A run survives a page reload (the run id is kept in local storage).
 
 ## Requirements
 - FR-1 The browser talks only to DigitalMate (`/api/epic/*`). Epic Replay has no auth and no CORS and is never exposed to the browser.
@@ -29,4 +30,5 @@ Android work, deploying to the public internet, authentication for Epic Replay i
 ## Known limits
 - The pipeline (FFmpeg, Chromium, DeepSeek, ElevenLabs) stays on the Epic Replay server.
 - Progress is read by polling the run state every 1.5 s through the bridge and streamed to the browser as SSE. Upstream SSE is not used.
+- Epic Replay has no JSON API for Past replays; the bridge reads the server-rendered `/past` page. If that page's markup changes the list shows empty instead of breaking.
 - Script checkpoint B (`/runs/{id}/script`) and re-run are not exposed.

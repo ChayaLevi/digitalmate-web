@@ -79,6 +79,12 @@ const T = {
     en: 'Everyone in the clip is fine with it being narrated and processed by AI.',
     zh: '视频中的所有人都同意由 AI 处理并配上解说。'
   },
+  mute: { en: "Remove the clip's own sound", zh: '去掉视频原声' },
+  past: { en: 'Past replays', zh: '往期回放' },
+  pastSub: { en: 'Finished videos on your Epic Replay server, newest first', zh: 'Epic Replay 服务器上已完成的视频，最新的在前' },
+  pastEmpty: { en: 'No replays yet. Make your first one.', zh: '还没有回放。做第一个吧。' },
+  pastMake: { en: 'Make a replay', zh: '制作回放' },
+  open: { en: 'Open', zh: '打开' },
   start: { en: 'Start replay', zh: '开始制作' },
   working: { en: 'Making your replay', zh: '正在制作回放' },
   checkTitle: { en: 'Is this what happened?', zh: '这是发生的事吗？' },
@@ -121,7 +127,7 @@ function jsonl(stage: string, root: string, title: string, subtitle: string | un
   return lines.map(line => JSON.stringify(line)).join('\n');
 }
 
-export function startSurface(styles: EpicStyle[], lang: EpicLang): string {
+export function startSurface(styles: EpicStyle[], lang: EpicLang, pastCount = 0): string {
   const options = styles.map(style => ({
     value: style.id,
     label: style.name,
@@ -130,17 +136,21 @@ export function startSurface(styles: EpicStyle[], lang: EpicLang): string {
   }));
   const fallback = styles.find(style => style.default)?.id ?? styles[0]?.id ?? '';
   const components: A2uiComponent[] = [
-    { id: 'root', component: 'SurfaceRoot', title: tx(lang, 'title'), children: ['intro', 'file', 'style', 'language', 'player', 'consent', 'actions'] },
+    { id: 'root', component: 'SurfaceRoot', title: tx(lang, 'title'), children: ['intro', 'file', 'style', 'language', 'player', 'mute', 'consent', 'actions'] },
     { id: 'intro', component: 'Text', text: tx(lang, 'intro') },
     { id: 'file', component: 'FilePicker', name: 'file', title: tx(lang, 'clip'), label: tx(lang, 'pick'), accept: 'video/*' },
     { id: 'style', component: 'ChoiceGroup', name: 'style', title: tx(lang, 'narrator'), options, default: fallback },
     { id: 'language', component: 'ChoiceGroup', name: 'language', title: tx(lang, 'language'), options: EPIC_LANGUAGES, default: lang },
     { id: 'player', component: 'TextField', name: 'player_name', label: tx(lang, 'player'), maxLength: 40 },
+    { id: 'mute', component: 'Toggle', name: 'mute', label: tx(lang, 'mute'), default: false },
     { id: 'consent', component: 'Toggle', name: 'consent', label: tx(lang, 'consent'), default: false },
     {
       id: 'actions',
       component: 'ActionBar',
-      actions: [{ id: 'epic.start', label: tx(lang, 'start'), variant: 'primary', kind: 'submit' }]
+      actions: [
+        { id: 'epic.start', label: tx(lang, 'start'), variant: 'primary', kind: 'submit' },
+        ...(pastCount > 0 ? [{ id: 'epic.past', label: `${tx(lang, 'past')} (${pastCount})`, variant: 'ghost' } as const] : [])
+      ]
     }
   ];
   return jsonl('start', 'root', tx(lang, 'title'), tx(lang, 'startSub'), components, {});
@@ -253,6 +263,7 @@ function doneSurface(run: EpicRunState, styles: EpicStyle[], proxy: (path: strin
       actions: [
         ...(others.length ? [{ id: 'epic.restyle', label: tx(lang, 'restyle'), variant: 'secondary', kind: 'submit' } as const] : []),
         { id: 'epic.new', label: tx(lang, 'another'), variant: 'primary' },
+        { id: 'epic.past', label: tx(lang, 'past'), variant: 'secondary' },
         { id: 'epic.delete', label: tx(lang, 'remove'), variant: 'ghost', kind: 'submit' }
       ]
     }
@@ -300,4 +311,82 @@ export function confirmBody(action: 'confirm' | 'generic', form: Record<string, 
   const player = String(form.player_name ?? '').trim();
   if (action === 'confirm' && player) context.player_name = player.slice(0, 40);
   return { action, edits, context };
+}
+
+export interface EpicPastItem {
+  runId: string;
+  date: string;
+  headline: string;
+  narrator: string;
+  chinese: boolean;
+  duration: string;
+  thumb: string | null;
+}
+
+function decodeEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#(\d+);/g, (_m, code: string) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_m, code: string) => String.fromCharCode(parseInt(code, 16)))
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function stripTags(html: string): string {
+  return decodeEntities(html.replace(/<[^>]*>/g, '')).trim();
+}
+
+/**
+ * Epic Replay has no JSON form of "Past replays": GET /past is a server-rendered page
+ * (contracts/http-api.md). This reads that page's replay cards. It returns [] for anything it
+ * does not recognise, so a changed page shows an empty list instead of breaking the flow.
+ */
+export function parsePastHtml(html: string, proxy: (runId: string, path: string) => string): EpicPastItem[] {
+  const items: EpicPastItem[] = [];
+  let date = '';
+  const re = /<h2>([^<]*)<\/h2>|<a\s+class="replay"\s+href="\/r\/([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+  for (const match of html.matchAll(re)) {
+    if (match[1] !== undefined) {
+      date = decodeEntities(match[1]).trim();
+      continue;
+    }
+    let runId = '';
+    try {
+      runId = decodeURIComponent(match[2]);
+    } catch {
+      continue;
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$/.test(runId)) continue;
+    const body = match[3];
+    const frame = /src="\/runs\/[^/"]+\/frames\/(\d{1,6})\.jpg"/.exec(body);
+    const headline = /<span class="line"[^>]*>([\s\S]*?)<\/span>/.exec(body);
+    const narrator = /<span class="name">([\s\S]*?)<\/span>/.exec(body);
+    const duration = /<span class="data muted">([\s\S]*?)<\/span>/.exec(body);
+    items.push({
+      runId,
+      date,
+      headline: headline ? stripTags(headline[1]) : '',
+      narrator: narrator ? stripTags(narrator[1]) : '',
+      chinese: /lang="zh-Hans">/.test(body),
+      duration: duration ? stripTags(duration[1]) : '',
+      thumb: frame ? proxy(runId, `frames/${frame[1]}.jpg`) : null
+    });
+  }
+  return items;
+}
+
+export function pastSurface(items: EpicPastItem[], lang: EpicLang): string {
+  const components: A2uiComponent[] = [
+    { id: 'root', component: 'SurfaceRoot', title: tx(lang, 'past'), children: [items.length ? 'list' : 'empty', 'actions'] },
+    {
+      id: 'list',
+      component: 'ReplayList',
+      items: items.map(item => ({ ...item, action: { id: `epic.open:${item.runId}`, label: tx(lang, 'open') } }))
+    },
+    { id: 'empty', component: 'Text', text: tx(lang, 'pastEmpty') },
+    { id: 'actions', component: 'ActionBar', actions: [{ id: 'epic.new', label: tx(lang, 'pastMake'), variant: 'primary' }] }
+  ];
+  return jsonl(`past:${items.map(item => item.runId).join(',')}`, 'root', tx(lang, 'past'), tx(lang, 'pastSub'), components, {});
 }

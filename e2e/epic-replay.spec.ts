@@ -43,6 +43,8 @@ test('Epic Replay flow is driven by A2UI surfaces end to end', async ({ page }) 
   await page.getByTestId('epic-file').setInputFiles(clip);
   await page.getByRole('radio', { name: /News reporter/ }).click();
   await page.getByLabel(/Name to use for the person/).fill('Noa');
+  await expect(page.getByLabel("Remove the clip's own sound")).not.toBeChecked();
+  await page.getByLabel("Remove the clip's own sound").check();
   await page.getByLabel(/Everyone in the clip is fine with it being narrated/).check();
   await shot(page, '2-start-filled');
   await page.getByRole('button', { name: 'Start replay' }).click();
@@ -69,6 +71,10 @@ test('Epic Replay flow is driven by A2UI surfaces end to end', async ({ page }) 
   await expect.poll(() => video.evaluate((el: HTMLVideoElement) => el.readyState)).toBeGreaterThan(0);
   expect(await video.evaluate((el: HTMLVideoElement) => el.videoWidth)).toBe(320);
   await shot(page, '5-result');
+
+  // the sound switch reached the Epic Replay server's upload form
+  const formId = await page.evaluate(() => window.localStorage.getItem('dm.epic.run'));
+  expect(await (await page.request.get(`${FAKE}/runs/${formId}/form`)).json()).toMatchObject({ keep_original_audio: 'false', style: 'news_reporter' });
 
   // what the Epic Replay server actually received at the play card
   const runId = await page.evaluate(() => window.localStorage.getItem('dm.epic.run'));
@@ -110,4 +116,30 @@ test('Epic Replay works on a phone-sized screen', async ({ page }) => {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   expect(overflow).toBe(false);
   await shot(page, '7-mobile-check');
+});
+
+test('Epic Replay start page keeps the sound by default and lists past replays', async ({ page }) => {
+  await page.setViewportSize({ width: 430, height: 1300 });
+  await openEpic(page);
+  await expect(page.getByRole('button', { name: /Past replays \(\d+\)/ })).toBeVisible();
+  await shot(page, '8-start-with-past');
+  await page.getByTestId('epic-file').setInputFiles(clip);
+  await page.getByLabel(/Everyone in the clip is fine with it being narrated/).check();
+  await page.getByRole('button', { name: 'Start replay' }).click();
+  await expect(page.getByRole('heading', { name: 'Is this what happened?' })).toBeVisible();
+  const id = await page.evaluate(() => window.localStorage.getItem('dm.epic.run'));
+  expect(await (await page.request.get(`${FAKE}/runs/${id}/form`)).json()).toMatchObject({ keep_original_audio: 'true' });
+
+  // past replays: back to start, open the list, open a finished replay
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await page.getByRole('button', { name: 'Make another' }).click();
+  await page.getByRole('button', { name: /Past replays/ }).click();
+  await expect(page.getByRole('heading', { name: 'Past replays' }).first()).toBeVisible();
+  await expect(page.locator('.epic-replay').first()).toBeVisible();
+  await shot(page, '9-past');
+  await page.locator('.epic-replay').first().click();
+  await expect(page.getByRole('heading', { name: 'Your replay is ready' })).toBeVisible();
+  await expect(page.getByTestId('epic-video')).toBeVisible();
+  await page.getByRole('button', { name: 'Past replays' }).click();
+  await expect(page.locator('.epic-replay').first()).toBeVisible();
 });

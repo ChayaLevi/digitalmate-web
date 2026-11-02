@@ -19,6 +19,8 @@ import type { Plugin } from 'vite';
 import {
   errorSurface,
   isTerminal,
+  parsePastHtml,
+  pastSurface,
   runSurface,
   startSurface,
   unreachableSurface
@@ -75,6 +77,13 @@ async function getJson<T>(config: EpicConfig, path: string): Promise<{ ok: boole
 function upstreamMessage(body: unknown, fallback: string): string {
   const error = (body as { error?: { message?: string } } | null)?.error;
   return error?.message ?? fallback;
+}
+
+/** Epic Replay only offers Past replays as a server-rendered page (GET /past): read its cards. */
+export async function loadPast(config: EpicConfig) {
+  const res = await fetch(upstream(config, '/past'), { headers: headers(config), signal: AbortSignal.timeout(10_000) });
+  if (!res.ok) throw new Error(`Epic Replay answered ${res.status} for /past`);
+  return parsePastHtml(await res.text(), (runId, path) => `/api/epic/runs/${runId}/${path}`);
 }
 
 export async function loadStyles(config: EpicConfig): Promise<EpicStyle[]> {
@@ -211,15 +220,26 @@ export async function handleEpicRequest(request: IncomingMessage, response: Serv
 
     if (path === '/start' && method === 'GET') {
       let styles: EpicStyle[] = [];
+      let pastCount = 0;
       try {
         styles = await loadStyles(config);
+        pastCount = (await loadPast(config).catch(() => [])).length;
       } catch {
         styles = [];
       }
       response.statusCode = 200;
       response.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
       response.setHeader('cache-control', 'no-store');
-      response.end(styles.length ? startSurface(styles, lang) : unreachableSurface(lang));
+      response.end(styles.length ? startSurface(styles, lang, pastCount) : unreachableSurface(lang));
+      return;
+    }
+
+    if (path === '/past' && method === 'GET') {
+      const items = await loadPast(config);
+      response.statusCode = 200;
+      response.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
+      response.setHeader('cache-control', 'no-store');
+      response.end(pastSurface(items, lang));
       return;
     }
 

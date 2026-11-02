@@ -25,6 +25,15 @@ const NAMES = ['Checking your clip', 'Watching what happens', 'Finding the key m
 
 const runs = new Map();
 let seq = 0;
+// one finished replay from an earlier day, for the Past replays view
+runs.set('fake-past-1', { t0: Date.now() - 86_400_000, status: 'running', style: 'news_reporter', language: 'en', player: null, confirmedAt: Date.now() - 86_000_000, keepAudio: 'true' });
+
+function pastPage() {
+  const cards = [...runs.entries()]
+    .filter(([id, run]) => state(id, run).status === 'done')
+    .map(([id, run]) => `<a class="replay" href="/r/${id}" style="--card-accent:#fff"><span class="thumb replay-frame"><img src="/runs/${id}/frames/313.jpg" alt="" loading="lazy"><span class="sample strap"><span class="line">Free kick finds the corner</span></span></span><span class="replay-meta"><span class="dot" aria-hidden="true"></span><span class="name">${STYLES.find(x => x.id === run.style)?.name}</span><span class="data muted">4 s</span></span></a>`);
+  return `<div class="past-head"><h1>Past replays</h1></div><section class="past-day"><h2>${new Date().toISOString().slice(0, 10)}</h2><div class="replays">${cards.join('')}</div></section>`;
+}
 
 function stepsOf(run) {
   const elapsed = Date.now() - run.t0;
@@ -94,6 +103,7 @@ createServer(async (req, res) => {
   const p = url.pathname;
   try {
     if (p === '/styles' && req.method === 'GET') return send(res, 200, STYLES);
+    if (p === '/past' && req.method === 'GET') return send(res, 200, pastPage(), 'text/html');
     if (p === '/runs' && req.method === 'POST') {
       const raw = (await body(req)).toString('latin1');
       const field = name => new RegExp(`name="${name}"\\r\\n\\r\\n([^\\r]*)`).exec(raw)?.[1];
@@ -102,7 +112,7 @@ createServer(async (req, res) => {
       const style = field('style') || 'football_commentator';
       if (!STYLES.some(s => s.id === style)) return err(res, 400, 'unknown_style', `No narrator called ${style}.`);
       const id = `fake-${++seq}-${Date.now().toString(36)}`;
-      runs.set(id, { t0: Date.now(), status: 'running', style, language: field('language') || 'en', player: field('player_name') || null });
+      runs.set(id, { t0: Date.now(), status: 'running', style, language: field('language') || 'en', player: field('player_name') || null, keepAudio: field('keep_original_audio') ?? null });
       return send(res, 201, { run_id: id });
     }
     const m = /^\/runs\/([^/]+)(?:\/(.*))?$/.exec(p);
@@ -150,6 +160,7 @@ createServer(async (req, res) => {
       runs.set(id, { t0: Date.now() - 4 * stepMs, status: 'running', style: b.style, language: b.language || run.language, confirmedAt: Date.now() - 1, player: run.player });
       return send(res, 201, { run_id: id });
     }
+    if (rest === 'form') return send(res, 200, { keep_original_audio: run.keepAudio, style: run.style });
     if (rest === 'last-answer') return send(res, 200, run.lastAnswer ?? null);
     return err(res, 404, 'not_found', 'no such page');
   } catch (e) {

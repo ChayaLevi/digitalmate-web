@@ -1031,6 +1031,7 @@ function renderComponent(component: A2uiComponent, ctx: RenderContext, key: stri
     case 'FrameGallery':
     case 'StepList':
     case 'VideoPlayer':
+    case 'ReplayList':
       return renderEpicComponent(component, ctx, key);
 
     case 'ThinkingStream': {

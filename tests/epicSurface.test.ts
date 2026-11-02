@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { A2uiSurfaceStore } from '../src/protocol/a2ui/store';
-import { confirmBody, EPIC_SURFACE_ID, isTerminal, runSurface, startSurface } from '../src/lib/epicSurface';
+import { parsePastHtml, pastSurface, confirmBody, EPIC_SURFACE_ID, isTerminal, runSurface, startSurface } from '../src/lib/epicSurface';
 import type { EpicPlayCard, EpicRunState, EpicStep, EpicStyle } from '../src/lib/epicSurface';
 
 const styles: EpicStyle[] = [
@@ -86,5 +86,29 @@ describe('epic replay A2UI surfaces', () => {
     });
     // generic takes the key moment and clip_ok only
     expect(confirmBody('generic', form)).toEqual({ action: 'generic', edits: { climax_frame: 289, clip_ok: true }, context: {} });
+  });
+
+  it('adds the sound switch and shows the past replays button only when there are some', () => {
+    const none = load(startSurface(styles, 'en'));
+    expect(none.components.mute.label).toBe("Remove the clip's own sound");
+    expect(none.components.mute.default).toBe(false);
+    expect(none.components.actions.actions?.map(action => action.id)).toEqual(['epic.start']);
+    const some = load(startSurface(styles, 'en', 3));
+    expect(some.components.actions.actions?.map(action => action.label)).toEqual(['Start replay', 'Past replays (3)']);
+  });
+
+  it('reads the server-rendered past replays page', () => {
+    const html = `<h2>2026-11-01</h2><div class="replays">
+      <a class="replay" href="/r/run-1" style="--card-accent:#fff"><span class="thumb"><img src="/runs/run-1/frames/313.jpg" alt=""><span class="sample strap"><span class="line">Keeper &amp; wall</span></span></span>
+      <span class="replay-meta"><span class="dot"></span><span class="name">News reporter</span><span lang="zh-Hans">中文</span><span class="data muted">12 s</span></span></a>
+      <a class="replay" href="/r/..%2Fbad"><span class="line">x</span></a></div>`;
+    const items = parsePastHtml(html, (id, path) => `/api/epic/runs/${id}/${path}`);
+    expect(items).toEqual([
+      { runId: 'run-1', date: '2026-11-01', headline: 'Keeper & wall', narrator: 'News reporter', chinese: true, duration: '12 s', thumb: '/api/epic/runs/run-1/frames/313.jpg' }
+    ]);
+    expect(parsePastHtml('<html>changed</html>', () => '')).toEqual([]);
+    const surface = load(pastSurface(items, 'en'));
+    expect((surface.components.list.items as Array<{ action: { id: string } }>)[0].action.id).toBe('epic.open:run-1');
+    expect(load(pastSurface([], 'en')).components.empty).toBeDefined();
   });
 });

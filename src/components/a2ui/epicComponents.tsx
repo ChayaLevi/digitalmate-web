@@ -8,6 +8,7 @@ import type { A2uiComponent, A2uiSurface } from '../../types';
  */
 interface Ctx {
   surface: A2uiSurface;
+  onAction?: (action: { id: string; label: string }) => void;
   form?: Record<string, unknown>;
   onInput?: (name: string, value: unknown) => void;
 }
@@ -31,6 +32,17 @@ interface Step {
   name: string;
   status: string;
   duration_s?: number | null;
+}
+
+interface ReplayItem {
+  runId: string;
+  date: string;
+  headline: string;
+  narrator: string;
+  chinese: boolean;
+  duration: string;
+  thumb: string | null;
+  action: { id: string; label: string };
 }
 
 function str(value: unknown): string {
@@ -163,6 +175,29 @@ export function renderEpicComponent(component: A2uiComponent, ctx: Ctx, key: str
           </a>
         </div>
       );
+
+    case 'ReplayList': {
+      const items = (component.items ?? []) as ReplayItem[];
+      return (
+        <div className="epic-replays" key={key}>
+          {items.map(item => (
+            <button
+              type="button"
+              className="epic-replay"
+              key={item.runId}
+              onClick={() => ctx.onAction?.(item.action)}
+              aria-label={`${item.action.label}: ${item.headline || item.narrator}, ${item.date}`}
+            >
+              {item.thumb ? <img src={item.thumb} alt="" loading="lazy" /> : <span className="epic-replay-blank" aria-hidden="true" />}
+              <strong>{item.headline || item.narrator}</strong>
+              <em>
+                {[item.date, item.narrator, item.chinese ? '中文' : '', item.duration].filter(Boolean).join(' · ')}
+              </em>
+            </button>
+          ))}
+        </div>
+      );
+    }
 
     default:
       return null;

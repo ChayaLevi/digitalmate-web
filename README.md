@@ -90,6 +90,64 @@ npm test        # unit tests
 npm run test:e2e   # Playwright UI, mobile and axe checks
 ```
 
+## Epic Replay (branch `epic-replay`)
+
+DigitalMate can be the frontend for the [epic-replay](https://github.com/aharonamir/epic-replay)
+server: upload a short clip, pick a narrator, confirm what happened, and watch the narrated
+slow-motion replay. Every step after the first request is an A2UI surface built by the bridge
+(`server/epic.ts`, `src/lib/epicSurface.ts`) from Epic Replay's HTTP API. Uploads, video and
+frames are plain HTTP through the bridge, because A2UI describes screens and does not carry files.
+The video pipeline (FFmpeg, Chromium, DeepSeek, ElevenLabs) stays on the Epic Replay server.
+Web only; there is no Android work in this branch. Specs: `specs/002-epic-replay-a2ui/`.
+
+### Run it with the real Epic Replay server
+
+1. Set up and start Epic Replay as its README describes. Keep it on localhost, it has no login:
+   ```bash
+   EPIC_PROVIDER_MODE=record uvicorn epic_replay.web.app:app --port 8010
+   ```
+   `record` reuses saved replies and pays only for new ones (about 0.05 USD for a new clip).
+   `replay` never pays but stops at "Writing the call" for clips with no recording. The provider keys
+   (`DEEPSEEK_API_KEY`, `ELEVENLABS_API_KEY`) go in Epic Replay's own `.env`, never in this repo.
+2. Start DigitalMate pointing at it:
+   ```bash
+   npm ci
+   EPIC_REPLAY_URL=http://127.0.0.1:8010 npm run dev
+   ```
+3. Open http://127.0.0.1:5173, then More > Labs > Epic Replay.
+
+For a production-style run use `npm run build && EPIC_REPLAY_URL=... npm start`. The bridge also
+serves `/api/epic/*` there.
+
+### Try it with no keys and no pipeline
+
+```bash
+node scripts/fake-epic-replay.mjs        # contract-following stand-in on 127.0.0.1:8010, makes no video
+npm run dev
+```
+
+The fake returns a 2-second test clip as the "replay". Use it to see the flow, not the result.
+
+### Settings
+
+| Variable | Meaning |
+| --- | --- |
+| `EPIC_REPLAY_URL` | Epic Replay server, default `http://127.0.0.1:8010` |
+| `EPIC_REPLAY_TOKEN` | Optional Bearer token sent upstream only, for an authenticating proxy |
+| `EPIC_REPLAY_POLL_MS` | How often the bridge reads run state, default 1500 |
+
+### What was and was not tested
+
+- Unit and bridge tests plus Playwright against the fake server (`npm test`, `npm run test:e2e`).
+- A contract check against the real Epic Replay FastAPI app in replay mode with seeded run folders:
+  real styles, run state, play card, frames, range video and play-card answers worked.
+- Not tested: a full live run through the real pipeline with DeepSeek and ElevenLabs.
+
+### Before exposing it beyond localhost
+
+Put authentication and HTTPS in front of both DigitalMate and Epic Replay. Epic Replay lists past
+videos to anyone who can reach it.
+
 ## Local RSS proxy
 
 Discovery can import a real RSS 2.0, Atom or RDF feed during `npm run dev` and `npm run preview`.

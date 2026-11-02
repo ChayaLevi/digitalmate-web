@@ -3,11 +3,15 @@ import type { A2uiAction, A2uiComponent, A2uiSurface, ItemDetail } from '../../t
 import { renderMarkdown } from '../../lib/markdown';
 import { Icon } from '../Icons';
 import { useI18n } from '../../i18n/I18nContext';
+import { renderEpicComponent } from './epicComponents';
 
 interface SurfaceProps {
   surface: A2uiSurface;
   onAction: (action: A2uiAction) => void;
   onDetails?: (detail: ItemDetail) => void;
+  /** Input values for data-bearing components (Epic Replay). Optional: other surfaces ignore it. */
+  form?: Record<string, unknown>;
+  onInput?: (name: string, value: unknown) => void;
 }
 
 function resolvePath(data: unknown, path?: string): unknown {
@@ -79,6 +83,8 @@ interface RenderContext {
   surface: A2uiSurface;
   onAction: (action: A2uiAction) => void;
   onDetails?: (detail: ItemDetail) => void;
+  form?: Record<string, unknown>;
+  onInput?: (name: string, value: unknown) => void;
   tr: (en: string, zh: string) => string;
 }
 
@@ -1018,6 +1024,15 @@ function renderComponent(component: A2uiComponent, ctx: RenderContext, key: stri
       );
     }
 
+    case 'FilePicker':
+    case 'ChoiceGroup':
+    case 'TextField':
+    case 'Toggle':
+    case 'FrameGallery':
+    case 'StepList':
+    case 'VideoPlayer':
+      return renderEpicComponent(component, ctx, key);
+
     case 'ThinkingStream': {
       const items = (resolvePath(surface.data, component.dataPath) ?? []) as Array<Record<string, string>>;
       return (
@@ -1047,9 +1062,13 @@ function renderComponent(component: A2uiComponent, ctx: RenderContext, key: stri
   }
 }
 
-export function A2uiSurfaceView({ surface, onAction, onDetails }: SurfaceProps) {
+export function A2uiSurfaceView({ surface, onAction, onDetails, form, onInput }: SurfaceProps) {
   const { tr } = useI18n();
   const root = surface.components[surface.root];
   if (!root) return null;
-  return <div className="a2ui-root">{renderComponent(root, { surface, onAction, onDetails, tr }, 'root')}</div>;
+  return (
+    <div className="a2ui-root">
+      {renderComponent(root, { surface, onAction, onDetails, form, onInput, tr }, 'root')}
+    </div>
+  );
 }

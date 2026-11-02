@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
 import { handleOrbitRequest, bridgeConfigWarnings, readOrbitConfig } from '../../server/orbit';
 import { handleRssRequest } from '../../server/rss';
+import { handleEpicRequest } from '../../server/epic';
 
 const root = resolve(process.cwd(), 'dist');
 const port = Number(process.env.PORT ?? 4173);
@@ -97,6 +98,10 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/rss') {
       await handleRssRequest(request, response);
+      return;
+    }
+    if (url.pathname.startsWith('/api/epic/')) {
+      await handleEpicRequest(request, response);
       return;
     }
     if (url.pathname.startsWith('/api/orbit/')) {

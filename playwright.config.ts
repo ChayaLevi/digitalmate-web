@@ -23,10 +23,18 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] }
     }
   ],
-  webServer: {
-    command: `npm run dev -- --port ${port}`,
-    url: baseURL,
-    reuseExistingServer: false,
-    timeout: 120_000
-  }
+  webServer: [
+    {
+      command: 'FAKE_EPIC_PORT=18010 node scripts/fake-epic-replay.mjs',
+      url: 'http://127.0.0.1:18010/styles',
+      reuseExistingServer: false,
+      timeout: 30_000
+    },
+    {
+      command: `EPIC_REPLAY_URL=http://127.0.0.1:18010 npm run dev -- --port ${port}`,
+      url: baseURL,
+      reuseExistingServer: false,
+      timeout: 120_000
+    }
+  ]
 });

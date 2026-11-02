@@ -6689,3 +6689,33 @@ a {
     min-height: 42px;
   }
 }
+
+/* Epic Replay A2UI components */
+.epic-field { display: grid; gap: 8px; margin: 12px 0; }
+.epic-choices { display: grid; gap: 8px; }
+.epic-choice { text-align: start; display: grid; gap: 2px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line, rgba(128,128,128,.35)); background: transparent; color: inherit; cursor: pointer; min-height: 44px; }
+.epic-choice em { font-style: normal; font-size: 12px; opacity: .7; }
+.epic-choice.is-selected, .epic-frame.is-selected { border-color: var(--accent, #f5a524); box-shadow: 0 0 0 2px var(--accent, #f5a524) inset; }
+.epic-file { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.epic-file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.epic-file:focus-within .secondary-action { outline: 2px solid var(--accent, #f5a524); outline-offset: 2px; }
+.epic-text input { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line, rgba(128,128,128,.35)); background: transparent; color: inherit; font: inherit; min-height: 44px; }
+.epic-toggle { display: flex; align-items: flex-start; gap: 10px; }
+.epic-toggle input { width: 22px; height: 22px; margin-top: 2px; flex: none; }
+.epic-frames { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+.epic-frame { display: grid; gap: 4px; padding: 4px; border-radius: 10px; border: 1px solid var(--line, rgba(128,128,128,.35)); background: transparent; color: inherit; cursor: pointer; font-size: 11px; text-align: start; }
+.epic-frame img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: rgba(128,128,128,.2); }
+.epic-steps { list-style: none; margin: 12px 0; padding: 0; display: grid; gap: 8px; }
+.epic-step { display: flex; align-items: center; gap: 10px; opacity: .55; }
+.epic-step em { margin-inline-start: auto; font-style: normal; font-size: 12px; }
+.epic-step-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; flex: none; }
+.epic-step.is-done { opacity: 1; }
+.epic-step.is-done .epic-step-dot { background: #2fb76a; border-color: #2fb76a; }
+.epic-step.is-running, .epic-step.is-waiting_user { opacity: 1; font-weight: 600; }
+.epic-step.is-running .epic-step-dot { border-color: var(--accent, #f5a524); animation: epic-pulse 1.2s ease-in-out infinite; }
+.epic-step.is-waiting_user .epic-step-dot { background: var(--accent, #f5a524); border-color: var(--accent, #f5a524); }
+.epic-step.is-failed { opacity: 1; color: #d64545; }
+.epic-video { width: 100%; max-height: 60vh; border-radius: 14px; background: #000; }
+.epic-download { justify-self: start; text-decoration: none; }
+@keyframes epic-pulse { 50% { transform: scale(1.4); opacity: .5; } }
+@media (prefers-reduced-motion: reduce) { .epic-step.is-running .epic-step-dot { animation: none; } }

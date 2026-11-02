@@ -3,6 +3,7 @@ import { Icon } from './Icons';
 import type { IconName } from './Icons';
 import { Sheet } from './Overlays';
 import { useI18n } from '../i18n/I18nContext';
+import { EpicReplayView } from './EpicReplayView';
 
 type LabId =
   | 'bim'
@@ -13,7 +14,8 @@ type LabId =
   | 'ride'
   | 'checkout'
   | 'social'
-  | 'payment';
+  | 'payment'
+  | 'epic';
 
 interface LabItem {
   id: LabId;
@@ -23,6 +25,12 @@ interface LabItem {
 }
 
 const LABS: LabItem[] = [
+  {
+    id: 'epic',
+    icon: 'spark',
+    title: { en: 'Epic Replay', zh: 'Epic Replay 精彩回放' },
+    subtitle: { en: 'Narrated slow-motion replays, driven by A2UI', zh: '由 A2UI 驱动的解说慢动作回放' }
+  },
   {
     id: 'bim',
     icon: 'grid',
@@ -112,8 +120,8 @@ export function LabsSheet({
         </div>
         <p className="settings-note">
           {tr(
-            'These screens use local sample data. They never place orders, take payments or call a real provider.',
-            '这些界面使用本地示例数据，不会下单、支付或调用真实服务。'
+            'These screens use local sample data and never place orders or take payments. Epic Replay is the exception: it talks to your own Epic Replay server.',
+            '这些界面使用本地示例数据，不会下单或支付。Epic Replay 除外：它会连接你自己的 Epic Replay 服务器。'
           )}
         </p>
       </Sheet>
@@ -123,7 +131,7 @@ export function LabsSheet({
   return (
     <Sheet
       title={label(item.title)}
-      subtitle={tr('Local demo · no side effects', '本地演示 · 无副作用')}
+      subtitle={active === 'epic' ? tr('Uses your Epic Replay server', '使用你的 Epic Replay 服务器') : tr('Local demo · no side effects', '本地演示 · 无副作用')}
       onClose={onClose}
       wide
     >
@@ -131,6 +139,7 @@ export function LabsSheet({
         <Icon name="back" size={14} />
         {tr('All labs', '全部实验')}
       </button>
+      {active === 'epic' ? <EpicReplayView onNotice={onNotice} /> : null}
       {active === 'bim' ? <BimDemo /> : null}
       {active === 'multitask' ? <MultiTaskDemo /> : null}
       {active === 'deepsearch' ? <DeepSearchDemo /> : null}

@@ -32,3 +32,6 @@ Thumbs.db
 /messages/
 /skills/
 /todo/
+
+# Homemind local state (HOMEMIND_DATA_FILE)
+.homemind/

@@ -18,6 +18,8 @@ import type {
 import { newId, readStorage, writeStorage, clearDemoStorage, STORAGE_KEYS, usePersistentState } from './lib/storage';
 import { MockChatTransport } from './transport/mock';
 import { OrbitChatTransport, orbitHealth } from './transport/orbit';
+import { Fridge2TableTransport, fridgeHealth, runFridgeAction, surfaceOfTurn } from './transport/fridge';
+import { isKitchenIntent } from './lib/fridgeSurfaces';
 import { LocalDiscoveryTransport, rotateCards } from './transport/discovery';
 import type { ChatTransport } from './transport/types';
 import { seedFor } from './data/seed';
@@ -341,10 +343,21 @@ export default function App() {
     });
   };
 
-  const send = async (raw: string, options: { appendUser?: boolean } = {}) => {
+  // Fridge2Table keeps one chat session per DigitalMate chat (its own memory of the conversation).
+  const fridgeSession = useRef(newId('dm'));
+
+  const send = async (raw: string, options: { appendUser?: boolean; cookMode?: 'home' | 'shop' } = {}) => {
     const outgoing = attachments;
+    const outgoingImages = outgoing
+      .map(attachment => attachment.file)
+      .filter((file): file is File => file instanceof File && file.type.startsWith('image/'));
     const prompt =
-      raw.trim() || (outgoing.length > 0 ? tr('Summarize the attachment', '总结附件') : '');
+      raw.trim() ||
+      (outgoing.length > 0
+        ? activePersona === 'kitchen'
+          ? tr('Here are photos of my kitchen', '这是我厨房的照片')
+          : tr('Summarize the attachment', '总结附件')
+        : '');
     if (!prompt) return;
     if (busy) {
       showToast(tr('Still generating — please wait.', '正在生成，请稍候。'));
@@ -418,7 +431,29 @@ export default function App() {
     activeController.current = controller;
 
     let transport: ChatTransport = new MockChatTransport(calendarEvents);
-    if (settings.cloudBackend === 'orbit') {
+    const wantsKitchen = activePersona === 'kitchen' || isKitchenIntent(prompt);
+    let kitchenRouted = false;
+    if (wantsKitchen) {
+      try {
+        const health = await fridgeHealth(controller.signal);
+        if (health.configured) {
+          transport = new Fridge2TableTransport(fridgeSession.current);
+          kitchenRouted = true;
+        } else if (activePersona === 'kitchen') {
+          showToast(
+            tr(
+              'Fridge2Table is not configured (FRIDGE2TABLE_URL); this turn uses the local mock.',
+              '未配置 Fridge2Table（FRIDGE2TABLE_URL），本轮使用本地模拟。'
+            )
+          );
+        }
+      } catch {
+        if (activePersona === 'kitchen') {
+          showToast(tr('The Fridge2Table bridge is unreachable; this turn uses the local mock.', '无法连接 Fridge2Table 桥接，本轮使用本地模拟。'));
+        }
+      }
+    }
+    if (!kitchenRouted && settings.cloudBackend === 'orbit') {
       try {
         const health = await orbitHealth(controller.signal);
         if (health.configured) {
@@ -454,7 +489,9 @@ export default function App() {
           persona: activePersona,
           model,
           capabilities,
-          deepSearch
+          deepSearch,
+          images: outgoingImages,
+          cookMode: options.cookMode
         },
         event => {
           if (generation.current !== runId) return;
@@ -637,6 +674,7 @@ export default function App() {
   };
 
   const newChat = () => {
+    fridgeSession.current = newId('dm');
     generation.current += 1;
     activeController.current?.abort();
     activeController.current = null;
@@ -827,7 +865,48 @@ export default function App() {
     showToast(tr('A2UI protocol demo rendered.', 'A2UI 协议演示已渲染。'));
   };
 
+  const showFridgeAction = async (action: A2uiAction) => {
+    if (busy) {
+      showToast(tr('Still generating — please wait.', '正在生成，请稍候。'));
+      return;
+    }
+    if (action.id === 'fridge.shop') {
+      void send(String(action.args?.message ?? ''), { appendUser: false, cookMode: 'shop' });
+      return;
+    }
+    setBusy(true);
+    try {
+      const turn = await runFridgeAction(action, lang);
+      if (!turn) {
+        showToast(tr(`Triggered: ${action.label}`, `已触发：${action.label}`));
+        return;
+      }
+      const surface = surfaceOfTurn(turn);
+      setMessages(previous => [
+        ...previous,
+        {
+          id: newId('a'),
+          role: 'assistant',
+          text: turn.message,
+          createdAt: Date.now(),
+          ...(surface ? { surface } : {}),
+          ...(turn.followUps.length ? { followUps: turn.followUps } : {})
+        }
+      ]);
+      setHome(false);
+      setTab('chat');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : tr('Fridge2Table action failed.', 'Fridge2Table 操作失败。'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onAction = (action: A2uiAction) => {
+    if (action.kind === 'fridge') {
+      void showFridgeAction(action);
+      return;
+    }
     if (action.id === 'create') {
       setCalendarOpen(true);
       return;

@@ -6724,3 +6724,91 @@ a {
 .epic-replay { display: grid; gap: 4px; padding: 6px; text-align: start; border-radius: 12px; border: 1px solid var(--line, rgba(128,128,128,.35)); background: transparent; color: inherit; cursor: pointer; min-height: 44px; }
 .epic-replay img, .epic-replay-blank { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: rgba(128,128,128,.2); display: block; }
 .epic-replay em { font-style: normal; font-size: 12px; opacity: .7; }
+
+/* Fridge2Table: RecipeOptions meal cards */
+.recipe-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.recipe-card {
+  display: flex;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(33, 27, 23, 0.055);
+  background: linear-gradient(150deg, #f7fbf8 0%, #f1f7f2 100%);
+  min-width: 0;
+}
+
+.recipe-photo {
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+  border-radius: 11px;
+  object-fit: cover;
+  background: var(--train-soft);
+}
+
+.recipe-photo.is-empty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--train);
+}
+
+.recipe-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.recipe-title-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.recipe-title-line strong {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.recipe-badge {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 8.5px;
+  font-weight: 600;
+  color: var(--train);
+  background: var(--train-soft);
+}
+
+.recipe-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 9px;
+  color: var(--muted);
+}
+
+.recipe-uses {
+  margin: 0;
+  font-size: 9.5px;
+  line-height: 1.4;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.recipe-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}

@@ -13,6 +13,8 @@ export interface A2uiAction {
   prompt?: string;
   variant?: 'primary' | 'secondary' | 'ghost';
   kind?: string;
+  /** Data the host needs to carry the action out (e.g. a Fridge2Table recipe id). */
+  args?: Record<string, unknown>;
 }
 
 export interface A2uiMetric {
@@ -55,6 +57,8 @@ export interface AttachmentMeta {
   id: string;
   url?: string;
   text?: string;
+  /** The original image, kept so it can be uploaded (Fridge2Table photos). Never persisted. */
+  file?: File;
 }
 
 export interface Artifact {

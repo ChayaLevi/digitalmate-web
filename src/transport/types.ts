@@ -9,6 +9,10 @@ export interface ChatTurnRequest {
   model?: string;
   capabilities?: string[];
   deepSearch?: boolean;
+  /** Photos sent with the turn (Fridge2Table only; other transports ignore them). */
+  images?: File[];
+  /** Fridge2Table: "home" = only what is there, "shop" = a few items to buy are OK. */
+  cookMode?: 'home' | 'shop';
 }
 
 export type ChatTurnEvent =
@@ -20,7 +24,7 @@ export type ChatTurnEvent =
   | { type: 'done' };
 
 export interface ChatTransport {
-  readonly id: 'mock' | 'orbit';
+  readonly id: 'mock' | 'orbit' | 'fridge2table';
   send(
     request: ChatTurnRequest,
     onEvent: (event: ChatTurnEvent) => void,

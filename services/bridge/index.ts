@@ -5,6 +5,7 @@ import { extname, join, resolve, sep } from 'node:path';
 import { handleOrbitRequest, bridgeConfigWarnings, readOrbitConfig } from '../../server/orbit';
 import { handleRssRequest } from '../../server/rss';
 import { handleEpicRequest } from '../../server/epic';
+import { handleFridgeRequest } from '../../server/fridge';
 
 const root = resolve(process.cwd(), 'dist');
 const port = Number(process.env.PORT ?? 4173);
@@ -102,6 +103,10 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname.startsWith('/api/epic/')) {
       await handleEpicRequest(request, response);
+      return;
+    }
+    if (url.pathname.startsWith('/api/fridge/')) {
+      await handleFridgeRequest(request, response);
       return;
     }
     if (url.pathname.startsWith('/api/orbit/')) {

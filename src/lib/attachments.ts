@@ -68,7 +68,7 @@ export async function readAttachment(file: File): Promise<Attachment> {
   }
 
   if (base.kind === 'image') {
-    return { ...base, url: URL.createObjectURL(file) };
+    return { ...base, url: URL.createObjectURL(file), file };
   }
 
   if (base.kind === 'pdf') {

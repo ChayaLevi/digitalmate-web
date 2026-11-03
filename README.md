@@ -150,6 +150,47 @@ The fake returns a 2-second test clip as the "replay". Use it to see the flow, n
 Put authentication and HTTPS in front of both DigitalMate and Epic Replay. Epic Replay lists past
 videos to anyone who can reach it.
 
+## Fridge2Table (branch `feat/fridge2table`)
+
+DigitalMate can be the frontend for the [Fridge2Table](https://github.com/agents-demo/fridge2table)
+kitchen agent. Ask "What can I cook tonight?" in the chat, or pick the **Kitchen companion**, and the turn
+goes to Fridge2Table through the bridge (`server/fridge.ts`). Its reply comes back as text, its tool trace
+as the thinking steps, and its meals, swaps, shopping list and inventory as A2UI surfaces built by
+`src/lib/fridgeSurfaces.ts`. Card buttons call Fridge2Table directly: **Show steps**, **I made it**,
+**I bought these**, **Undo**, **Show my kitchen**. Photos attached in the composer are sent too, tagged
+fridge / freezer / pantry from your words. Fridge2Table itself is not changed. Specs:
+`specs/003-fridge2table-a2ui/`.
+
+### Run it with the real Fridge2Table
+
+```bash
+npm ci
+FRIDGE2TABLE_URL=https://fridge-to-table.onrender.com npm run dev
+# or, with Fridge2Table running locally (uv run uvicorn app.api:app --port 8000):
+FRIDGE2TABLE_URL=http://127.0.0.1:8000 npm run dev
+```
+
+Open http://127.0.0.1:5173 and ask "What can I cook tonight?". A Render instance that slept can take up to
+a minute on the first request; open it once before a demo. To show a prepared kitchen, open Fridge2Table's
+own page, set it up there (or use its `/admin/seed`), copy that browser's `household` cookie and start
+DigitalMate with `FRIDGE2TABLE_HOUSEHOLD=<that id>`.
+
+### Try it with no keys
+
+```bash
+npm run fridge:fake        # canned replies on 127.0.0.1:8020, no model
+FRIDGE2TABLE_URL=http://127.0.0.1:8020 npm run dev
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `FRIDGE2TABLE_URL` | Fridge2Table server. Unset = the feature is off and DigitalMate behaves as before |
+| `FRIDGE2TABLE_HOUSEHOLD` | Optional: pin every browser to one Fridge2Table household |
+| `FRIDGE2TABLE_TIMEOUT_MS` | Chat turn timeout, default 120000 |
+
+The GitHub Pages build has no bridge, so Fridge2Table works only with `npm run dev`, `npm run preview`,
+`npm start` or Docker.
+
 ## Local RSS proxy
 
 Discovery can import a real RSS 2.0, Atom or RDF feed during `npm run dev` and `npm run preview`.

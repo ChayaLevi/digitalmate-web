@@ -3,6 +3,7 @@ import type { Language } from '../types';
 export type PersonaId =
   | 'default'
   | 'food'
+  | 'kitchen'
   | 'travel'
   | 'work'
   | 'entertainment'
@@ -53,6 +54,24 @@ export const PERSONAS: PersonaDefinition[] = [
       { en: 'Find coffee shops near the Bantian Huawei campus', zh: '找坂田华为基地附近的咖啡店' },
       { en: 'Compare two milk tea options under 20 yuan', zh: '比较两款 20 元以内的奶茶' },
       { en: 'Suggest a quiet restaurant for a work lunch', zh: '推荐一家适合工作午餐的安静餐厅' }
+    ]
+  },
+  {
+    id: 'kitchen',
+    avatar: '🥬',
+    accent: '#3f7d55',
+    name: { en: 'Kitchen companion', zh: '厨房搭子' },
+    tagline: { en: 'What to cook from your fridge · Fridge2Table', zh: '用冰箱里的食材做什么 · Fridge2Table' },
+    soul: {
+      en: 'I know what is in your fridge, freezer and pantry. I suggest meals from what is there, check every suggestion with code, and never buy or delete anything without you.',
+      zh: '我知道你冰箱、冷冻室和储物柜里有什么。我按现有食材推荐菜，每个建议都由代码核对；未经你同意，不会购买或删除任何东西。'
+    },
+    skills: { en: ['Fridge photos', 'Meal ideas', 'Shopping list'], zh: ['冰箱拍照', '菜品建议', '购物清单'] },
+    suggestions: [
+      { en: 'What can I cook tonight?', zh: '今晚我能做什么菜？' },
+      { en: 'Something quick, under 20 minutes', zh: '来个 20 分钟以内的快手菜' },
+      { en: 'What do I need for lasagna?', zh: '做千层面还缺什么？' },
+      { en: 'Show my kitchen', zh: '看看我的厨房' }
     ]
   },
   {

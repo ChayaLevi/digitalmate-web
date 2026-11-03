@@ -4,6 +4,7 @@ import { renderMarkdown } from '../../lib/markdown';
 import { Icon } from '../Icons';
 import { useI18n } from '../../i18n/I18nContext';
 import { renderEpicComponent } from './epicComponents';
+import { renderFridgeComponent } from './fridgeComponents';
 
 interface SurfaceProps {
   surface: A2uiSurface;
@@ -1033,6 +1034,9 @@ function renderComponent(component: A2uiComponent, ctx: RenderContext, key: stri
     case 'VideoPlayer':
     case 'ReplayList':
       return renderEpicComponent(component, ctx, key);
+
+    case 'RecipeOptions':
+      return renderFridgeComponent(component, ctx, key);
 
     case 'ThinkingStream': {
       const items = (resolvePath(surface.data, component.dataPath) ?? []) as Array<Record<string, string>>;

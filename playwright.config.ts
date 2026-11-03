@@ -31,7 +31,13 @@ export default defineConfig({
       timeout: 30_000
     },
     {
-      command: `EPIC_REPLAY_URL=http://127.0.0.1:18010 npm run dev -- --port ${port}`,
+      command: 'FAKE_F2T_PORT=18020 FAKE_F2T_DELAY_MS=200 node scripts/fake-fridge2table.mjs',
+      url: 'http://127.0.0.1:18020/health',
+      reuseExistingServer: false,
+      timeout: 30_000
+    },
+    {
+      command: `EPIC_REPLAY_URL=http://127.0.0.1:18010 FRIDGE2TABLE_URL=http://127.0.0.1:18020 npm run dev -- --port ${port}`,
       url: baseURL,
       reuseExistingServer: false,
       timeout: 120_000

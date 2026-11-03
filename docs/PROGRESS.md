@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T0.1 partial (only the 3 `epicVite` tests are left to confirm, see log)
-- **Next task:** T0.2
+- **Current task:** T0.2 done. T0.1 still partial (only the 3 `epicVite` tests are left to confirm)
+- **Next task:** T0.3
 - **Scenes working end to end:** none
-- **Blocked on:** nothing. T0.2 needs the PPMA clone at `../ppma`
-- **Last updated:** 2026-11-03, after T0.1
+- **Blocked on:** T0.3 needs the DeepSeek endpoint, key and model name
+- **Last updated:** 2026-11-03, after T0.2
 
 ## Task status
 
@@ -17,7 +17,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | Task | Name | Status | Note |
 | --- | --- | --- | --- |
 | T0.1 | Project setup | partial | All set up. `epicVite` (3 tests) not run: port 5173 was in use by a running dev server |
-| T0.2 | Spike: PPMA contract | not started |  |
+| T0.2 | Spike: PPMA contract | done | `scripts/ppma-smoke.sh` passes 21 checks against fake PPMA. Facts in `docs/homemind-spikes.md` |
 | T0.3 | Spike: PPMA with DeepSeek | not started |  |
 | T0.4 | Spike: images and two windows | not started |  |
 | T1.1 | Types, clock, store, seed | not started |  |
@@ -52,7 +52,8 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
-- None yet.
+- T0.2: the bridge needs both PPMA tokens. The app token posts events and reads the stream. The owner token is the only one allowed to read memory views and explain. Both stay server-side.
+- T0.2: Homemind keeps one long-lived PPMA stream and persists its last stream id, because every connect and disconnect adds a `ppma.app_stream_status` event to PPMA's memory.
 
 ## Deviations from the plan
 
@@ -66,12 +67,15 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 | `tests/epicVite.test.ts` needs port 5173 free: vite.config.ts sets `port: 5173, strictPort: true`, and the test's `port: 0` doesn't override it. A running `npm run dev` makes the suite fail. | T0.1 | Low | Stop the dev server before running `npm test`. |
 | Node here is v20.17.0. `@axe-core/playwright`, `@capacitor/cli` and `pdfjs-dist` want Node >=22.13 (EBADENGINE warnings). Tests, tsc and build still pass. | T0.1 | Low | Upgrade to Node 22 when convenient. The baseline was measured on Node 22. |
 | `npm ci` reports 6 vulnerabilities (5 moderate, 1 high) in existing dependencies. | T0.1 | Low | Existing before this work. Not touched (no dependency changes without asking). |
+| Fake PPMA issues no commands, so the `command.outcome` loop and PPMA proposals cannot be tested against it as is. | T0.2 | Medium, for T6.1 | Try `ppma serve --fake-script`, or write `scripts/fake-ppma.mjs` as the plan allows. |
+| Fake PPMA's memory entries hold the event type name, not the content. The demo's memory screen needs a real model. | T0.2 | Medium, for T6.2 | T0.3 checks a real model. |
+| `npm test` once failed all 20 files on the first cold run (the summary said "no tests"). The run right after gave the normal result. | T0.2 | Low | Rerun once before investigating. |
 | `docs/HOMEMIND_BUILD_PLAN.md` is untracked and looks like an older draft of `docs/PLAN.md`. | T0.1 | Low | Left uncommitted. The human decides whether to keep or delete it. |
 
 ## What needs the human
 
 - [ ] DeepSeek endpoint, key and exact model name, for T0.3 and T0.4
-- [ ] PPMA clone at `../ppma`, for T0.2
+- [x] PPMA clone at `../ppma`, for T0.2
 - [ ] A real 接龙 screenshot, if available, for T0.4
 - [ ] Huawei phone for a browser test, if available, for T9.2
 - [ ] Someone to review the Chinese text, for T9.2
@@ -86,7 +90,7 @@ Never put keys here.
 | Work branch | `feat/homemind` |
 | LLM mode | not set |
 | Model name | not set |
-| PPMA mode | not set |
+| PPMA mode | fake, strict auth, port 18765, for the smoke check only |
 | PPMA space | `me` |
 
 ## Known baseline
@@ -118,6 +122,25 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T0.2 Spike: PPMA contract: done (2026-11-03)
+**Built:** `scripts/ppma-smoke.sh`, which starts a throwaway fake PPMA from `../ppma` (strict auth, port 18765, random owner token), then registers the draft Homemind manifest, mints an app token, posts events, reads the stream with resume, reads memory views, posts a correction, calls explain, and revokes the token. 21 checks, PASS or FAIL, exit code 0 or 1. `--external` checks a running PPMA at `PPMA_URL`. `docs/homemind-spikes.md` holds the exact field names, the permission table and what the fake profile does.
+**Decisions:** The script defaults to starting its own server, because `--external` writes test events and rotates the app token, and port 8765 may be a real PPMA install with real data. It needs only bash, curl and node, so there is no `jq` or Python dependency. The draft manifest follows PLAN section 3, with no tool that sends or orders, and `responds_to_ppma: false` on `homemind.message_received`.
+**Deviations:** none from the plan. Extra checks beyond the plan: correction, explain, error cases and revocation.
+**Test results:**
+- `bash scripts/ppma-smoke.sh`: PASS, 21 checks, 70 s. The two failures in the first run were bugs in the script (curl writes no file when nothing arrives; a wrong argv index). PPMA was right both times.
+- Fail paths: `PPMA_DIR=/nonexistent` prints "no PPMA clone" and exits 1. `--external` with nothing listening prints "is PPMA running at ...?" and exits 1.
+- `npx tsc --noEmit`: clean. `npm test`: 19 of 20 files, 138 passed and 3 skipped, the same as the baseline (`epicVite`: port 5173 in use by the running dev server). The first `npm test` of the chat failed all 20 files once, before any change, and passed normally on rerun (see Open issues).
+- `../ppma`: `git status` clean after the work. `uv sync` created only its git-ignored `.venv`.
+**Not done or not verified:** the `command.outcome` loop, because fake PPMA issues no commands. `--auth dev` mode was not run, though the script detects it and skips the permission checks.
+**Next task should know:**
+- Owner token: `PPMA_OWNER_TOKEN`, else `~/.config/ppma/setup-token` (created on the first strict start).
+- `--inference record` refuses a cassette inside a git work tree unless `--synthetic` is passed. Keep cassettes outside this repo.
+- Cloud engines see `personal` events only with `--agent-clear personal`.
+**How to verify:**
+- Commands (Git Bash, from the repo root, with port 18765 free): `bash scripts/ppma-smoke.sh; echo $?`
+- Expected output: 21 lines starting with `PASS`, then `PASS: 21 checks`, then `0`. It takes about 1 to 2 minutes.
+- Manual check: run `PPMA_DIR=/nonexistent bash scripts/ppma-smoke.sh` and confirm a clear `FAIL: no PPMA clone` and exit code 1. Then open `docs/homemind-spikes.md` and compare one field list with `../ppma/contracts/src/ppma_contracts/manifest.py`.
 
 ### T0.1 Project setup: partial (2026-11-03)
 **Built:** `.homemind/` added to `.gitignore`. All Homemind and PPMA env vars from PLAN section 3 added to `.env.example`, commented out, with no values. `specs/004-homemind-a2ui/spec.md` written: a short summary that points to `docs/PLAN.md`. Also committed `CLAUDE.md`, `docs/PLAN.md` and `docs/PROGRESS.md`, so later chats share them.

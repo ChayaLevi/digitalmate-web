@@ -25,19 +25,22 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: 'FAKE_EPIC_PORT=18010 node scripts/fake-epic-replay.mjs',
+      command: 'node scripts/fake-epic-replay.mjs',
+      env: { FAKE_EPIC_PORT: '18010' },
       url: 'http://127.0.0.1:18010/styles',
       reuseExistingServer: false,
       timeout: 30_000
     },
     {
-      command: 'FAKE_F2T_PORT=18020 FAKE_F2T_DELAY_MS=200 node scripts/fake-fridge2table.mjs',
+      command: 'node scripts/fake-fridge2table.mjs',
+      env: { FAKE_F2T_PORT: '18020', FAKE_F2T_DELAY_MS: '200' },
       url: 'http://127.0.0.1:18020/health',
       reuseExistingServer: false,
       timeout: 30_000
     },
     {
-      command: `EPIC_REPLAY_URL=http://127.0.0.1:18010 FRIDGE2TABLE_URL=http://127.0.0.1:18020 npm run dev -- --port ${port}`,
+      command: `npm run dev -- --port ${port}`,
+      env: { EPIC_REPLAY_URL: 'http://127.0.0.1:18010', FRIDGE2TABLE_URL: 'http://127.0.0.1:18020' },
       url: baseURL,
       reuseExistingServer: false,
       timeout: 120_000

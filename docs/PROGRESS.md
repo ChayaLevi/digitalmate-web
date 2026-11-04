@@ -16,7 +16,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 
 | Task | Name | Status | Note |
 | --- | --- | --- | --- |
-| T0.1 | Project setup | done | Baseline recorded on Node 22.23.4. `epicVite` fails only in the full run, from a port race between two existing tests (Open issues) |
+| T0.1 | Project setup | done | Node 22.23.4. All green: 141 unit, 40 e2e, after two small test fixes |
 | T0.2 | Spike: PPMA contract | done | `scripts/ppma-smoke.sh` passes 21 checks against fake PPMA. Facts in `docs/homemind-spikes.md` |
 | T0.3 | Spike: PPMA with DeepSeek | not started |  |
 | T0.4 | Spike: images and two windows | not started |  |
@@ -57,14 +57,12 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 ## Deviations from the plan
 
-- T0.1: `npm run test:e2e` cannot start on Windows, so e2e ran through a temporary config instead (see Open issues and the T0.1 log).
+- T0.1: fixed two existing test problems, with the human's OK (2026-11-04). `playwright.config.ts` webServers now pass variables through `env` (works on Windows). `tests/epicVite.test.ts` adds `strictPort: false` (no port race).
 
 ## Open issues
 
 | Issue | Found in | Severity | Plan |
 | --- | --- | --- | --- |
-| `npm run test:e2e` fails on Windows: `playwright.config.ts` webServer commands use `VAR=x cmd`, which `cmd.exe` rejects ("'FAKE_EPIC_PORT' is not recognized"). | T0.1 | High: every UI task needs e2e | Proposed fix, waiting for the human's OK: move the variables into each webServer's `env: {...}` field. Until then, use the Windows config recipe in the T0.1 log. |
-| `tests/epicVite.test.ts` always fails in a full `npm test` with "Port 5173 is already in use", even with the port free. It passes alone (3/3). Cause: Vite treats `port: 0` as unset, so `epicVite` and `epicMediaStream` both start on 5173 in parallel. `epicMediaStream` sets `strictPort: false` and moves to another port. `epicVite` inherits `strictPort: true` from vite.config.ts and fails. (T0.1 first blamed the running dev server. That was wrong.) | T0.1 | Medium: `npm test` is never fully green | Proposed fix, waiting for the human's OK: add `strictPort: false` to the `server` options in `tests/epicVite.test.ts`, as `epicMediaStream` already does. Until then, confirm with `npx vitest run tests/epicVite.test.ts`. |
 | `npm ci` reports 5 vulnerabilities (4 moderate, 1 high) in existing dependencies (6 on Node 20). | T0.1 | Low | Existing before this work. Not touched (no dependency changes without asking). |
 | Fake PPMA issues no commands, so the `command.outcome` loop and PPMA proposals cannot be tested against it as is. | T0.2 | Medium, for T6.1 | Try `ppma serve --fake-script`, or write `scripts/fake-ppma.mjs` as the plan allows. |
 | Fake PPMA's memory entries hold the event type name, not the content. The demo's memory screen needs a real model. | T0.2 | Medium, for T6.2 | T0.3 checks a real model. |
@@ -93,7 +91,7 @@ Never put keys here.
 
 ## Known baseline
 
-Measured on 2026-11-03 on `feat/fridge2table`, before any Homemind work: `npm test` gave 141 passing tests in 20 files, and `tsc --noEmit` was clean on Node 22. `npm run test:e2e` was not run. Confirmed 2026-11-04 on Node 22.23.4 (Windows): tsc clean, build OK, e2e 40 passed (with a Windows-syntax config). `npm test`: 138 passed + 3 skipped of 141. The 3 are `epicVite`, from the port race in Open issues, and they pass alone.
+Measured on 2026-11-03 on `feat/fridge2table`, before any Homemind work: `npm test` gave 141 passing tests in 20 files, and `tsc --noEmit` was clean on Node 22. `npm run test:e2e` was not run. Since 2026-11-04 on Node 22.23.4 (Windows), after the two test fixes: `npm test` 141 passed in 20 files, tsc clean, build OK, `npm run test:e2e` 40 passed.
 
 ## Demo facts to say out loud
 
@@ -120,6 +118,18 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T0.1 Test fixes: done (2026-11-04)
+**Built:** with the human's OK, two fixes to existing tests. `playwright.config.ts`: the three webServers pass their variables in `env: {...}` instead of the `VAR=x cmd` prefix, so `npm run test:e2e` runs on Windows. `tests/epicVite.test.ts`: `strictPort: false`, like `epicMediaStream`, which ends the race for port 5173.
+**Decisions:** none beyond the fixes.
+**Deviations:** none. The temporary Windows config recipe in the T0.1 log is no longer needed.
+**Test results:** `npm test`: 20 files, 141 passed. `npx tsc --noEmit`: clean. `npm run test:e2e`: 40 passed, 4.1 min.
+**Not done or not verified:** CI on Linux was not run. `env` is standard Playwright behavior, merged over `process.env`.
+**Next task should know:** `npm test` and `npm run test:e2e` run as is on this Windows machine.
+**How to verify:**
+- Commands: `npm test` · `npm run test:e2e`
+- Expected output: `Tests 141 passed (141)` · `40 passed`
+- Manual check: run `npm test` while `npm run dev` is running. It still passes.
 
 ### T0.1 Project setup, follow-up: done (2026-11-04)
 **Built:** no code. Node upgraded from 20.17.0 to 22.23.4 with `winget install OpenJS.NodeJS.22`, at the human's request, then `npm ci`. Deleted the untracked `docs/HOMEMIND_BUILD_PLAN.md`, at the human's request.

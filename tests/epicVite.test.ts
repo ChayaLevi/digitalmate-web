@@ -36,7 +36,7 @@ beforeAll(async () => {
       hasErrorLogged: () => false,
       hasWarned: false
     },
-    server: { port: 0, host: '127.0.0.1', hmr: false }
+    server: { port: 0, strictPort: false, host: '127.0.0.1', hmr: false }
   });
   await vite.listen();
   base = `http://127.0.0.1:${vite.config.server.port ?? (vite.httpServer?.address() as { port: number }).port}`;

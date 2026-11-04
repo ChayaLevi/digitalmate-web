@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T0.2 done. T0.1 still partial (only the 3 `epicVite` tests are left to confirm)
+- **Current task:** T0.1 and T0.2 done. Node upgraded to 22.23.4
 - **Next task:** T0.3
 - **Scenes working end to end:** none
 - **Blocked on:** T0.3 needs the DeepSeek endpoint, key and model name
-- **Last updated:** 2026-11-03, after T0.2
+- **Last updated:** 2026-11-04, after the T0.1 follow-up
 
 ## Task status
 
@@ -16,7 +16,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 
 | Task | Name | Status | Note |
 | --- | --- | --- | --- |
-| T0.1 | Project setup | partial | All set up. `epicVite` (3 tests) not run: port 5173 was in use by a running dev server |
+| T0.1 | Project setup | done | Baseline recorded on Node 22.23.4. `epicVite` fails only in the full run, from a port race between two existing tests (Open issues) |
 | T0.2 | Spike: PPMA contract | done | `scripts/ppma-smoke.sh` passes 21 checks against fake PPMA. Facts in `docs/homemind-spikes.md` |
 | T0.3 | Spike: PPMA with DeepSeek | not started |  |
 | T0.4 | Spike: images and two windows | not started |  |
@@ -64,13 +64,11 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 | Issue | Found in | Severity | Plan |
 | --- | --- | --- | --- |
 | `npm run test:e2e` fails on Windows: `playwright.config.ts` webServer commands use `VAR=x cmd`, which `cmd.exe` rejects ("'FAKE_EPIC_PORT' is not recognized"). | T0.1 | High: every UI task needs e2e | Proposed fix, waiting for the human's OK: move the variables into each webServer's `env: {...}` field. Until then, use the Windows config recipe in the T0.1 log. |
-| `tests/epicVite.test.ts` needs port 5173 free: vite.config.ts sets `port: 5173, strictPort: true`, and the test's `port: 0` doesn't override it. A running `npm run dev` makes the suite fail. | T0.1 | Low | Stop the dev server before running `npm test`. |
-| Node here is v20.17.0. `@axe-core/playwright`, `@capacitor/cli` and `pdfjs-dist` want Node >=22.13 (EBADENGINE warnings). Tests, tsc and build still pass. | T0.1 | Low | Upgrade to Node 22 when convenient. The baseline was measured on Node 22. |
-| `npm ci` reports 6 vulnerabilities (5 moderate, 1 high) in existing dependencies. | T0.1 | Low | Existing before this work. Not touched (no dependency changes without asking). |
+| `tests/epicVite.test.ts` always fails in a full `npm test` with "Port 5173 is already in use", even with the port free. It passes alone (3/3). Cause: Vite treats `port: 0` as unset, so `epicVite` and `epicMediaStream` both start on 5173 in parallel. `epicMediaStream` sets `strictPort: false` and moves to another port. `epicVite` inherits `strictPort: true` from vite.config.ts and fails. (T0.1 first blamed the running dev server. That was wrong.) | T0.1 | Medium: `npm test` is never fully green | Proposed fix, waiting for the human's OK: add `strictPort: false` to the `server` options in `tests/epicVite.test.ts`, as `epicMediaStream` already does. Until then, confirm with `npx vitest run tests/epicVite.test.ts`. |
+| `npm ci` reports 5 vulnerabilities (4 moderate, 1 high) in existing dependencies (6 on Node 20). | T0.1 | Low | Existing before this work. Not touched (no dependency changes without asking). |
 | Fake PPMA issues no commands, so the `command.outcome` loop and PPMA proposals cannot be tested against it as is. | T0.2 | Medium, for T6.1 | Try `ppma serve --fake-script`, or write `scripts/fake-ppma.mjs` as the plan allows. |
 | Fake PPMA's memory entries hold the event type name, not the content. The demo's memory screen needs a real model. | T0.2 | Medium, for T6.2 | T0.3 checks a real model. |
 | `npm test` once failed all 20 files on the first cold run (the summary said "no tests"). The run right after gave the normal result. | T0.2 | Low | Rerun once before investigating. |
-| `docs/HOMEMIND_BUILD_PLAN.md` is untracked and looks like an older draft of `docs/PLAN.md`. | T0.1 | Low | Left uncommitted. The human decides whether to keep or delete it. |
 
 ## What needs the human
 
@@ -95,7 +93,7 @@ Never put keys here.
 
 ## Known baseline
 
-Measured on 2026-11-03 on `feat/fridge2table`, before any Homemind work: `npm test` gave 141 passing tests in 20 files, and `tsc --noEmit` was clean on Node 22. `npm run test:e2e` was not run. T0.1 confirmed these on Node 20.17 (Windows), except `epicVite` (port in use). e2e: 40 passed, using a Windows-syntax config.
+Measured on 2026-11-03 on `feat/fridge2table`, before any Homemind work: `npm test` gave 141 passing tests in 20 files, and `tsc --noEmit` was clean on Node 22. `npm run test:e2e` was not run. Confirmed 2026-11-04 on Node 22.23.4 (Windows): tsc clean, build OK, e2e 40 passed (with a Windows-syntax config). `npm test`: 138 passed + 3 skipped of 141. The 3 are `epicVite`, from the port race in Open issues, and they pass alone.
 
 ## Demo facts to say out loud
 
@@ -122,6 +120,22 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T0.1 Project setup, follow-up: done (2026-11-04)
+**Built:** no code. Node upgraded from 20.17.0 to 22.23.4 with `winget install OpenJS.NodeJS.22`, at the human's request, then `npm ci`. Deleted the untracked `docs/HOMEMIND_BUILD_PLAN.md`, at the human's request.
+**Decisions:** Node 22, not the LTS 26: it is the version the baseline was measured on, and it satisfies `>=22.13`.
+**Deviations:** none.
+**Test results:** Node 22.23.4:
+- `npm ci`: no EBADENGINE warnings. 5 audit findings.
+- `npm test`: 138 passed + 3 skipped of 141, twice. Port 5173 was free. `npx vitest run tests/epicVite.test.ts`: 3 passed.
+- `npx tsc --noEmit`: clean. `npm run build`: OK.
+- e2e (Windows config): 40 passed, 3.6 min.
+**Not done or not verified:** the two proposed fixes (e2e `env`, `epicVite` `strictPort`) wait for the human's OK.
+**Next task should know:** the real cause of the `epicVite` failure is the port race (Open issues). A running dev server is not the cause.
+**How to verify:**
+- Commands: `node -v` · `npm test` · `npx vitest run tests/epicVite.test.ts`
+- Expected output: `v22.23.4`. 19 of 20 files pass, and only `epicVite` fails ("Port 5173 is already in use"). Alone: 3 passed.
+- Manual check: `npm ci` prints no `EBADENGINE`.
 
 ### T0.2 Spike: PPMA contract: done (2026-11-03)
 **Built:** `scripts/ppma-smoke.sh`, which starts a throwaway fake PPMA from `../ppma` (strict auth, port 18765, random owner token), then registers the draft Homemind manifest, mints an app token, posts events, reads the stream with resume, reads memory views, posts a correction, calls explain, and revokes the token. 21 checks, PASS or FAIL, exit code 0 or 1. `--external` checks a running PPMA at `PPMA_URL`. `docs/homemind-spikes.md` holds the exact field names, the permission table and what the fake profile does.

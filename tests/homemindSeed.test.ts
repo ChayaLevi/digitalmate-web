@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { localParts } from '../server/homemind/clock';
-import { DEFAULT_TIMEZONE, seedState } from '../server/homemind/seed';
+import { machineTimezone, seedState } from '../server/homemind/seed';
 import { ID_PATTERN } from '../server/homemind/types';
 
 const NOW = Date.UTC(2026, 10, 4, 2, 0); // Wednesday 10:00 in Asia/Shanghai
 const HOUR = 3_600_000;
+const TZ = 'Asia/Shanghai'; // explicit, so the tests do not depend on the machine's zone
 
 describe('seed', () => {
-  const state = seedState({ now: NOW });
+  const state = seedState({ now: NOW, timezone: TZ });
   const byId = new Map(state.items.map(item => [item.id, item]));
   const memberIds = new Set(state.family.members.map(m => m.id));
 
@@ -18,10 +19,15 @@ describe('seed', () => {
       ['maya', 'teen', 15, true],
       ['noa', 'child', 5, false]
     ]);
-    expect(state.family.timezone).toBe(DEFAULT_TIMEZONE);
+    expect(state.family.timezone).toBe(TZ);
     expect(state.family.autonomy.default).toBe(3);
     expect(state.family.paused).toBe(false);
     for (const m of state.family.members) expect(m.nameZh).toBeTruthy();
+  });
+
+  it("uses the machine's time zone when none is given", () => {
+    expect(seedState({ now: NOW }).family.timezone).toBe(machineTimezone());
+    expect(machineTimezone()).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
   });
 
   it('labels the backup contact as simulated', () => {
@@ -57,13 +63,13 @@ describe('seed', () => {
     expect(pickup.ownership).toEqual({ state: 'none' });
     expect(start - NOW).toBeGreaterThanOrEqual(2 * HOUR);
     expect(start - NOW).toBeLessThan(2.5 * HOUR);
-    expect(localParts(start, DEFAULT_TIMEZONE).date).toBe('2026-11-04');
+    expect(localParts(start, TZ).date).toBe('2026-11-04');
   });
 
   it("gives Mom next Tuesday's pickup, for the wedding conflict (Scene 4)", () => {
     const tuesday = byId.get('pickup-tuesday')!;
     expect(tuesday.ownership).toEqual({ state: 'assigned', ownerId: 'mom', confirmed: true });
-    expect(localParts(Date.parse(tuesday.start!), DEFAULT_TIMEZONE)).toEqual({ date: '2026-11-10', time: '16:30', weekday: 2 });
+    expect(localParts(Date.parse(tuesday.start!), TZ)).toEqual({ date: '2026-11-10', time: '16:30', weekday: 2 });
   });
 
   it('has one Parents-only, sensitive item, and everything else is family-visible', () => {
@@ -97,7 +103,7 @@ describe('seed', () => {
   });
 
   it('is deterministic for the same time, and follows the time zone', () => {
-    expect(seedState({ now: NOW })).toEqual(state);
+    expect(seedState({ now: NOW, timezone: TZ })).toEqual(state);
     const jerusalem = seedState({ now: NOW, timezone: 'Asia/Jerusalem' });
     const piano = jerusalem.items.find(i => i.id === 'piano-tomorrow')!;
     expect(localParts(Date.parse(piano.start!), 'Asia/Jerusalem')).toMatchObject({ date: '2026-11-05', time: '17:00' });
@@ -105,8 +111,8 @@ describe('seed', () => {
 
   it('never schedules next Tuesday for today, even when today is Tuesday', () => {
     const tuesdayMorning = Date.UTC(2026, 10, 10, 1, 0); // Tue 2026-11-10 09:00 Shanghai
-    const s = seedState({ now: tuesdayMorning });
+    const s = seedState({ now: tuesdayMorning, timezone: TZ });
     const start = s.items.find(i => i.id === 'pickup-tuesday')!.start!;
-    expect(localParts(Date.parse(start), DEFAULT_TIMEZONE).date).toBe('2026-11-17');
+    expect(localParts(Date.parse(start), TZ).date).toBe('2026-11-17');
   });
 });

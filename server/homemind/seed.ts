@@ -14,11 +14,15 @@ import { addDays, localParts, toIso, zonedToUtc } from './clock';
 import { STATE_SCHEMA_VERSION } from './types';
 import type { Family, HomemindState, Item, Preference, Rule } from './types';
 
-export const DEFAULT_TIMEZONE = 'Asia/Shanghai';
+/** The demo family lives in the zone of the machine running the bridge, so the board matches its clock. */
+export function machineTimezone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+}
 
 export interface SeedOptions {
   /** Demo time in ms (the clock's `now()`). */
   now: number;
+  /** IANA zone. Defaults to the machine's zone. */
   timezone?: string;
   /** Real time in ms, recorded as `seededAt`. Defaults to `now`. */
   realNow?: number;
@@ -207,7 +211,7 @@ function seedRules(): Rule[] {
 }
 
 export function seedState(options: SeedOptions): HomemindState {
-  const timezone = options.timezone ?? DEFAULT_TIMEZONE;
+  const timezone = options.timezone ?? machineTimezone();
   return {
     schemaVersion: STATE_SCHEMA_VERSION,
     family: seedFamily(timezone),

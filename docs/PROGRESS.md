@@ -20,7 +20,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T0.2 | Spike: PPMA contract | done | `scripts/ppma-smoke.sh` passes 21 checks against fake PPMA. Facts in `docs/homemind-spikes.md` |
 | T0.3 | Spike: PPMA with DeepSeek | done | Flash: memory and commands in about 16 s. Replay through `ppma serve` always misses, so it is not usable on stage. Results in `docs/homemind-spikes.md` |
 | T0.4 | Spike: images and two windows | done | Flash read the simulated 接龙 screenshot: 7/7 facts, 3 of 3 runs, about 3 s with reasoning off. `sessionStorage` separates windows. 8/8 checks |
-| T1.1 | Types, clock, store, seed | done | `server/homemind/{types,clock,store,seed}.ts`, 4 test files, 41 tests. 182 of 182 in all |
+| T1.1 | Types, clock, store, seed | done | `server/homemind/{types,clock,store,seed}.ts`, 4 test files, 42 tests. 183 of 183 in all. Zone = machine's; tsc covers the core |
 | T1.2 | Item state transitions | not started |  |
 | T1.3 | Visibility and availability | not started |  |
 | T2.1 | Routes and identity | not started |  |
@@ -52,7 +52,8 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
-- T1.1: times in state are ISO strings in UTC. The family's time zone (seed default `Asia/Shanghai`) is used only to seed and display. **The human should confirm the zone** for the demo machine (see Open issues).
+- T1.1: times in state are ISO strings in UTC. The family's time zone is used only to seed and display. **The human chose (2026-11-04): the zone of the machine running the bridge** (`machineTimezone()` in `seed.ts`), so the board matches the clock on screen. It is written into the state at seed time; a reset picks up a new zone. Tests pass `Asia/Shanghai` explicitly.
+- T1.1: `tsconfig.json` now includes `server/homemind`, with the human's OK (2026-11-04), so `npx tsc --noEmit` checks the core.
 - T1.1: the demo clock offset is persisted in the state file (`clockOffsetMs`), so a bridge restart keeps the jumped time. Reset sets it to 0. The offset only moves forward.
 - T1.1: seeded items, members, preferences and rules carry an optional `titleZh` / `nameZh` / `textZh` / `reasonZh`, so the demo board reads in both languages. User-entered items stay in one language.
 - T1.1: an unreadable or wrong-schema state file is moved aside to `<file>.unreadable-<ms>`, never deleted, and the seed is used. `load()` reports `source: 'recovered'`.
@@ -80,8 +81,7 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 | PPMA `--inference replay` always misses: every ask has a `NOW` block with the wall-clock time, and `ppma serve` cannot fix the clock. | T0.3 | Medium, for T6.1 and T9 | Use live Flash on stage. Optionally, Homemind saves good PPMA commands and offers them, labelled, when PPMA is offline. A PPMA clock option needs the human's OK. |
 | PPMA withholds `command.outcome` from the cloud model (no sensitivity label, so treated as health and financial). | T0.3 | Low | Outcomes are still recorded. Do not widen clearances. |
 | PPMA command times come in UTC (`+00:00`). | T0.3 | Medium, for T6.2 | Convert to the family's time zone. Check the demo machine's zone. |
-| `npx tsc --noEmit` checks only `src/` (`tsconfig.json` includes only `src`), so `server/` is not type-checked by it. | T1.1 | Medium | Until the client imports `server/homemind/types.ts`, check the core by hand (command in the T1.1 log). Adding `server/homemind` to `include` is a one-line config change; ask the human. |
-| Seed time zone `Asia/Shanghai` is a guess. | T1.1 | Low | Confirm with the human. `seedState({ timezone })` takes any IANA zone. |
+| `npx tsc --noEmit` still does not check `server/*.ts` outside `server/homemind/` (for example the future `server/homemind.ts` adapter), nor `services/` or `vite.config.ts`. | T1.1 | Low | Existing setup. The adapter is covered by bridge tests. Widening `include` further needs the human's OK. |
 | `npm test` sometimes fails all 20 files on the first cold run (the summary said "no tests"). The run right after gives the normal result. Seen in T0.2 (Node 20) and T0.3 (Node 22). | T0.2 | Low | Rerun once before investigating. The error was not captured. |
 
 ## What needs the human
@@ -156,14 +156,15 @@ Template (copy for each task):
 - `npx tsc --noEmit`: clean. It does not cover `server/` (Open issues), so also: `npx tsc --noEmit --strict --target ES2022 --module ESNext --moduleResolution Bundler --allowImportingTsExtensions --skipLibCheck --types node server/homemind/*.ts tests/homemind*.test.ts`: clean.
 - No UI or route change, so e2e was not run. Not the end of a phase.
 **Not done or not verified:** nothing uses the store yet (T2.1 wires it). Behavior under a real Windows file lock was not reproduced; the rename retry is untested.
+**Follow-up, same day (the human's answers):** (1) `tsconfig.json` `include` is now `["src", "server/homemind"]`; checked by mutation (a temporary file with a type error made `tsc` fail, then removed). (2) The seed's default zone is the machine's (`machineTimezone()`, here `Asia/Jerusalem`); `DEFAULT_TIMEZONE` was removed and the seed tests pass `Asia/Shanghai` explicitly, plus one new test for the default. Results: `npx tsc --noEmit` clean, `npm run build` OK, `npm test` 183 of 183 in 4 runs in a row. One earlier run had "1 failed, 174 passed, 9 skipped"; I did not capture which file and could not reproduce it in the 4 runs after. It is probably the known cold-run flake (Open issues), but that is not confirmed.
 **Next task should know:**
 - `applyChange` (T1.2) should take `Clock` from `clock.ts` and `HomemindState` from `types.ts`. `Activity.undo` is `{ itemId, before }`; change it if T1.2 needs more.
 - The bridge (T2.1) should build the clock as `createDemoClock(Date.now, state.clockOffsetMs)`, write `clockOffsetMs` back after a jump, and seed with `seedState({ now: Date.now() })` on reset (offset 0).
 - Seed item ids are fixed (`pickup-today`, `pickup-tuesday`, `counselor-meeting`, ...), so tests and later scenes can refer to them.
 **How to verify:**
 - Commands: `npx vitest run tests/homemind` · `npm test` · `npx tsc --noEmit`
-- Expected output: `Test Files  4 passed (4)` and `Tests  41 passed (41)`. Then `Tests  182 passed (182)`. tsc prints nothing.
-- Manual check: run `npx tsx -e "import('./server/homemind/seed.ts').then(m => console.log(JSON.stringify(m.seedState({ now: Date.now() }).items.map(i => [i.id, i.start]), null, 1)))"` and confirm `pickup-today` is about 2 hours from now in UTC, and `pickup-tuesday` is next Tuesday at 08:30 UTC (16:30 in Shanghai).
+- Expected output: `Test Files  4 passed (4)` and `Tests  42 passed (42)`. Then `Tests  183 passed (183)`. tsc prints nothing (it now covers `server/homemind`).
+- Manual check: run `npx tsx -e "import('./server/homemind/seed.ts').then(m => console.log(JSON.stringify(m.seedState({ now: Date.now() }).items.map(i => [i.id, i.start]), null, 1)))"` and confirm `pickup-today` is about 2 hours from now in UTC, and `pickup-tuesday` is next Tuesday at 16:30 in this machine's zone (14:30 UTC in Israel in winter).
 
 ### T0.1 Test fixes: done (2026-11-04)
 **Built:** with the human's OK, two fixes to existing tests. `playwright.config.ts`: the three webServers pass their variables in `env: {...}` instead of the `VAR=x cmd` prefix, so `npm run test:e2e` runs on Windows. `tests/epicVite.test.ts`: `strictPort: false`, like `epicMediaStream`, which ends the race for port 5173.

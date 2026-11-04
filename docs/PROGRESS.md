@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T0.1 and T0.2 done. Node upgraded to 22.23.4
-- **Next task:** T0.3
+- **Current task:** T0.3 in progress, blocked. T0.1 and T0.2 done
+- **Next task:** T0.3 (resume), then T0.4
 - **Scenes working end to end:** none
-- **Blocked on:** T0.3 needs the DeepSeek endpoint, key and model name
-- **Last updated:** 2026-11-04, after the T0.1 follow-up
+- **Blocked on:** the DeepSeek account has no balance. Every chat call returns `402 Insufficient Balance`
+- **Last updated:** 2026-11-04, during T0.3
 
 ## Task status
 
@@ -18,7 +18,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | --- | --- | --- | --- |
 | T0.1 | Project setup | done | Node 22.23.4. All green: 141 unit, 40 e2e, after two small test fixes |
 | T0.2 | Spike: PPMA contract | done | `scripts/ppma-smoke.sh` passes 21 checks against fake PPMA. Facts in `docs/homemind-spikes.md` |
-| T0.3 | Spike: PPMA with DeepSeek | not started |  |
+| T0.3 | Spike: PPMA with DeepSeek | in progress | Blocked: DeepSeek `402 Insufficient Balance`. Script ready: `scripts/ppma-model-spike.mjs` |
 | T0.4 | Spike: images and two windows | not started |  |
 | T1.1 | Types, clock, store, seed | not started |  |
 | T1.2 | Item state transitions | not started |  |
@@ -53,6 +53,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 - T0.2: the bridge needs both PPMA tokens. The app token posts events and reads the stream. The owner token is the only one allowed to read memory views and explain. Both stay server-side.
+- T0.3: the human approved measuring both `deepseek-flash` and `deepseek-v4-pro` (the endpoint lists both) and then choosing. CLAUDE.md says Flash, and `.env.local` currently says `deepseek-v4-pro`. The model is not chosen yet.
 - T0.2: Homemind keeps one long-lived PPMA stream and persists its last stream id, because every connect and disconnect adds a `ppma.app_stream_status` event to PPMA's memory.
 
 ## Deviations from the plan
@@ -66,11 +67,13 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 | `npm ci` reports 5 vulnerabilities (4 moderate, 1 high) in existing dependencies (6 on Node 20). | T0.1 | Low | Existing before this work. Not touched (no dependency changes without asking). |
 | Fake PPMA issues no commands, so the `command.outcome` loop and PPMA proposals cannot be tested against it as is. | T0.2 | Medium, for T6.1 | Try `ppma serve --fake-script`, or write `scripts/fake-ppma.mjs` as the plan allows. |
 | Fake PPMA's memory entries hold the event type name, not the content. The demo's memory screen needs a real model. | T0.2 | Medium, for T6.2 | T0.3 checks a real model. |
+| DeepSeek account has no balance: `GET /models` works with the key, but every `/chat/completions` returns `402 Insufficient Balance`. | T0.3 | High: blocks T0.3, T0.4 and every live-model task | The human tops up the account. Until then, `HOMEMIND_LLM=fake` work can continue. |
 | `npm test` once failed all 20 files on the first cold run (the summary said "no tests"). The run right after gave the normal result. | T0.2 | Low | Rerun once before investigating. |
 
 ## What needs the human
 
-- [ ] DeepSeek endpoint, key and exact model name, for T0.3 and T0.4
+- [x] DeepSeek endpoint, key and model names (in `.env.local`), for T0.3 and T0.4
+- [ ] **Top up the DeepSeek account balance** (402 Insufficient Balance), for T0.3 and T0.4
 - [x] PPMA clone at `../ppma`, for T0.2
 - [ ] A real 接龙 screenshot, if available, for T0.4
 - [ ] Huawei phone for a browser test, if available, for T9.2
@@ -84,8 +87,8 @@ Never put keys here.
 | --- | --- |
 | Base branch | `feat/fridge2table` |
 | Work branch | `feat/homemind` |
-| LLM mode | not set |
-| Model name | not set |
+| LLM mode | live in `.env.local`, but the account has no balance |
+| Model name | not chosen: `deepseek-flash` vs `deepseek-v4-pro`, to be measured in T0.3 |
 | PPMA mode | fake, strict auth, port 18765, for the smoke check only |
 | PPMA space | `me` |
 
@@ -146,6 +149,18 @@ Template (copy for each task):
 - Commands: `node -v` · `npm test` · `npx vitest run tests/epicVite.test.ts`
 - Expected output: `v22.23.4`. 19 of 20 files pass, and only `epicVite` fails ("Port 5173 is already in use"). Alone: 3 passed.
 - Manual check: `npm ci` prints no `EBADENGINE`.
+
+### T0.3 Spike: PPMA with DeepSeek: in progress, blocked (2026-11-04)
+**Built:** `scripts/ppma-model-spike.mjs`: starts PPMA (`--profile fake`, in memory; `--agent openai`, `--agent-clear personal`, strict auth, port 18766) with `PPMA_LLM_*` taken from `.env.local`, never printing the key. It posts the kindergarten message as `homemind.message_received` (fixed id and time, so a replay sees the same input), answers any command, waits for PPMA to go idle, and reports memory statements, commands, model asks, calls, tokens, latency and failures. Supports `--inference record|replay --cassette`. The manifest moved to `scripts/ppma-homemind-manifest.json`, shared with `ppma-smoke.sh`. Committed in `23c922f`.
+**Decisions:** `--profile fake` with `--agent openai`, so nothing goes into `~/.local/share/ppma`. Measure both models before choosing (the human approved).
+**Deviations:** none.
+**Test results:** `GET /models` returns 200 and lists `deepseek-flash` and `deepseek-v4-pro`. Five tiny direct `/chat/completions` probes all return `402 Insufficient Balance`. One spike run: PPMA's first ask (`ingest.gate`) failed with `PermanentInferenceError` after 2 s, so there were no memory entries and no commands. The script now reports that as FAIL with exit code 1, which I checked. `bash scripts/ppma-smoke.sh` still passes 21 checks after the manifest move.
+**Not done or not verified:** everything that needs model answers: memory content, commands, latency, call counts, record and replay, and the Flash versus Pro comparison.
+**Next task should know:** after the top-up, run `node scripts/ppma-model-spike.mjs --model deepseek-flash`, then `--model deepseek-v4-pro`. Record with `--inference record --cassette <path outside the repo>` and replay with `--inference replay --cassette <same path>`. PPMA logs only the error class, not the HTTP body, so check a failure with a direct probe.
+**How to verify:**
+- Commands: `node scripts/ppma-model-spike.mjs --model deepseek-flash --wait 120; echo $?`
+- Expected output now: `FAIL: 1 model call(s) failed` and `1`. After the top-up: `PASS: the model answered every ask` and `0`.
+- Manual check: on the DeepSeek platform, the balance page shows the account at 0.
 
 ### T0.2 Spike: PPMA contract: done (2026-11-03)
 **Built:** `scripts/ppma-smoke.sh`, which starts a throwaway fake PPMA from `../ppma` (strict auth, port 18765, random owner token), then registers the draft Homemind manifest, mints an app token, posts events, reads the stream with resume, reads memory views, posts a correction, calls explain, and revokes the token. 21 checks, PASS or FAIL, exit code 0 or 1. `--external` checks a running PPMA at `PPMA_URL`. `docs/homemind-spikes.md` holds the exact field names, the permission table and what the fake profile does.

@@ -51,7 +51,13 @@ export type ItemType = 'event' | 'preparation' | 'task';
 
 export type Ownership =
   | { state: 'none' }
-  | { state: 'open'; candidateIds: string[] }
+  | {
+      state: 'open';
+      candidateIds: string[];
+      /** Set when the owner handed it back. The note is theirs, shown as written. */
+      handedBackBy?: string;
+      note?: string;
+    }
   | { state: 'assigned'; ownerId: string; confirmed: boolean };
 
 /** Weekly repetition. `exceptions` holds local dates (`YYYY-MM-DD`) of cancelled occurrences. */
@@ -159,19 +165,52 @@ export interface ActionCard {
   whyId: string;
 }
 
-/** Enough to restore an item to how it was before a change. `before: null` means it did not exist. */
-export interface UndoPatch {
+/** One item as it was before a change. `before: null` means it did not exist. */
+export interface UndoEntry {
   itemId: string;
   before: Item | null;
+  /** The item's version right after the change. Undo refuses if it has moved on since. */
+  afterVersion: number;
 }
+
+/** Enough to restore every item a change touched (cancelling an event also cancels its preparations). */
+export interface UndoPatch {
+  items: UndoEntry[];
+}
+
+export type ActivityKind =
+  | 'create'
+  | 'edit'
+  | 'assign'
+  | 'open'
+  | 'unassign'
+  | 'claim'
+  | 'confirm'
+  | 'handback'
+  | 'done'
+  | 'cancel'
+  | 'cancel_occurrence'
+  | 'approve'
+  | 'dismiss'
+  | 'undo';
 
 export interface Activity {
   id: string;
   at: string;
   actor: string;
+  /** Short neutral English summary, for logs. Screens render from `kind` and the fields below. */
   what: string;
+  kind?: ActivityKind;
+  itemId?: string;
+  /** The member the change names: the new owner, or who handed it back. */
+  memberId?: string;
+  note?: string;
+  /** For `cancel_occurrence`: the local date. For `undo`: the activity that was undone. */
+  ref?: string;
   whyId?: string;
   undo?: UndoPatch;
+  /** Set once the change has been undone, so it can't be undone twice. */
+  undone?: { at: string; by: string; activityId: string };
 }
 
 export interface Why {

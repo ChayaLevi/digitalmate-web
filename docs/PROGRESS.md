@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T1.1 done (types, clock, store, seed)
-- **Next task:** T1.2 (item state transitions)
+- **Current task:** T1.2 done (item state transitions)
+- **Next task:** T1.3 (visibility and availability)
 - **Scenes working end to end:** none
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-04, after T1.1
+- **Last updated:** 2026-11-04, after T1.2
 
 ## Task status
 
@@ -21,7 +21,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T0.3 | Spike: PPMA with DeepSeek | done | Flash: memory and commands in about 16 s. Replay through `ppma serve` always misses, so it is not usable on stage. Results in `docs/homemind-spikes.md` |
 | T0.4 | Spike: images and two windows | done | Flash read the simulated 接龙 screenshot: 7/7 facts, 3 of 3 runs, about 3 s with reasoning off. `sessionStorage` separates windows. 8/8 checks |
 | T1.1 | Types, clock, store, seed | done | `server/homemind/{types,clock,store,seed}.ts`, 4 test files, 42 tests. 183 of 183 in all. Zone = machine's; tsc covers the core |
-| T1.2 | Item state transitions | not started |  |
+| T1.2 | Item state transitions | done | `server/homemind/core.ts`, 60 tests in `tests/homemindCore.test.ts`. 243 of 243 in all |
 | T1.3 | Visibility and availability | not started |  |
 | T2.1 | Routes and identity | not started |  |
 | T2.2 | Surface builders | not started |  |
@@ -52,6 +52,13 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
+- T1.2: every change on an existing item must carry `version`, including the verbs (assign, claim, done...), not only PATCH. A wrong version gives `409 stale` with the current item. Undo needs no version: it checks that each item it touched is still at the version the change left it at.
+- T1.2: a non-parent gets the same `404` for a "Parents only" item as for a missing one, for every change and for undo, even with a wrong version. Only parents can own one or be its candidates. A preparation is as private as its event, and follows it when the event's visibility changes.
+- T1.2: only members with an account can act or own an item (so not Noa). A claim on an item someone else owns is refused (`409 conflict`), so two "I'll take it" taps can't both win. Reassigning is `assign`.
+- T1.2: "Remove" is `cancel` (status `cancelled`, kept for Undo). Cancelling an event also cancels its preparations, and one Undo restores them all. Undoing a create removes the item, unless a preparation was added under it since.
+- T1.2: a recurring item can't be marked done as a whole. One occurrence is cancelled with `cancel_occurrence` (a local date in `recurrence.exceptions`). `occurrences()` expands weekly items at the same local time, across daylight-saving changes.
+- T1.2: items from `screenshot`, `email`, `group` and `ppma` sources are always created as `proposed`, whatever the caller asks.
+- T1.2: `Activity.what` is short neutral English with no item title (the board looks up the item). Screens use `kind`, `itemId`, `memberId`, `note`, `ref`.
 - T1.1: times in state are ISO strings in UTC. The family's time zone is used only to seed and display. **The human chose (2026-11-04): the zone of the machine running the bridge** (`machineTimezone()` in `seed.ts`), so the board matches the clock on screen. It is written into the state at seed time; a reset picks up a new zone. Tests pass `Asia/Shanghai` explicitly.
 - T1.1: `tsconfig.json` now includes `server/homemind`, with the human's OK (2026-11-04), so `npx tsc --noEmit` checks the core.
 - T1.1: the demo clock offset is persisted in the state file (`clockOffsetMs`), so a bridge restart keeps the jumped time. Reset sets it to 0. The offset only moves forward.
@@ -69,6 +76,8 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 ## Deviations from the plan
 
+- T1.2: changed T1.1 types, as T1.1 allowed. `UndoPatch` is now `{ items: UndoEntry[] }` (one change can touch several items), with `afterVersion` per item. `Activity` gained `kind`, `itemId`, `memberId`, `note`, `ref`, `undone`. `Ownership` `open` gained optional `handedBackBy` and `note`. Nothing stored used the old shapes (activity was always empty).
+- T1.2: the plan's verbs `ack` and `snooze` belong to reminders (T4.1). The core has `confirm` for "I'm on it" on an assignment; the bridge can map `ack` to it. Added `open`, `unassign`, `cancel`, `cancel_occurrence`, which the plan's verb list does not name.
 - T0.1: fixed two existing test problems, with the human's OK (2026-11-04). `playwright.config.ts` webServers now pass variables through `env` (works on Windows). `tests/epicVite.test.ts` adds `strictPort: false` (no port race).
 
 ## Open issues
@@ -139,6 +148,29 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T1.2 Item state transitions: done (2026-11-04)
+**Built:**
+- `server/homemind/core.ts`: `applyChange(state, change, actor, clock)` for `create`, `edit`, `assign`, `open` ("Who's taking this?"), `unassign`, `claim`, `confirm`, `handback` (with note), `done`, `cancel`, `cancel_occurrence`, `approve`, `dismiss`, `undo`. It returns `{ ok: true, state, activity, items, events }` or `{ ok: false, status, code, message, current? }` with status 400, 403, 404 or 409. Each success increments `version`, appends one `Activity` with an Undo patch, and returns `item.changed` events (with `previousVisibility` when an item leaves a view). Also `occurrences()` (weekly expansion with cancelled dates), `preparationsFor()`, `canSee()`, `eligibleOwners()`. Imports only `./clock` and `./types`. Ids come from the clock plus a suffix, so tests are deterministic.
+- `server/homemind/types.ts`: see Deviations.
+- `tests/homemindCore.test.ts`: 60 tests. Ownership (each transition, Scene 1 assign and confirm, hand back with and without a note, claim race), stale versions (two writers on one version), create, edit, remove, proposed items, preparations under events (including Parents-only inheritance), "Parents only" (no trace for a teen), Undo (once, refused after a later change, create, cascade, permissions), recurrence (one cancelled occurrence, `until`, daylight saving in Berlin), the activity log, and an import check on `core.ts`. The seed state is deep-frozen, so any mutation of the input throws.
+**Decisions:** see "Decisions made during the build" (T1.2 entries).
+**Deviations:** T1.1 types extended, and the verb set differs from the plan's route list (see "Deviations from the plan").
+**Test results:**
+- `npm test` before any change: 24 files, 183 passed. After: 25 files, **243 passed**.
+- `npx vitest run tests/homemindCore.test.ts`: 60 passed.
+- Mutation checks: removing the stale-version check made 3 tests fail; pushing into the input state made 48 fail (deep-freeze). Both reverted, and `git diff` showed `core.ts` back to the tested version.
+- `npx tsc --noEmit`: clean. Also the strict command from T1.1 over `server/homemind/*.ts tests/homemind*.test.ts`: clean.
+- No UI or route change, so e2e was not run. Not the end of a phase.
+**Not done or not verified:** nothing calls `applyChange` yet (the bridge, T2.1). The full per-member view (what a teen's board, search and events contain) is T1.3; the core only refuses changes to items a member can't see. The activity log is not capped yet.
+**Next task should know:**
+- T1.3 should build `visibility.ts` on `canSee()` from `core.ts` (or move it there and import it back), and filter `activity` by `itemId`. An event with `item: null` (an undone create) carries `previousVisibility`.
+- The availability check (T1.3) can use `occurrences()` for recurring items, and should create its `open` proposal through `applyChange` with `{ kind: 'open' }` or a `create` with `proposed: true`.
+- The bridge (T2.1) maps `ChangeError.status` straight to the HTTP status, and on `409` returns `current` ("This changed. Here is the latest.").
+**How to verify:**
+- Commands: `npx vitest run tests/homemindCore.test.ts` · `npm test` · `npx tsc --noEmit`
+- Expected output: `Tests  60 passed (60)`. Then `Test Files  25 passed (25)` and `Tests  243 passed (243)`. tsc prints nothing.
+- Manual check: in `server/homemind/core.ts`, change `if (change.version !== item.version)` to `if (false)` and run the first command. 3 tests fail, including "two members act on the same version". Then undo the edit with `git checkout server/homemind/core.ts`.
 
 ### T1.1 Types, clock, store, seed: done (2026-11-04)
 **Built:**

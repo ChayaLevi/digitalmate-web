@@ -4,10 +4,10 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** P0 done (T0.1 to T0.4). **STOP: waiting for the human's OK on the P0 report** before P1
-- **Next task:** T1.1, after the OK
+- **Current task:** P0 done (T0.1 to T0.4). The human approved the P0 STOP report on 2026-11-04
+- **Next task:** T1.1 (types, clock, store, seed)
 - **Scenes working end to end:** none
-- **Blocked on:** the human's OK (P0 STOP)
+- **Blocked on:** nothing
 - **Last updated:** 2026-11-04, after T0.4
 
 ## Task status
@@ -55,6 +55,7 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 - T0.2: the bridge needs both PPMA tokens. The app token posts events and reads the stream. The owner token is the only one allowed to read memory views and explain. Both stay server-side.
 - T0.3: both models were measured, as the human approved. `deepseek-flash` took 16 s with a better answer, and `deepseek-v4-pro` took 89 s. **The human chose `deepseek-flash` (2026-11-04)**, which matches CLAUDE.md. `.env.local` is set to it.
 - T0.4: extraction and chat calls send `thinking: {type: "disabled"}`. With reasoning on, Flash can spend the whole `max_tokens` on reasoning and return empty content. With it off, quality was the same and the time halved.
+- P0 STOP (2026-11-04, the human approved): (1) no PPMA replay on stage, so run live Flash and keep every scene working without PPMA; (2) `llm.ts` sends `thinking: {type: "disabled"}` and treats empty content as a validation failure; (3) the Family tab always shows the signed-in member and offers switching; (4) PPMA times are converted from UTC to the family's time zone. These override the matching lines in `docs/PLAN.md`.
 - Identity (2026-11-04, the human): no password and no PIN. Demo sign-in only: pick a member from the list, switch at any time, and label it "Demo sign-in". Role rules (for example "Parents only") are still enforced on the server.
 - T0.4: the human has no real 接龙 screenshot. The extraction fixture is the simulated `e2e/fixtures/homemind/jielong-sample.png`, labelled "Simulated sample" in the image.
 - T0.3: PPMA replay is not usable for the demo. Plan: live Flash on stage, with Homemind's deterministic logic carrying every scene if PPMA is slow or down. The fallback options are in `docs/homemind-spikes.md`.
@@ -81,7 +82,7 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 - [x] DeepSeek endpoint, key and model names (in `.env.local`), for T0.3 and T0.4
 - [x] DeepSeek key with balance (replaced on 2026-11-04)
 - [x] Model chosen: `deepseek-flash` (2026-11-04)
-- [ ] **OK on the P0 STOP report** (see the T0.4 log) before P1 starts
+- [x] OK on the P0 STOP report, including the 4 plan changes (2026-11-04)
 - [x] PPMA clone at `../ppma`, for T0.2
 - [x] Real 接龙 screenshot: none available. A simulated one is used instead
 - [ ] Huawei phone for a browser test, if available, for T9.2

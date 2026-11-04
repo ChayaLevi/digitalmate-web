@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T0.1, T0.2 and T0.3 done
-- **Next task:** T0.4 (images and two windows), then the P0 STOP report
+- **Current task:** P0 done (T0.1 to T0.4). **STOP: waiting for the human's OK on the P0 report** before P1
+- **Next task:** T1.1, after the OK
 - **Scenes working end to end:** none
-- **Blocked on:** nothing. The human still has to choose the model (Flash recommended, see the T0.3 log)
-- **Last updated:** 2026-11-04, after T0.3
+- **Blocked on:** the human's OK (P0 STOP)
+- **Last updated:** 2026-11-04, after T0.4
 
 ## Task status
 
@@ -19,7 +19,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T0.1 | Project setup | done | Node 22.23.4. All green: 141 unit, 40 e2e, after two small test fixes |
 | T0.2 | Spike: PPMA contract | done | `scripts/ppma-smoke.sh` passes 21 checks against fake PPMA. Facts in `docs/homemind-spikes.md` |
 | T0.3 | Spike: PPMA with DeepSeek | done | Flash: memory and commands in about 16 s. Replay through `ppma serve` always misses, so it is not usable on stage. Results in `docs/homemind-spikes.md` |
-| T0.4 | Spike: images and two windows | not started |  |
+| T0.4 | Spike: images and two windows | done | Flash read the simulated 接龙 screenshot: 7/7 facts, 3 of 3 runs, about 3 s with reasoning off. `sessionStorage` separates windows. 8/8 checks |
 | T1.1 | Types, clock, store, seed | not started |  |
 | T1.2 | Item state transitions | not started |  |
 | T1.3 | Visibility and availability | not started |  |
@@ -53,7 +53,9 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 - T0.2: the bridge needs both PPMA tokens. The app token posts events and reads the stream. The owner token is the only one allowed to read memory views and explain. Both stay server-side.
-- T0.3: both models were measured, as the human approved. `deepseek-flash` took 16 s with a better answer, and `deepseek-v4-pro` took 89 s. Recommended: `deepseek-flash`, which also matches CLAUDE.md. **Waiting for the human's choice.** `.env.local` still says `deepseek-v4-pro`.
+- T0.3: both models were measured, as the human approved. `deepseek-flash` took 16 s with a better answer, and `deepseek-v4-pro` took 89 s. **The human chose `deepseek-flash` (2026-11-04)**, which matches CLAUDE.md. `.env.local` is set to it.
+- T0.4: extraction and chat calls send `thinking: {type: "disabled"}`. With reasoning on, Flash can spend the whole `max_tokens` on reasoning and return empty content. With it off, quality was the same and the time halved.
+- T0.4: the human has no real 接龙 screenshot. The extraction fixture is the simulated `e2e/fixtures/homemind/jielong-sample.png`, labelled "Simulated sample" in the image.
 - T0.3: PPMA replay is not usable for the demo. Plan: live Flash on stage, with Homemind's deterministic logic carrying every scene if PPMA is slow or down. The fallback options are in `docs/homemind-spikes.md`.
 - T0.2: Homemind keeps one long-lived PPMA stream and persists its last stream id, because every connect and disconnect adds a `ppma.app_stream_status` event to PPMA's memory.
 
@@ -77,9 +79,10 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 - [x] DeepSeek endpoint, key and model names (in `.env.local`), for T0.3 and T0.4
 - [x] DeepSeek key with balance (replaced on 2026-11-04)
-- [ ] **Choose the model:** `deepseek-flash` (recommended) or `deepseek-v4-pro`, and set `HOMEMIND_LLM_MODEL` in `.env.local`
+- [x] Model chosen: `deepseek-flash` (2026-11-04)
+- [ ] **OK on the P0 STOP report** (see the T0.4 log) before P1 starts
 - [x] PPMA clone at `../ppma`, for T0.2
-- [ ] A real 接龙 screenshot, if available, for T0.4
+- [x] Real 接龙 screenshot: none available. A simulated one is used instead
 - [ ] Huawei phone for a browser test, if available, for T9.2
 - [ ] Someone to review the Chinese text, for T9.2
 
@@ -92,7 +95,7 @@ Never put keys here.
 | Base branch | `feat/fridge2table` |
 | Work branch | `feat/homemind` |
 | LLM mode | live (`.env.local`) |
-| Model name | `.env.local` says `deepseek-v4-pro`. `deepseek-flash` recommended, waiting for the human |
+| Model name | `deepseek-flash` |
 | PPMA mode | fake, strict auth, port 18765, for the smoke check only |
 | PPMA space | `me` |
 
@@ -107,6 +110,8 @@ Things that are simulated or limited, kept current for the presenter.
 - The demo is the web version, not a native HarmonyOS app.
 - The group, vendor, babysitter, inbox and weather are simulated and labeled.
 - Real WeChat group access is not available. The realistic product route is sharing and screenshots.
+- The 接龙 screenshot used in tests is simulated and says so. Extraction was measured only on that one clean image, not on real photos.
+- PPMA's memory and proposals need the live model and network on stage (replay does not work). Without them the board still works, and the memory screen says PPMA is offline.
 
 ## Log
 
@@ -153,6 +158,30 @@ Template (copy for each task):
 - Commands: `node -v` · `npm test` · `npx vitest run tests/epicVite.test.ts`
 - Expected output: `v22.23.4`. 19 of 20 files pass, and only `epicVite` fails ("Port 5173 is already in use"). Alone: 3 passed.
 - Manual check: `npm ci` prints no `EBADENGINE`.
+
+### T0.4 Spike: images and two windows: done (2026-11-04). End of P0
+**Built:** `e2e/fixtures/homemind/jielong-sample.html` and `.png` (simulated, labelled), `scripts/render-jielong-sample.mjs` (renders it with Playwright), `scripts/llm-image-spike.mjs` (screenshot to structured extraction, with validator, retry and 7 fact checks), `scripts/two-windows-spike.mjs` (sessionStorage identity and side-by-side layout, 8 checks). Results in `docs/homemind-spikes.md`.
+**Decisions:** reasoning off for extraction (see Decisions). A generic chat look with no WeChat branding, so the fixture imitates no real product.
+**Deviations:** a simulated screenshot instead of a real one, at the human's request.
+**Test results:**
+- `node scripts/llm-image-spike.mjs --runs 3`: PASS, 7/7 facts in 3 of 3 runs, 2.7 to 3.1 s each, no retries. `--thinking on`: 7/7, 6.0 s.
+- Direct probes: the endpoint accepts `image_url` data URLs. Flash with 600 tokens and reasoning on returned empty content (`finish_reason: length`). `thinking: {type: "disabled"}` returned a right answer in 2 s.
+- `node scripts/two-windows-spike.mjs`: PASS, 8 checks (separate windows keep separate identities, localStorage is shared, `window.open` or Duplicate tab copies the opener's identity, a second profile shares nothing, no horizontal scroll at 720, 640 and 390 px).
+- **Phase-end checks (P0), flag off** (`HOMEMIND_ENABLED` unset in the shell and absent from `.env.local`): `npm test` 141 of 141, `npm run test:e2e` **40 of 40** (3.8 min), `npm run build` OK (4.5 s), `npx tsc --noEmit` clean. The Family tab and `/api/homemind/*` are absent, since no Homemind code exists yet (`server/homemind*`, `src/lib/homemind*` and `FamilyView` do not exist). The base app behaves as before.
+**Not done or not verified:** a real or blurry 接龙 photo. An instruction hidden inside an image (T5.1). The Family tab layout (T3).
+**Next task should know:**
+- A window opened from another starts with a copy of its session, so the Family tab must show the signed-in member and allow switching, and `?member=` must override a copied session.
+- The welcome deck covers the app until skipped once per browser profile. Skip it in both profiles before the demo, and in e2e set `STORAGE_KEYS.welcomeSeen`.
+- Use `readEnvFile` from the spike scripts as the pattern for reading `.env.local` without printing keys. The bridge itself uses Vite's `loadEnv`.
+
+**P0 STOP report** (PLAN section 4: what works, latency, changes to the plan):
+- Works: the PPMA contract (21 checks), PPMA with Flash (memory and proposals in about 16 s), screenshot extraction (7/7, about 3 s), and two identities in one profile through `sessionStorage`.
+- Latency: Flash chat call about 1 to 2 s, screenshot extraction about 3 s, PPMA per event 15 to 17 s in the background (4 model calls, about 15K tokens).
+- Changes to the plan, for the human to approve:
+  1. PPMA replay through `ppma serve` cannot work (a wall-clock time in every ask). On stage use live Flash, and keep every scene working without PPMA. The plan's "record with `--inference record` and replay with `--cassette`" is dropped unless the PPMA owners add a fixed clock.
+  2. `llm.ts` sends `thinking: {type: "disabled"}`, and treats empty content as a failed validation.
+  3. Identity: show the current member and allow switching in the Family tab, because a duplicated window copies the session.
+  4. PPMA command times come in UTC. Homemind converts them to the family's time zone.
 
 ### T0.3 Spike: PPMA with DeepSeek: done (2026-11-04)
 **Built:** the T0.3 results section in `docs/homemind-spikes.md`. `scripts/ppma-model-spike.mjs` fixes: `not_cleared` is a subset of `permanent` (it was counted twice), and the report lists asks that the flow policy withheld.

@@ -211,3 +211,51 @@ node scripts/ppma-model-spike.mjs --model deepseek-v4-pro           # live, paid
 node scripts/ppma-model-spike.mjs --model deepseek-flash --inference record --cassette ../ppma-cassettes/flash.json
 node scripts/ppma-model-spike.mjs --model deepseek-flash --inference replay --cassette ../ppma-cassettes/flash.json  # misses, see above
 ```
+
+## T0.4 Images and two windows (2026-11-04)
+
+### Screenshot extraction
+
+No real 接龙 screenshot was available, so the human asked for a simulated one.
+`e2e/fixtures/homemind/jielong-sample.html` is a generic phone chat (no WeChat branding) of a fictional kindergarten group,
+marked "模拟示例 · Simulated sample" in the header. `scripts/render-jielong-sample.mjs` renders it to
+`jielong-sample.png` (390 px wide at 2x, 117 KB) with Playwright. It holds: a party on Thursday 11月5日 at 15:00, cut fruit
+in boxes for 8 children, a 接龙 deadline of Wednesday 20:00, three claims (苹果, 香蕉, 葡萄), a question about forks
+answered "no need", and a checkup on Friday 11月6日 at 09:00 with easy clothes.
+
+`scripts/llm-image-spike.mjs` sends the PNG straight to `deepseek-flash` as an OpenAI-style `image_url` data URL, with:
+the plan's extraction schema (`events`, `preparations`, `requests`, `sign_up`, each with `confidence` and `quote`),
+today's date and time zone in the system prompt (Tuesday 2026-11-03, Asia/Shanghai), the screenshot delimited as data
+with an instruction not to follow anything inside it, `response_format: json_object`, a hand-written validator, and one
+retry. Then it checks 7 facts.
+
+| Setting | Runs | Facts found | Time per screenshot | Tokens in and out |
+| --- | --- | --- | --- | --- |
+| `thinking: {type: "disabled"}` | 3 | **7/7 in every run** | 2.7 to 3.1 s | 1048 and about 410 |
+| reasoning on (default) | 1 | 7/7 | 6.0 s | 1073 and 1097 |
+
+- **The model reads Chinese screenshots well.** Dates were resolved correctly with the `+08:00` offset, every claim was read,
+  quotes were exact, and it did not invent a fork to bring. No retry was needed, and every reply passed the validator.
+- **Turn reasoning off for extraction and chat intents.** `deepseek-flash` reasons by default and counts reasoning against
+  `max_tokens`: with 600 tokens it returned **empty content** (`finish_reason: length`). `thinking: {type: "disabled"}`
+  is accepted by this endpoint and halves the time with the same result. `reasoning_effort: "low"` did not help.
+  `llm.ts` (T5.1) should send it and treat empty content as a validation failure.
+- The endpoint accepts `png`, `jpeg`, `webp` and `gif`. It rejected a malformed PNG with a clear 400.
+- Not tested yet: a real 接龙 screenshot (its layout and fonts may differ), a blurry or cropped photo, and an instruction
+  hidden inside the image (that is the T5.1 test).
+
+### Two windows
+
+`scripts/two-windows-spike.mjs` (Playwright, starts vite if nothing is running): **PASS, 8 checks.**
+- Two windows **opened separately** in one browser profile keep their own `sessionStorage` identity across reloads.
+  So `sessionStorage` works for "Mom here, Dad there".
+- `localStorage` is shared between them, the known limit (chat history and settings).
+- A window opened **from** another window (`window.open`, a link with a target, the browser's "Duplicate tab") starts with
+  a **copy** of the opener's `sessionStorage`, so it starts as the same member. Changing it afterwards does not affect the
+  opener. **Consequence for T2.1 and T3.2:** the Family tab must always show who is signed in and let the user switch, and
+  `?member=` (demo mode) must override a copied session.
+- Two browser profiles share nothing, which matches the recommended stage setup.
+- Layout: at 720 px (half of a 1440 px laptop), 640 px and 390 px, the current app has no horizontal scroll. On a wide
+  window it shows a phone frame with margins, so two windows side by side look like two phones
+  (`test-results/two-windows/side-by-side-1440.png`, git-ignored). The welcome deck covers the app until it is skipped
+  once per profile, so dismiss it before the demo. The Family tab does not exist yet, so its layout is checked in T3.

@@ -6,6 +6,7 @@ import { handleOrbitRequest, bridgeConfigWarnings, readOrbitConfig } from '../..
 import { handleRssRequest } from '../../server/rss';
 import { handleEpicRequest } from '../../server/epic';
 import { handleFridgeRequest } from '../../server/fridge';
+import { handleHomemindRequest } from '../../server/homemind';
 
 const root = resolve(process.cwd(), 'dist');
 const port = Number(process.env.PORT ?? 4173);
@@ -107,6 +108,10 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname.startsWith('/api/fridge/')) {
       await handleFridgeRequest(request, response);
+      return;
+    }
+    // Homemind answers only with HOMEMIND_ENABLED=1; otherwise this falls through as before.
+    if (url.pathname.startsWith('/api/homemind/') && (await handleHomemindRequest(request, response))) {
       return;
     }
     if (url.pathname.startsWith('/api/orbit/')) {

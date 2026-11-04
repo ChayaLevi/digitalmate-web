@@ -1,0 +1,432 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { SESSION_HEADER, handleHomemindRequest, resetHomemindRuntime, signSession, verifySession } from '../server/homemind';
+import type { HomemindState, Item } from '../server/homemind/types';
+
+const SECRET = 'test-secret-0123456789';
+const ENV_KEYS = ['HOMEMIND_ENABLED', 'HOMEMIND_SECRET', 'HOMEMIND_DEMO', 'HOMEMIND_DATA_FILE'] as const;
+
+let server: Server;
+let base = '';
+let dir = '';
+const saved: Record<string, string | undefined> = {};
+
+/** A request the Homemind handler declines (the flag is off) lands here, like the old bridge. */
+const FALLTHROUGH = 418;
+
+async function login(memberId: string): Promise<string> {
+  const res = await fetch(`${base}/api/homemind/session`, { method: 'POST', body: JSON.stringify({ memberId }) });
+  expect(res.status).toBe(200);
+  return ((await res.json()) as { token: string }).token;
+}
+
+interface Api {
+  get(path: string): Promise<Response>;
+  send(method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<Response>;
+}
+
+function as(token: string | undefined): Api {
+  const headers = (extra: Record<string, string> = {}) => ({ ...(token ? { [SESSION_HEADER]: token } : {}), ...extra });
+  return {
+    get: path => fetch(`${base}/api/homemind${path}`, { headers: headers() }),
+    send: (method, path, body, extra) =>
+      fetch(`${base}/api/homemind${path}`, { method, headers: headers(extra), body: body === undefined ? undefined : JSON.stringify(body) })
+  };
+}
+
+const json = async <T = Record<string, any>>(res: Response) => (await res.json()) as T;
+
+async function item(api: Api, id: string): Promise<Item> {
+  const body = await json<{ view: { items: Item[] } }>(await api.get('/screen/family'));
+  const found = body.view.items.find(i => i.id === id);
+  if (!found) throw new Error(`no item ${id}`);
+  return found;
+}
+
+beforeAll(async () => {
+  for (const key of ENV_KEYS) saved[key] = process.env[key];
+  server = createServer((req, res) => {
+    handleHomemindRequest(req, res).then(handled => {
+      if (!handled) {
+        res.statusCode = FALLTHROUGH;
+        res.end('not homemind');
+      }
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+});
+
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), 'homemind-bridge-'));
+  process.env.HOMEMIND_ENABLED = '1';
+  process.env.HOMEMIND_SECRET = SECRET;
+  process.env.HOMEMIND_DEMO = '1';
+  process.env.HOMEMIND_DATA_FILE = join(dir, 'state.json');
+  resetHomemindRuntime();
+});
+
+afterEach(async () => {
+  resetHomemindRuntime();
+  await rm(dir, { recursive: true, force: true });
+});
+
+afterAll(() => {
+  server?.close();
+  for (const key of ENV_KEYS) {
+    if (saved[key] === undefined) delete process.env[key];
+    else process.env[key] = saved[key];
+  }
+});
+
+describe('the flag', () => {
+  it('without HOMEMIND_ENABLED=1 every request is declined, so the base app behaves as before', async () => {
+    delete process.env.HOMEMIND_ENABLED;
+    for (const path of ['/health', '/members', '/screen/my-day', '/debug/state']) {
+      expect((await fetch(`${base}/api/homemind${path}`)).status).toBe(FALLTHROUGH);
+    }
+    expect((await fetch(`${base}/api/homemind/session`, { method: 'POST', body: '{}' })).status).toBe(FALLTHROUGH);
+    process.env.HOMEMIND_ENABLED = '0';
+    expect((await fetch(`${base}/api/homemind/health`)).status).toBe(FALLTHROUGH);
+  });
+
+  it('paths outside /api/homemind/ are never handled', async () => {
+    expect((await fetch(`${base}/api/fridge/health`)).status).toBe(FALLTHROUGH);
+    expect((await fetch(`${base}/api/homemindx/health`)).status).toBe(FALLTHROUGH);
+  });
+
+  it('when enabled without a usable secret, only health answers and it says not ready', async () => {
+    delete process.env.HOMEMIND_SECRET;
+    expect(await json(await fetch(`${base}/api/homemind/health`))).toMatchObject({ enabled: true, ready: false });
+    expect((await fetch(`${base}/api/homemind/members`)).status).toBe(503);
+    process.env.HOMEMIND_SECRET = 'short';
+    expect((await fetch(`${base}/api/homemind/members`)).status).toBe(503);
+  });
+});
+
+describe('health, members and sign-in', () => {
+  it('reports health without any secret', async () => {
+    const body = await json(await fetch(`${base}/api/homemind/health`));
+    expect(body).toMatchObject({ enabled: true, ready: true, llm: 'fake', ppma: 'off', demo: true });
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+  });
+
+  it('lists the family for the picker, including who has no account', async () => {
+    const body = await json<{ members: Array<{ id: string; hasAccount: boolean }> }>(await fetch(`${base}/api/homemind/members`));
+    expect(body.members.map(m => [m.id, m.hasAccount])).toEqual([['mom', true], ['dad', true], ['maya', true], ['noa', false]]);
+  });
+
+  it('signs a member in, labelled as a demo sign-in', async () => {
+    const res = await fetch(`${base}/api/homemind/session`, { method: 'POST', body: JSON.stringify({ memberId: 'dad' }) });
+    const body = await json<{ token: string; member: { id: string }; demoSignIn: boolean }>(res);
+    expect(body.member.id).toBe('dad');
+    expect(body.demoSignIn).toBe(true);
+    expect(verifySession(body.token, SECRET)).toBe('dad');
+  });
+
+  it('refuses members without an account, unknown members, bad ids and extra fields', async () => {
+    const post = (body: unknown) => fetch(`${base}/api/homemind/session`, { method: 'POST', body: JSON.stringify(body) });
+    expect((await post({ memberId: 'noa' })).status).toBe(404);
+    expect((await post({ memberId: 'stranger' })).status).toBe(404);
+    expect((await post({ memberId: '../mom' })).status).toBe(400);
+    expect((await post({ memberId: 'Mom' })).status).toBe(400);
+    expect((await post({})).status).toBe(400);
+    expect((await post({ memberId: 'mom', role: 'admin' })).status).toBe(400);
+  });
+});
+
+describe('tokens', () => {
+  it('rejects forged, tampered, expired and foreign tokens', () => {
+    const good = signSession('mom', SECRET);
+    expect(verifySession(good, SECRET)).toBe('mom');
+    expect(verifySession(good, 'another-secret-0123456789')).toBeNull();
+    const [body, signature] = good.split('.');
+    const forged = Buffer.from(JSON.stringify({ m: 'dad', exp: Date.now() + 1e6 })).toString('base64url');
+    expect(verifySession(`${forged}.${signature}`, SECRET)).toBeNull();
+    expect(verifySession(`${body}.${signature}x`, SECRET)).toBeNull();
+    expect(verifySession(`${body}.`, SECRET)).toBeNull();
+    expect(verifySession(`${good}.extra`, SECRET)).toBeNull();
+    expect(verifySession(undefined, SECRET)).toBeNull();
+    expect(verifySession('', SECRET)).toBeNull();
+    expect(verifySession(signSession('mom', SECRET, Date.now() - 13 * 3600 * 1000), SECRET)).toBeNull();
+  });
+
+  it('a protected route needs a valid session', async () => {
+    expect((await as(undefined).get('/screen/my-day')).status).toBe(401);
+    expect((await as('garbage').get('/screen/my-day')).status).toBe(401);
+    expect((await as(signSession('mom', 'another-secret-0123456789')).get('/screen/my-day')).status).toBe(401);
+    // A valid signature for a member without an account is refused too.
+    expect((await as(signSession('noa', SECRET)).get('/screen/my-day')).status).toBe(401);
+    expect((await as(signSession('ghost', SECRET)).get('/screen/my-day')).status).toBe(401);
+    expect((await as(await login('mom')).get('/screen/my-day')).status).toBe(200);
+  });
+});
+
+describe('routing and request checks', () => {
+  it('unknown paths and methods give 404', async () => {
+    const mom = as(await login('mom'));
+    for (const [method, path] of [
+      ['GET', '/nothing'],
+      ['GET', '/'],
+      ['POST', '/admin/reset'],
+      ['GET', '/screen/secrets'],
+      ['GET', '/screen/my-day/extra'],
+      ['DELETE', '/items/pickup-today'],
+      ['GET', '/items'],
+      ['POST', '/items/pickup-today/explode']
+    ]) {
+      expect((await mom.send(method, path, method === 'GET' ? undefined : {})).status, `${method} ${path}`).toBe(404);
+    }
+    expect((await fetch(`${base}/api/homemind/nothing`)).status).toBe(404);
+  });
+
+  it('bad ids are rejected', async () => {
+    const mom = as(await login('mom'));
+    for (const id of ['..%2Fadmin', 'Pickup', 'a%20b', 'x'.repeat(65), '-bad']) {
+      expect((await mom.send('PATCH', `/items/${id}`, { version: 1, patch: {} })).status, id).toBe(404);
+      expect((await mom.send('POST', `/items/${id}/claim`, { version: 1 })).status, id).toBe(404);
+      expect((await mom.get(`/why/${id}`)).status, id).toBe(404);
+    }
+    expect((await mom.send('POST', '/items/pickup-today/assign', { version: 1, ownerId: '../dad' })).status).toBe(400);
+    expect((await mom.send('POST', '/items/pickup-today/assign', { version: 1, ownerId: 5 })).status).toBe(400);
+    expect((await mom.send('POST', '/items/pickup-today/undo', { activityId: 'Bad Id' })).status).toBe(400);
+  });
+
+  it('rejects cross-origin writes, before checking who is asking', async () => {
+    const token = await login('mom');
+    const evil = { origin: 'https://evil.example' };
+    expect((await as(token).send('POST', '/items/pickup-today/claim', { version: 1 }, evil)).status).toBe(403);
+    expect((await as(undefined).send('POST', '/items', {}, evil)).status).toBe(403);
+    expect((await fetch(`${base}/api/homemind/session`, { method: 'POST', headers: evil, body: JSON.stringify({ memberId: 'mom' }) })).status).toBe(403);
+    expect((await as(token).send('PATCH', '/items/pickup-today', { version: 1, patch: {} }, evil)).status).toBe(403);
+    // Same origin is fine.
+    const own = { origin: base };
+    expect((await as(token).send('POST', '/items/pickup-today/claim', { version: 1 }, own)).status).not.toBe(403);
+  });
+
+  it('rejects bad bodies', async () => {
+    const mom = as(await login('mom'));
+    const raw = (body: string) => fetch(`${base}/api/homemind/items`, { method: 'POST', headers: { [SESSION_HEADER]: '' }, body });
+    expect((await raw('{}')).status).toBe(401);
+    const token = await login('mom');
+    const post = (body: string) => fetch(`${base}/api/homemind/items`, { method: 'POST', headers: { [SESSION_HEADER]: token }, body });
+    expect((await post('{not json')).status).toBe(400);
+    expect((await post('[1]')).status).toBe(400);
+    expect((await post(JSON.stringify({ type: 'task', title: 'x'.repeat(70_000) }))).status).toBe(413);
+    expect((await mom.send('POST', '/items', { type: 'banana', title: 'x' })).status).toBe(400);
+    expect((await mom.send('POST', '/items/pickup-today/claim', {})).status).toBe(400);
+    expect((await mom.send('POST', '/items/pickup-today/claim', { version: '1' })).status).toBe(400);
+    expect((await mom.send('POST', '/items/pickup-today/claim', { version: 1.5 })).status).toBe(400);
+    expect((await mom.send('PATCH', '/items/pickup-today', { version: 1, patch: [] })).status).toBe(400);
+  });
+
+  it('a client cannot set the source, the status, the version or a reason', async () => {
+    const mom = as(await login('mom'));
+    for (const extra of [{ source: { kind: 'ppma', label: 'x' } }, { status: 'done' }, { version: 9 }, { proposed: false }, { createdBy: 'dad' }, { id: 'mine' }]) {
+      expect((await mom.send('POST', '/items', { type: 'task', title: 'Water plants', ...extra })).status, JSON.stringify(extra)).toBe(400);
+    }
+    expect((await mom.send('PATCH', '/items/pickup-today', { version: 1, patch: { status: 'done' } })).status).toBe(400);
+    expect((await mom.send('PATCH', '/items/pickup-today', { version: 1, patch: { ownership: { state: 'none' } } })).status).toBe(400);
+    const reason = { kind: 'unavailable', memberId: 'mom', eventId: 'x', date: '2026-11-10' };
+    expect((await mom.send('POST', '/items/pickup-today/open', { version: 1, reason })).status).toBe(400);
+  });
+});
+
+describe('items', () => {
+  it('Scene 1: Mom assigns the pickup to Dad and Dad sees it as his, then confirms', async () => {
+    const mom = as(await login('mom'));
+    const dad = as(await login('dad'));
+    const before = await item(mom, 'pickup-today');
+    const res = await mom.send('POST', '/items/pickup-today/assign', { version: before.version, ownerId: 'dad' });
+    expect(res.status).toBe(200);
+    const done = await json<{ items: Item[]; activityId: string }>(res);
+    expect(done.items[0].ownership).toEqual({ state: 'assigned', ownerId: 'dad', confirmed: false });
+    expect(done.items[0].version).toBe(before.version + 1);
+
+    expect((await item(dad, 'pickup-today')).ownership).toEqual({ state: 'assigned', ownerId: 'dad', confirmed: false });
+    const ack = await dad.send('POST', '/items/pickup-today/ack', { version: before.version + 1 });
+    expect(ack.status).toBe(200);
+    expect((await item(mom, 'pickup-today')).ownership).toEqual({ state: 'assigned', ownerId: 'dad', confirmed: true });
+  });
+
+  it('the second writer on one version gets 409 and the latest item', async () => {
+    const mom = as(await login('mom'));
+    const maya = as(await login('maya'));
+    const { version } = await item(mom, 'pickup-today');
+    expect((await mom.send('POST', '/items/pickup-today/assign', { version, ownerId: 'dad' })).status).toBe(200);
+    const late = await maya.send('POST', '/items/pickup-today/claim', { version });
+    expect(late.status).toBe(409);
+    const body = await json<{ error: string; current: Item }>(late);
+    expect(body.error).toBe('stale');
+    expect(body.current.ownership).toMatchObject({ state: 'assigned', ownerId: 'dad' });
+    expect(body.current.version).toBe(version + 1);
+  });
+
+  it('creates an event with a preparation, edits it, removes the preparation and finds it by search', async () => {
+    const mom = as(await login('mom'));
+    const created = await json<{ items: Item[] }>(
+      await mom.send('POST', '/items', { type: 'event', title: 'Grandma visit', start: '2026-12-01T10:00:00.000Z', end: '2026-12-01T12:00:00.000Z', forMemberIds: ['noa'] })
+    );
+    const event = created.items[0];
+    expect(event).toMatchObject({ title: 'Grandma visit', status: 'open', createdBy: 'mom', source: { kind: 'manual', label: 'Mom' } });
+    const prep = (await json<{ items: Item[] }>(await mom.send('POST', '/items', { type: 'preparation', title: 'Bake cookies', parentEventId: event.id }))).items[0];
+    expect(prep.parentEventId).toBe(event.id);
+
+    const edited = await mom.send('PATCH', `/items/${event.id}`, { version: event.version, patch: { title: 'Grandma visit (lunch)' } });
+    expect(edited.status).toBe(200);
+    const removed = await mom.send('POST', `/items/${prep.id}/cancel`, { version: prep.version });
+    expect(removed.status).toBe(200);
+
+    const found = await json<{ results: Item[] }>(await mom.get('/screen/search?q=lunch'));
+    expect(found.results.map(i => i.id)).toEqual([event.id]);
+    expect((await json<{ results: Item[] }>(await mom.get('/screen/search?q=cookies'))).results).toEqual([]);
+  });
+
+  it('Undo gives back the change, and only for an item that change touched', async () => {
+    const mom = as(await login('mom'));
+    const { version } = await item(mom, 'pickup-today');
+    const { activityId } = await json<{ activityId: string }>(await mom.send('POST', '/items/pickup-today/assign', { version, ownerId: 'dad' }));
+    expect((await mom.send('POST', '/items/swim-today/undo', { activityId })).status).toBe(404);
+    expect((await mom.send('POST', '/items/pickup-today/undo', { activityId })).status).toBe(200);
+    expect((await item(mom, 'pickup-today')).ownership.state).not.toBe('assigned');
+    expect((await mom.send('POST', '/items/pickup-today/undo', { activityId })).status).toBeGreaterThanOrEqual(400);
+  });
+
+  it('the verbs that belong to later tasks answer 501, not a fake result', async () => {
+    const mom = as(await login('mom'));
+    expect((await mom.send('POST', '/items/pickup-today/snooze', { version: 1 })).status).toBe(501);
+  });
+});
+
+describe('Parents only', () => {
+  it('a teen gets no trace of a Parents-only item in screens, search, edits, verbs or explanations', async () => {
+    const mom = as(await login('mom'));
+    const maya = as(await login('maya'));
+    const meeting = await item(mom, 'counselor-meeting');
+    expect(meeting.visibility).toBe('parents');
+
+    for (const screen of ['my-day', 'family', 'calendar', 'rules', 'activity', 'settings']) {
+      const text = await (await maya.get(`/screen/${screen}`)).text();
+      expect(text, screen).not.toMatch(/counselor|counsellor|meeting-?\w*/i);
+      expect(text, screen).not.toContain('counselor-meeting');
+    }
+    const search = await json(await maya.get('/screen/search?q=counselor'));
+    expect(search.results).toEqual([]);
+    expect(JSON.stringify(search)).not.toContain('counselor-meeting');
+
+    const edit = await maya.send('PATCH', '/items/counselor-meeting', { version: meeting.version, patch: { title: 'x' } });
+    const missing = await maya.send('PATCH', '/items/no-such-item', { version: 1, patch: { title: 'x' } });
+    expect(edit.status).toBe(404);
+    expect(await edit.text()).toBe(await missing.text());
+    expect((await maya.send('POST', '/items/counselor-meeting/claim', { version: meeting.version })).status).toBe(404);
+    expect((await maya.get('/why/counselor-meeting')).status).toBe(404);
+  });
+});
+
+describe('Scene 4: availability', () => {
+  it('a wedding for Mom opens her Tuesday pickup for Dad and Maya, with the reason, and Undo of the wedding is separate', async () => {
+    const mom = as(await login('mom'));
+    const dad = as(await login('dad'));
+    const pickup = await item(mom, 'pickup-tuesday');
+    expect(pickup.ownership).toMatchObject({ state: 'assigned', ownerId: 'mom' });
+    const start = Date.parse(pickup.start as string);
+    const res = await mom.send('POST', '/items', {
+      type: 'event',
+      title: "Cousin's wedding",
+      start: new Date(start - 90 * 60_000).toISOString(),
+      end: new Date(start + 5 * 3600_000).toISOString(),
+      forMemberIds: ['mom'],
+      unavailableMemberIds: ['mom']
+    });
+    expect(res.status).toBe(200);
+    const body = await json<{ opened: string[]; items: Item[]; conflicts: unknown[] }>(res);
+    expect(body.opened).toEqual(['pickup-tuesday']);
+    expect(body.conflicts).toEqual([]);
+    const opened = body.items.find(i => i.id === 'pickup-tuesday') as Item;
+    expect(opened.ownership).toMatchObject({ state: 'open', candidateIds: ['dad', 'maya'], reason: { kind: 'unavailable', memberId: 'mom' } });
+    expect((await item(dad, 'pickup-tuesday')).ownership).toMatchObject({ state: 'open' });
+
+    const taken = await dad.send('POST', '/items/pickup-tuesday/claim', { version: opened.version });
+    expect(taken.status).toBe(200);
+    expect((await item(mom, 'pickup-tuesday')).ownership).toEqual({ state: 'assigned', ownerId: 'dad', confirmed: true });
+  });
+});
+
+describe('routes for later tasks', () => {
+  it('are whitelisted behind the same checks and answer 501', async () => {
+    const mom = as(await login('mom'));
+    for (const [method, path, task] of [
+      ['GET', '/events', 'T2.3'],
+      ['POST', '/chat', 'T5.2'],
+      ['POST', '/actions/card-1/confirm', 'T7.1'],
+      ['POST', '/actions/card-1/cancel', 'T7.1'],
+      ['POST', '/preferences', 'T5.4'],
+      ['POST', '/rules', 'T7.3'],
+      ['PUT', '/settings', 'T4.2'],
+      ['POST', '/demo/clock', 'T4.1'],
+      ['POST', '/demo/post-group-message', 'T7.2'],
+      ['GET', '/screen/memory', 'T6.2']
+    ]) {
+      const res = await mom.send(method, path, method === 'GET' ? undefined : {});
+      expect(res.status, `${method} ${path}`).toBe(501);
+      expect((await json(res)).task).toBe(task);
+      expect((await as(undefined).send(method, path, method === 'GET' ? undefined : {})).status, `${method} ${path} signed out`).toBe(401);
+    }
+    expect((await mom.send('POST', '/actions/Bad_Id/confirm', {})).status).toBe(404);
+    expect((await mom.send('POST', '/chat', {}, { origin: 'https://evil.example' })).status).toBe(403);
+  });
+});
+
+describe('demo-only routes', () => {
+  it('do not exist without HOMEMIND_DEMO=1', async () => {
+    process.env.HOMEMIND_DEMO = '0';
+    const mom = as(await login('mom'));
+    expect((await mom.get('/debug/state')).status).toBe(404);
+    expect((await mom.send('POST', '/demo/reset', {})).status).toBe(404);
+    expect((await mom.send('POST', '/demo/clock', {})).status).toBe(404);
+    expect(await json(await fetch(`${base}/api/homemind/health`))).toMatchObject({ demo: false });
+  });
+
+  it('expose the state to debug and reset it to the seed', async () => {
+    const mom = as(await login('mom'));
+    const state = await json<HomemindState>(await mom.get('/debug/state'));
+    expect(state.items.some(i => i.id === 'counselor-meeting')).toBe(true);
+    const { version } = await item(mom, 'pickup-today');
+    await mom.send('POST', '/items/pickup-today/assign', { version, ownerId: 'dad' });
+    expect((await item(mom, 'pickup-today')).version).toBe(version + 1);
+    expect((await mom.send('POST', '/demo/reset', {})).status).toBe(200);
+    expect((await item(mom, 'pickup-today')).version).toBe(version);
+    expect((await json<HomemindState>(await mom.get('/debug/state'))).activity).toEqual([]);
+  });
+});
+
+describe('persistence', () => {
+  it('writes each change to the data file, and a restart keeps it', async () => {
+    const mom = as(await login('mom'));
+    const { version } = await item(mom, 'pickup-today');
+    await mom.send('POST', '/items/pickup-today/assign', { version, ownerId: 'dad' });
+    const onDisk = JSON.parse(await readFile(process.env.HOMEMIND_DATA_FILE as string, 'utf8')) as HomemindState;
+    expect(onDisk.items.find(i => i.id === 'pickup-today')?.ownership).toMatchObject({ state: 'assigned', ownerId: 'dad' });
+
+    resetHomemindRuntime();
+    const again = as(await login('dad'));
+    expect((await item(again, 'pickup-today')).ownership).toMatchObject({ state: 'assigned', ownerId: 'dad' });
+  });
+
+  it('two requests at once both apply, one after the other', async () => {
+    const mom = as(await login('mom'));
+    const dad = as(await login('dad'));
+    const [a, b] = await Promise.all([
+      mom.send('POST', '/items', { type: 'task', title: 'First' }),
+      dad.send('POST', '/items', { type: 'task', title: 'Second' })
+    ]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    const titles = (await json<{ view: { items: Item[] } }>(await mom.get('/screen/family'))).view.items.map(i => i.title);
+    expect(titles).toEqual(expect.arrayContaining(['First', 'Second']));
+  });
+});

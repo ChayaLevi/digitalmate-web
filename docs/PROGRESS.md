@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T1.3 done (visibility and availability). **P1 is done.**
-- **Next task:** T2.1 (routes and identity)
-- **Scenes working end to end:** none
+- **Current task:** T2.1 done (routes and identity).
+- **Next task:** T2.2 (surface builders)
+- **Scenes working end to end:** none (the API for Scene 1's assign and Scene 4's availability works; no screens yet)
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-04, after T1.3
+- **Last updated:** 2026-11-04, after T2.1
 
 ## Task status
 
@@ -23,7 +23,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T1.1 | Types, clock, store, seed | done | `server/homemind/{types,clock,store,seed}.ts`, 4 test files, 42 tests. 183 of 183 in all. Zone = machine's; tsc covers the core |
 | T1.2 | Item state transitions | done | `server/homemind/core.ts`, 60 tests in `tests/homemindCore.test.ts`. 243 of 243 in all |
 | T1.3 | Visibility and availability | done | `server/homemind/{visibility,availability}.ts`, 43 tests in 2 files. 286 of 286 in all. P1 phase checks pass |
-| T2.1 | Routes and identity | not started |  |
+| T2.1 | Routes and identity | done | `server/homemind.ts`, 26 tests in `tests/homemindBridge.test.ts`. 312 of 312 in all. Routes for later tasks answer 501 |
 | T2.2 | Surface builders | not started |  |
 | T2.3 | Live events | not started |  |
 | T3.1 | New components | not started |  |
@@ -52,6 +52,14 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
+- T2.1: `HOMEMIND_SECRET` must be 16 characters or more. Without it, every route except `GET /health` answers `503 not_configured`, and health says `ready: false`. The session token is `<base64url payload>.<HMAC-SHA256>` with the member id and a 12-hour expiry. A valid token for a member without an account (Noa) is refused (`401`).
+- T2.1: **order of checks:** path and method match (else `404`, and a demo-only route is `404` without `HOMEMIND_DEMO=1`) → same-origin on every non-GET (`403`) → secret (`503`) → session (`401`) → body (cap 64 KB, `413`; bad JSON `400`) → core. So an unknown path never reveals whether you are signed in.
+- T2.1: request bodies are whitelists: an unknown field is `400`. A client can't send `source`, `status`, `version` on create, `id`, `createdBy`, `proposed`, or an `open` `reason`. A created item's source is always `{kind: 'manual', label: <member name>}`. `ownerId` on create is shorthand for an unconfirmed assignment.
+- T2.1: item verbs exposed: the plan's `assign claim handback done approve dismiss undo`, `ack` (the core's `confirm`), plus the core's `open unassign cancel cancel_occurrence`. `snooze` is whitelisted and answers `501` until T4.1. `POST /items/:id/undo` takes `{activityId}` and requires that the activity's Undo patch touched `:id`.
+- T2.1: after an **event** with `unavailableMemberIds` is created or edited, the adapter runs `findConflicts` over the next 90 days for that event. If `mayOpenOnItsOwn`, it applies `proposeForConflicts` as the same member and returns `opened` (item ids). Otherwise it returns `conflicts` (filtered by `conflictsVisibleTo`) as suggestions. A failure there never fails the create or edit.
+- T2.1: every mutation answers `{ok, activityId, items (redacted for the caller), opened, conflicts}`. Errors answer `{error: code, message, current?}`, and `409` carries the latest item.
+- T2.1: the runtime (state, store, clock) lives in one `globalThis` holder keyed by the data file, loaded once. A mutation changes the in-memory state synchronously and then awaits the save, so concurrent requests apply one after the other. `resetHomemindRuntime()` is exported for tests.
+- T2.1: `GET /debug/state` needs no session (so `curl` works) but exists only with `HOMEMIND_DEMO=1`. It returns everything, Parents-only items included.
 - T1.3: `viewFor(state, memberId)` in `visibility.ts` is the one base for every screen, search, model context and SSE event (`eventFor`). For a non-parent it drops Parents-only items, their preparations (also checked through the parent event), their activity, reminders and "Why?" records (by `basis.ref`), and the activity of items that no longer exist. **No view carries Undo patches**, for anyone: they hold whole earlier versions of items. Rules, preferences and action cards are not filtered (they have no visibility field).
 - T1.3: when an item leaves a member's view (it became Parents-only, or an undo removed it), `eventFor` sends `item: null`, as for a deletion. A member who never saw it gets nothing.
 - T1.3: PPMA gets only `isFamilyWide(state, item)` items.
@@ -82,6 +90,9 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 ## Deviations from the plan
 
+- T2.1: `GET /screen/:name` returns domain data as JSON `{screen, lang, now, view, query?, results?}` (the member's `viewFor`), not "a turn with JSONL". The JSONL comes from `src/lib/homemindSurfaces.ts`, which is T2.2. T2.2 should switch this route to build the surface (and keep the JSON shape or drop it, since nothing uses it yet).
+- T2.1: whitelisted but not built, each answering `501 {error: 'not_implemented', task}` after the normal origin and session checks: `GET /events` (T2.3), `POST /chat` (T5.2), `POST /actions/:id/confirm|cancel` (T7.1), `POST /preferences` (T5.4), `POST /rules` (T7.3), `PUT /settings` (T4.2), `POST /demo/clock` (T4.1) and `/demo/post-group-message` (T7.2), `POST /items/:id/snooze` (T4.1), `GET /screen/memory` (T6.2). The task text says "all routes"; these have nothing behind them yet and must not fake a result.
+- T2.1: the `health` body is `{enabled, ready, llm, ppma, demo}`. `ppma` is `'off'` for now (T6.1 makes it real) and `llm` is `'live'` or `'fake'` from `HOMEMIND_LLM`, without checking the endpoint (T5.1).
 - T1.3: added `OpenReason` to `types.ts` and an optional `reason` to `Ownership` `open` and to the core's `open` change, validated in `core.ts` (it must name an event that makes that member unavailable). The plan's types do not have it.
 - T1.2: changed T1.1 types, as T1.1 allowed. `UndoPatch` is now `{ items: UndoEntry[] }` (one change can touch several items), with `afterVersion` per item. `Activity` gained `kind`, `itemId`, `memberId`, `note`, `ref`, `undone`. `Ownership` `open` gained optional `handedBackBy` and `note`. Nothing stored used the old shapes (activity was always empty).
 - T1.2: the plan's verbs `ack` and `snooze` belong to reminders (T4.1). The core has `confirm` for "I'm on it" on an assignment; the bridge can map `ack` to it. Added `open`, `unassign`, `cancel`, `cancel_occurrence`, which the plan's verb list does not name.
@@ -156,6 +167,29 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T2.1 Routes and identity: done (2026-11-04)
+**Built:**
+- `server/homemind.ts`: `handleHomemindRequest` (returns false unless `HOMEMIND_ENABLED=1` and the path is `/api/homemind/...`), `homemindBridgePlugin`, `signSession` / `verifySession`, `resetHomemindRuntime`, `SESSION_HEADER`. A route table with method, pattern, auth, demo-only. Working routes: `health`, `members`, `session`, `screen/:name` (JSON for now), `items` (create), `PATCH items/:id`, `POST items/:id/:verb`, `why/:id`, `demo/reset`, `debug/state`. The rest answer 501 (see Deviations).
+- Registered in both places: `vite.config.ts` (plugin) and `services/bridge/index.ts` (falls through when the handler declines).
+- `tests/homemindBridge.test.ts`: 26 tests (flag, secret, sign-in, tokens, routing, bad ids, cross-origin, bad bodies, no client-set source or reason, Scene 1 assign and confirm, 409 with latest, create/edit/remove/search, Undo, Parents-only for a teen, Scene 4 wedding opens the pickup, 501 routes, demo-only routes, persistence, concurrent writes).
+**Decisions:** see "Decisions made during the build" (T2.1 entries).
+**Deviations:** screens return JSON, and 501 routes (see "Deviations from the plan").
+**Test results:**
+- `npm test`: first run 27 files with "no tests" (the known cold-run flake, Open issues), then 27 files, 286 passed. After: 28 files, **312 passed**.
+- Mutation checks, each restored and confirmed with `cmp`: no origin check (2 tests fail), no field whitelist (2), no session check (3), no signature check (2), no Undo path check (1).
+- `npx tsc --noEmit`: clean. The strict command over `server/homemind.ts services/bridge/index.ts tests/homemindBridge.test.ts` reports 2 errors, both in the existing `server/orbit.ts` (lines 426 and 440), none in Homemind code.
+- `npm run build`: OK. `npm run test:e2e` with `HOMEMIND_ENABLED` unset: **40 of 40** (3.4 min).
+- Manual, production bridge (`tsx services/bridge/index.ts`, port 4399): with the flag on, health answers JSON, a session works, a screen returns Mom's view, and a cross-origin POST gives 403. With the flag off, `GET /api/homemind/health` returns the SPA page like any unknown path and `POST` gives 405, as before.
+**Not done or not verified:** the Vite dev server with the flag on was not started by hand (only the production bridge, and the handler through a test server). Not the end of a phase, so the build and flag-off checks were run but are not the formal phase check.
+**Next task should know:**
+- T2.2: `screen/:name` returns `{screen, lang, now, view, query?, results?}` where `view` is `viewFor`. Build the surfaces from `view` and switch the route to return a turn (`message`, `jsonl`, as `FridgeTurn`). The mutation answers carry `items` already redacted for the caller.
+- T2.3: `GET /events` is a 501 stub. `runChange` in `homemind.ts` has the `result.events` after each commit; publish them there with `eventFor` per member. `checkAvailability` also produces events (`proposal.events`), which are not published yet.
+- To try it by hand: set `HOMEMIND_ENABLED=1`, `HOMEMIND_SECRET` (16+ characters) and `HOMEMIND_DEMO=1` in `.env.local`.
+**How to verify:**
+- Commands: `npx vitest run tests/homemindBridge.test.ts` · `npm test` · `npx tsc --noEmit`
+- Expected output: `Tests  26 passed (26)`. Then `Test Files  28 passed (28)` and `Tests  312 passed (312)`. tsc prints nothing.
+- Manual check: `HOMEMIND_ENABLED=1 HOMEMIND_SECRET=manual-check-secret-123 HOMEMIND_DEMO=1 npx tsx services/bridge/index.ts`, then `curl localhost:4173/api/homemind/health` shows `"ready":true`, and `curl -XPOST -H "origin: https://evil.example" localhost:4173/api/homemind/session -d '{"memberId":"mom"}'` prints a 403 error. Stop the server afterwards.
 
 ### T1.3 Visibility and availability: done (2026-11-04). End of P1
 **Built:**

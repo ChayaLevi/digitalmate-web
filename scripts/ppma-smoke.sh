@@ -121,26 +121,9 @@ else STRICT=0; echo "  NOTE  unknown token accepted ($CODE): dev auth, the permi
 
 echo
 echo "Register (PUT /v0/apps/homemind/manifest, POST /v0/apps/homemind/token)"
-# Draft Homemind manifest from docs/PLAN.md section 3. No tool sends or orders anything.
-cat >"$WORK/manifest.json" <<'EOF'
-{
-  "app": "homemind", "version": "0.0.1", "display_name": "Homemind",
-  "emits": [
-    {"type": "homemind.item_changed", "description": "A family board item was created, changed, assigned or completed.", "payload_schema": {"type": "object"}, "sensitivity": "personal"},
-    {"type": "homemind.preference_stated", "description": "A family member stated a preference, with an optional reason and scope.", "payload_schema": {"type": "object"}, "sensitivity": "personal"},
-    {"type": "homemind.member_unavailable", "description": "A family member is unavailable for a period.", "payload_schema": {"type": "object"}, "sensitivity": "personal"},
-    {"type": "homemind.reminder_outcome", "description": "How a reminder ended: done, taken, handed off, snoozed or unanswered.", "payload_schema": {"type": "object"}, "sensitivity": "personal"},
-    {"type": "homemind.message_received", "description": "A message from a family source, such as a kindergarten group.", "payload_schema": {"type": "object"}, "sensitivity": "personal", "responds_to_ppma": false}
-  ],
-  "tools": [
-    {"name": "homemind.get_board", "description": "Read the family board.", "input_schema": {"type": "object", "properties": {}}, "effect": "none", "reversible": true, "requires_confirmation": false},
-    {"name": "homemind.propose_item", "description": "Propose an event or task. It lands as a proposed item a parent approves.", "input_schema": {"type": "object", "properties": {"title": {"type": "string", "x-ppma-carries": "title"}, "start": {"type": "string", "x-ppma-carries": "time"}, "notes": {"type": "string"}}, "required": ["title"]}, "effect": "create", "reversible": true, "requires_confirmation": false},
-    {"name": "homemind.propose_preparation", "description": "Propose a preparation under an existing event.", "input_schema": {"type": "object", "properties": {"event_id": {"type": "string"}, "title": {"type": "string", "x-ppma-carries": "title"}, "due": {"type": "string", "x-ppma-carries": "time"}}, "required": ["event_id", "title"]}, "effect": "create", "reversible": true, "requires_confirmation": false},
-    {"name": "homemind.add_to_shopping", "description": "Add an item to the family shopping list. Nothing is bought.", "input_schema": {"type": "object", "properties": {"title": {"type": "string", "x-ppma-carries": "title"}}, "required": ["title"]}, "effect": "create", "reversible": true, "requires_confirmation": false}
-  ]
-}
-EOF
-http PUT /v0/apps/homemind/manifest "$OWNER_TOKEN" "$WORK/manifest.json"
+# Draft Homemind manifest from docs/PLAN.md section 3, shared with ppma-model-spike.mjs. No tool sends or orders.
+MANIFEST="$HERE/ppma-homemind-manifest.json"
+http PUT /v0/apps/homemind/manifest "$OWNER_TOKEN" "$MANIFEST"
 if [ "$CODE" = 200 ] && [ "$(j "$WORK/body" d.app)" = homemind ] && [ -n "$(j "$WORK/body" d.registered_at)" ]; then
   pass "manifest -> 200 ManifestReceipt{app, version, registered_at}"
 else die "manifest -> 200" "got $CODE: $(head -c 300 "$WORK/body")"; fi

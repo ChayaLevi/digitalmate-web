@@ -55,6 +55,7 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 - T0.2: the bridge needs both PPMA tokens. The app token posts events and reads the stream. The owner token is the only one allowed to read memory views and explain. Both stay server-side.
 - T0.3: both models were measured, as the human approved. `deepseek-flash` took 16 s with a better answer, and `deepseek-v4-pro` took 89 s. **The human chose `deepseek-flash` (2026-11-04)**, which matches CLAUDE.md. `.env.local` is set to it.
 - T0.4: extraction and chat calls send `thinking: {type: "disabled"}`. With reasoning on, Flash can spend the whole `max_tokens` on reasoning and return empty content. With it off, quality was the same and the time halved.
+- Identity (2026-11-04, the human): no password and no PIN. Demo sign-in only: pick a member from the list, switch at any time, and label it "Demo sign-in". Role rules (for example "Parents only") are still enforced on the server.
 - T0.4: the human has no real 接龙 screenshot. The extraction fixture is the simulated `e2e/fixtures/homemind/jielong-sample.png`, labelled "Simulated sample" in the image.
 - T0.3: PPMA replay is not usable for the demo. Plan: live Flash on stage, with Homemind's deterministic logic carrying every scene if PPMA is slow or down. The fallback options are in `docs/homemind-spikes.md`.
 - T0.2: Homemind keeps one long-lived PPMA stream and persists its last stream id, because every connect and disconnect adds a `ppma.app_stream_status` event to PPMA's memory.

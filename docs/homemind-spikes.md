@@ -144,3 +144,70 @@ challenged_by}`. `origin` is `user|app|inferred`. The plan's `project:{id}` view
   a bad `Last-Event-ID` is rejected, the correction lands with `origin: user`, explain 404 and 200, and token revocation.
 - Run on 2026-11-03 (Windows 11, Git Bash, uv 0.11.25, Node 20.17): **PASS, 21 checks, 70 s**, most of it PPMA
   startup and node process launches.
+
+## T0.3 PPMA with DeepSeek (2026-11-04)
+
+Same PPMA commit as T0.2. Endpoint `https://api.deepseek.com` (OpenAI-compatible). `GET /models` lists
+`deepseek-flash` and `deepseek-v4-pro`. Run with `scripts/ppma-model-spike.mjs`: `ppma serve --profile fake --agent openai
+--agent-clear personal --auth strict`, which keeps nothing on disk. Input: one `homemind.message_received` event with the text
+"Kindergarten party on Thursday, bring cut fruit." (`channel: kindergarten_group`, `member_id: mom`), with `occurred_at`
+2026-11-03 08:00 UTC, a Tuesday.
+
+### Results
+
+| | `deepseek-flash` run 1 | `deepseek-flash` run 2 (record) | `deepseek-v4-pro` |
+| --- | --- | --- | --- |
+| Post to PPMA idle | **17.0 s** | **15.4 s** | 89.2 s |
+| Model asks and calls | 4 and 4 (`ingest.gate`, `ingest.jurisdiction`, `ingest.extract`, `command.decide`) | 4 and 4 | 4 and 4 |
+| Tokens in and out | 13.7K and 1.6K | 13.7K and 1.4K | 13.5K and 5.0K |
+| Mean latency per ask | 3.4 s (system1), 4.5 s (system2) | 4.1 s, 3.6 s | 7.8 s, 27.0 s |
+| Memory entry | "Kindergarten party Thursday; bring cut fruit." (inferred, 0.9) | "Kindergarten party Thursday — bring cut fruit." (0.85) | "Attend kindergarten party on Thursday; bring cut fruit." (0.9) |
+| Commands | `add_to_shopping` "Cut fruit for the kindergarten party (Thursday)" and `propose_item` "Bring cut fruit to the kindergarten party", start 2026-11-05 07:00 UTC | `propose_item` "Kindergarten party — bring cut fruit", start 2026-11-05 09:00 UTC | `add_to_shopping` "Cut fruit" and `propose_item` "Kindergarten party", **no date** |
+| Command confidence | 0.5 | 0.5 | 0.5 |
+| Explain | Clear summary, basis `model:openai/deepseek-flash`, cost `calls=1 in=6848 out=730` | Same, basis `record:openai/deepseek-flash` | Same, basis `openai/deepseek-v4-pro` |
+
+- **A memory entry appears with real content, and commands appear.** Thursday was resolved correctly to 2026-11-05.
+- **Flash is about 5 times faster than Pro, and it gave the better answer** (Pro dropped the date). Pro spends most of its
+  output on reasoning: a 20-token direct probe returned empty content with `finish_reason: length`.
+- **Live output varies between runs:** two commands in run 1 and one in run 2, and different times (07:00 or 09:00 UTC).
+  The script on stage must not depend on an exact live wording.
+- **Confidence 0.5 is below the default `create` threshold of 0.6**, so Homemind shows PPMA's commands as proposals to approve,
+  which matches the plan ("PPMA only proposes").
+- **Times come in UTC.** The model wrote `+00:00` times. PPMA localises prompts to the host time zone (`USER_ZONE`), so
+  T6.1 should check what zone the demo machine reports, and Homemind should convert to the family's zone.
+- Cost: about 15K tokens per family event on Flash, at 4 model calls. PPMA must never be awaited in a request path (as
+  CLAUDE.md says): the 15 to 17 seconds are background time.
+
+### Flow policy refusals
+
+Each run logged `NotClearedError` for `ingest.extract` and `command.decide`, with `missing: ["financial", "health"]`. The
+triggers came after our `command.outcome` events, one pair per outcome. `command.outcome` is a standard type with no
+sensitivity label, so PPMA treats it as health, financial and personal at once, and with `--agent-clear personal` it does
+not send it to the cloud model. The outcome is still recorded (calibration needs no model). **This does not block the
+demo.** Do not widen the clearance to fix it. The first-hand event (`homemind.message_received`, labelled `personal`)
+was processed normally.
+
+### Record and replay
+
+- `--inference record --cassette <file>` works: 4 records, 6.4 KB, `model: record:openai/deepseek-flash` in explain.
+  The cassette was written outside the repo (PPMA refuses a cassette inside a git work tree unless `--synthetic`).
+- **`--inference replay` misses at once** (`replay miss: task=ingest.gate`), so nothing happens: no memory, no commands.
+  The cause: every ask carries a `NOW` context block with the wall-clock time to the microsecond
+  (`../ppma/src/ppma/core/asking.py`, `now_block`). The replay key hashes the context, and `ppma serve` has no option to
+  fix the clock. A replay through `ppma serve` can therefore never match a recording.
+- **Verdict: replay is not good enough for the demo script.** Options, none taken yet:
+  1. **Live Flash on stage (recommended):** 15 to 17 seconds in the background is fine, because nothing waits for PPMA.
+     Needs network and balance.
+  2. **Homemind-side fallback:** the deterministic logic carries every scene anyway (CLAUDE.md). For PPMA's part, T6.1 can
+     save the PPMA commands from a good rehearsal and offer them back, clearly labelled as recorded, when PPMA is
+     offline. That is Homemind's own feature, not PPMA replay.
+  3. Ask the PPMA owners for a fixed-clock option in `ppma serve`. That changes PPMA, so it needs the human's decision.
+
+### How to rerun
+
+```bash
+node scripts/ppma-model-spike.mjs --model deepseek-flash            # live, paid, about 20 s
+node scripts/ppma-model-spike.mjs --model deepseek-v4-pro           # live, paid, about 90 s
+node scripts/ppma-model-spike.mjs --model deepseek-flash --inference record --cassette ../ppma-cassettes/flash.json
+node scripts/ppma-model-spike.mjs --model deepseek-flash --inference replay --cassette ../ppma-cassettes/flash.json  # misses, see above
+```

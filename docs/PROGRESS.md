@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T0.3 in progress, blocked. T0.1 and T0.2 done
-- **Next task:** T0.3 (resume), then T0.4
+- **Current task:** T0.1, T0.2 and T0.3 done
+- **Next task:** T0.4 (images and two windows), then the P0 STOP report
 - **Scenes working end to end:** none
-- **Blocked on:** the DeepSeek account has no balance. Every chat call returns `402 Insufficient Balance`
-- **Last updated:** 2026-11-04, during T0.3
+- **Blocked on:** nothing. The human still has to choose the model (Flash recommended, see the T0.3 log)
+- **Last updated:** 2026-11-04, after T0.3
 
 ## Task status
 
@@ -18,7 +18,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | --- | --- | --- | --- |
 | T0.1 | Project setup | done | Node 22.23.4. All green: 141 unit, 40 e2e, after two small test fixes |
 | T0.2 | Spike: PPMA contract | done | `scripts/ppma-smoke.sh` passes 21 checks against fake PPMA. Facts in `docs/homemind-spikes.md` |
-| T0.3 | Spike: PPMA with DeepSeek | in progress | Blocked: DeepSeek `402 Insufficient Balance`. Script ready: `scripts/ppma-model-spike.mjs` |
+| T0.3 | Spike: PPMA with DeepSeek | done | Flash: memory and commands in about 16 s. Replay through `ppma serve` always misses, so it is not usable on stage. Results in `docs/homemind-spikes.md` |
 | T0.4 | Spike: images and two windows | not started |  |
 | T1.1 | Types, clock, store, seed | not started |  |
 | T1.2 | Item state transitions | not started |  |
@@ -53,7 +53,8 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 - T0.2: the bridge needs both PPMA tokens. The app token posts events and reads the stream. The owner token is the only one allowed to read memory views and explain. Both stay server-side.
-- T0.3: the human approved measuring both `deepseek-flash` and `deepseek-v4-pro` (the endpoint lists both) and then choosing. CLAUDE.md says Flash, and `.env.local` currently says `deepseek-v4-pro`. The model is not chosen yet.
+- T0.3: both models were measured, as the human approved. `deepseek-flash` took 16 s with a better answer, and `deepseek-v4-pro` took 89 s. Recommended: `deepseek-flash`, which also matches CLAUDE.md. **Waiting for the human's choice.** `.env.local` still says `deepseek-v4-pro`.
+- T0.3: PPMA replay is not usable for the demo. Plan: live Flash on stage, with Homemind's deterministic logic carrying every scene if PPMA is slow or down. The fallback options are in `docs/homemind-spikes.md`.
 - T0.2: Homemind keeps one long-lived PPMA stream and persists its last stream id, because every connect and disconnect adds a `ppma.app_stream_status` event to PPMA's memory.
 
 ## Deviations from the plan
@@ -66,14 +67,17 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 | --- | --- | --- | --- |
 | `npm ci` reports 5 vulnerabilities (4 moderate, 1 high) in existing dependencies (6 on Node 20). | T0.1 | Low | Existing before this work. Not touched (no dependency changes without asking). |
 | Fake PPMA issues no commands, so the `command.outcome` loop and PPMA proposals cannot be tested against it as is. | T0.2 | Medium, for T6.1 | Try `ppma serve --fake-script`, or write `scripts/fake-ppma.mjs` as the plan allows. |
-| Fake PPMA's memory entries hold the event type name, not the content. The demo's memory screen needs a real model. | T0.2 | Medium, for T6.2 | T0.3 checks a real model. |
-| DeepSeek account has no balance: `GET /models` works with the key, but every `/chat/completions` returns `402 Insufficient Balance`. | T0.3 | High: blocks T0.3, T0.4 and every live-model task | The human tops up the account. Until then, `HOMEMIND_LLM=fake` work can continue. |
-| `npm test` once failed all 20 files on the first cold run (the summary said "no tests"). The run right after gave the normal result. | T0.2 | Low | Rerun once before investigating. |
+| Fake PPMA's memory entries hold the event type name, not the content. | T0.2 | Low | T0.3 confirmed a real model (Flash) writes real content. Use live Flash for memory tests. |
+| PPMA `--inference replay` always misses: every ask has a `NOW` block with the wall-clock time, and `ppma serve` cannot fix the clock. | T0.3 | Medium, for T6.1 and T9 | Use live Flash on stage. Optionally, Homemind saves good PPMA commands and offers them, labelled, when PPMA is offline. A PPMA clock option needs the human's OK. |
+| PPMA withholds `command.outcome` from the cloud model (no sensitivity label, so treated as health and financial). | T0.3 | Low | Outcomes are still recorded. Do not widen clearances. |
+| PPMA command times come in UTC (`+00:00`). | T0.3 | Medium, for T6.2 | Convert to the family's time zone. Check the demo machine's zone. |
+| `npm test` sometimes fails all 20 files on the first cold run (the summary said "no tests"). The run right after gives the normal result. Seen in T0.2 (Node 20) and T0.3 (Node 22). | T0.2 | Low | Rerun once before investigating. The error was not captured. |
 
 ## What needs the human
 
 - [x] DeepSeek endpoint, key and model names (in `.env.local`), for T0.3 and T0.4
-- [ ] **Top up the DeepSeek account balance** (402 Insufficient Balance), for T0.3 and T0.4
+- [x] DeepSeek key with balance (replaced on 2026-11-04)
+- [ ] **Choose the model:** `deepseek-flash` (recommended) or `deepseek-v4-pro`, and set `HOMEMIND_LLM_MODEL` in `.env.local`
 - [x] PPMA clone at `../ppma`, for T0.2
 - [ ] A real 接龙 screenshot, if available, for T0.4
 - [ ] Huawei phone for a browser test, if available, for T9.2
@@ -87,8 +91,8 @@ Never put keys here.
 | --- | --- |
 | Base branch | `feat/fridge2table` |
 | Work branch | `feat/homemind` |
-| LLM mode | live in `.env.local`, but the account has no balance |
-| Model name | not chosen: `deepseek-flash` vs `deepseek-v4-pro`, to be measured in T0.3 |
+| LLM mode | live (`.env.local`) |
+| Model name | `.env.local` says `deepseek-v4-pro`. `deepseek-flash` recommended, waiting for the human |
 | PPMA mode | fake, strict auth, port 18765, for the smoke check only |
 | PPMA space | `me` |
 
@@ -150,7 +154,26 @@ Template (copy for each task):
 - Expected output: `v22.23.4`. 19 of 20 files pass, and only `epicVite` fails ("Port 5173 is already in use"). Alone: 3 passed.
 - Manual check: `npm ci` prints no `EBADENGINE`.
 
-### T0.3 Spike: PPMA with DeepSeek: in progress, blocked (2026-11-04)
+### T0.3 Spike: PPMA with DeepSeek: done (2026-11-04)
+**Built:** the T0.3 results section in `docs/homemind-spikes.md`. `scripts/ppma-model-spike.mjs` fixes: `not_cleared` is a subset of `permanent` (it was counted twice), and the report lists asks that the flow policy withheld.
+**Decisions:** measured both models before choosing. Recommend Flash and wait for the human. Do not change PPMA to get replay working.
+**Deviations:** none from the plan. The plan's fallback, "keep PPMA for memory and recorded proposals", can't use PPMA replay (see Open issues).
+**Test results:**
+- Direct probe with the new key: `deepseek-flash` 200 in 1.0 s. `deepseek-v4-pro` 200 in 1.4 s, with empty content at 20 tokens (it reasons first).
+- `ppma-model-spike.mjs --model deepseek-flash`: PPMA idle after 17.0 s, 4 asks, 4 calls, 13.7K tokens in, 1.6K out. One memory entry with the content. Two commands (shopping item, and a proposed item on Thursday 2026-11-05). Confidence 0.5. Explain works.
+- `--model deepseek-v4-pro`: 89.2 s, 4 asks, 4 calls, 5.0K tokens out. Memory entry right. Two commands, but the proposed item has no date. PASS.
+- `--model deepseek-flash --inference record`: 15.4 s, 4 records in the cassette, one command this time. PASS.
+- `--inference replay` with that cassette: `replay miss: task=ingest.gate`, nothing processed, exit 1. Cause: the `NOW` block in every ask.
+- `npx tsc --noEmit`: clean (Node 22.23.4). `npm test`: the first, cold run failed all 20 files with "no tests" (the known flake). The next two runs passed 141 of 141.
+- No UI change, so e2e was not needed.
+**Not done or not verified:** the model choice is the human's. A replay with a frozen clock was not tried, because that would change PPMA.
+**Next task should know:** T0.4 uses the same `.env.local`. Read the key with code that never prints it (see `readEnvFile` in `scripts/ppma-model-spike.mjs`). For images, check first whether the endpoint accepts `image_url` content, with one small request.
+**How to verify:**
+- Commands: `node scripts/ppma-model-spike.mjs --model deepseek-flash; echo $?`
+- Expected output: `PPMA idle: yes after` about 15 to 20 s, one memory statement about the kindergarten party, at least one `homemind.*` command, `PASS: the model answered every ask it was sent`, then `0`. The wording varies between runs.
+- Manual check: compare the "Results" table in `docs/homemind-spikes.md` with your own run. The DeepSeek usage page should show a few requests of about 15K tokens each.
+
+### T0.3, first attempt: blocked (2026-11-04)
 **Built:** `scripts/ppma-model-spike.mjs`: starts PPMA (`--profile fake`, in memory; `--agent openai`, `--agent-clear personal`, strict auth, port 18766) with `PPMA_LLM_*` taken from `.env.local`, never printing the key. It posts the kindergarten message as `homemind.message_received` (fixed id and time, so a replay sees the same input), answers any command, waits for PPMA to go idle, and reports memory statements, commands, model asks, calls, tokens, latency and failures. Supports `--inference record|replay --cassette`. The manifest moved to `scripts/ppma-homemind-manifest.json`, shared with `ppma-smoke.sh`. Committed in `23c922f`.
 **Decisions:** `--profile fake` with `--agent openai`, so nothing goes into `~/.local/share/ppma`. Measure both models before choosing (the human approved).
 **Deviations:** none.

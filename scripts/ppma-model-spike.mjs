@@ -140,11 +140,19 @@ try {
   if (explanation) console.log(`\nexplain(first command): ${explanation.summary ?? explanation.rationale}\n  basis: ${explanation.basis.map((b) => `${b.kind}:${b.ref}`).join(', ')}`);
   const failures = log.filter((l) => /ERROR|Traceback|refus|NotCleared|miss/i.test(l));
   if (failures.length) console.log(`\nPPMA log lines worth reading:\n  ${failures.slice(-15).join('\n  ')}`);
-  const failed = (inf.failures?.transient ?? 0) + (inf.failures?.permanent ?? 0) + (inf.failures?.not_cleared ?? 0);
+  // not_cleared is a subset of permanent: asks PPMA itself withheld from the engine (flow policy),
+  // not calls the model failed.
+  const refused = inf.failures?.not_cleared ?? 0;
+  const failed = (inf.failures?.transient ?? 0) + (inf.failures?.permanent ?? 0) - refused;
+  const recent = status.flow?.refused?.recent ?? [];
+  if (recent.length) {
+    console.log('\nasks PPMA withheld from the engine (flow policy):');
+    for (const r of recent) console.log(`  ${r.task}: missing ${JSON.stringify(r.missing)}, trigger ${JSON.stringify(r.trigger)}`);
+  }
   const asks = (inf.live?.asks ?? 0) + (inf.hits?.asks ?? 0);
   const ok = settled && failed === 0 && asks > 0;
   if (!ok) console.log(`\nFAIL: ${!settled ? 'PPMA did not settle' : failed ? `${failed} model call(s) failed` : 'the model was never asked'}`);
-  else console.log('\nPASS: the model answered every ask');
+  else console.log(`\nPASS: the model answered every ask it was sent${refused ? ` (${refused} withheld by flow policy)` : ''}`);
   process.exit(ok ? 0 : 1);
 } catch (err) {
   console.log(`FAIL: ${err.message}`);

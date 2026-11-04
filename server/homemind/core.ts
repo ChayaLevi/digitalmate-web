@@ -28,6 +28,7 @@ import type {
   ItemSource,
   ItemType,
   Member,
+  OpenReason,
   Ownership,
   Recurrence,
   SourceKind,
@@ -70,8 +71,9 @@ export type Change =
   | { kind: 'create'; item: NewItem }
   | { kind: 'edit'; itemId: string; version: number; patch: ItemPatch }
   | { kind: 'assign'; itemId: string; version: number; ownerId: string }
-  /** "Who's taking this?" Candidates default to everyone who could own it. */
-  | { kind: 'open'; itemId: string; version: number; candidateIds?: string[] }
+  /** "Who's taking this?" Candidates default to everyone who could own it. `reason` is set only by
+   * availability.ts; the bridge never takes one from a client. */
+  | { kind: 'open'; itemId: string; version: number; candidateIds?: string[]; reason?: OpenReason }
   | { kind: 'unassign'; itemId: string; version: number }
   | { kind: 'claim'; itemId: string; version: number }
   | { kind: 'confirm'; itemId: string; version: number }
@@ -142,7 +144,7 @@ function memberOf(state: HomemindState, id: string): Member | undefined {
 
 const isParent = (state: HomemindState, id: string) => memberOf(state, id)?.role === 'parent';
 
-/** Whether `memberId` may see `item` at all. visibility.ts (T1.3) builds the full per-member view on this. */
+/** Whether `memberId` may see `item` at all. visibility.ts builds the full per-member view on this. */
 export function canSee(state: HomemindState, memberId: string, item: Item): boolean {
   return item.visibility === 'family' || isParent(state, memberId);
 }
@@ -291,13 +293,27 @@ function checkOwnership(state: HomemindState, actor: string, item: Item, ownersh
     const ids = ownership.candidateIds?.length ? checkMembers(state, ownership.candidateIds, 'candidateIds') : eligible;
     if (!Array.isArray(ids)) return ids;
     if (!ids.every(id => eligible.includes(id))) return invalid('a candidate cannot own this item');
-    return { state: 'open', candidateIds: ids };
+    if (ownership.reason === undefined) return { state: 'open', candidateIds: ids };
+    const reason = checkReason(state, ownership.reason);
+    if ('ok' in reason) return reason;
+    return { state: 'open', candidateIds: ids, reason };
   }
   if (ownership.state === 'assigned') {
     if (typeof ownership.ownerId !== 'string' || !eligible.includes(ownership.ownerId)) return invalid('that member cannot own this item');
     return { state: 'assigned', ownerId: ownership.ownerId, confirmed: ownership.ownerId === actor };
   }
   return invalid('unknown ownership state');
+}
+
+/** A reason must name a real event that makes that member unavailable. */
+function checkReason(state: HomemindState, reason: OpenReason): OpenReason | ChangeError {
+  if (!reason || reason.kind !== 'unavailable') return invalid('unknown reason');
+  const event = typeof reason.eventId === 'string' ? state.items.find(i => i.id === reason.eventId) : undefined;
+  if (!event || event.type !== 'event' || typeof reason.memberId !== 'string' || !event.unavailableMemberIds.includes(reason.memberId)) {
+    return invalid('the reason must name an event that makes that member unavailable');
+  }
+  if (typeof reason.date !== 'string' || !LOCAL_DATE.test(reason.date)) return invalid('reason date must be YYYY-MM-DD');
+  return { kind: 'unavailable', memberId: reason.memberId, eventId: event.id, date: reason.date };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -492,8 +508,10 @@ function planItemChange(state: HomemindState, change: ItemChange, actor: string)
 
     case 'open': {
       if (settled) return notWhileDone();
-      const ownership = checkOwnership(state, actor, item, { state: 'open', candidateIds: change.candidateIds ?? [] });
+      const ownership = checkOwnership(state, actor, item, { state: 'open', candidateIds: change.candidateIds ?? [], reason: change.reason });
       if ('ok' in ownership) return ownership;
+      // The reason stays off the log: whoever can't see the event must not find it, or who it keeps
+      // away, there. Screens read it from the ownership, which visibility.ts redacts.
       return one({ ...item, ownership }, 'open', 'Asked who is taking this');
     }
 

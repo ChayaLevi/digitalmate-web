@@ -49,6 +49,20 @@ export interface Family {
 
 export type ItemType = 'event' | 'preparation' | 'task';
 
+/**
+ * Why Homemind opened an item, rather than a person. Only availability.ts sets it. A member who
+ * can't see the event gets the item without the reason (visibility.ts).
+ */
+export interface OpenReason {
+  kind: 'unavailable';
+  /** The owner who is unavailable then. */
+  memberId: string;
+  /** The event that makes them unavailable. */
+  eventId: string;
+  /** Local date `YYYY-MM-DD` of the clashing occurrence. */
+  date: string;
+}
+
 export type Ownership =
   | { state: 'none' }
   | {
@@ -57,6 +71,7 @@ export type Ownership =
       /** Set when the owner handed it back. The note is theirs, shown as written. */
       handedBackBy?: string;
       note?: string;
+      reason?: OpenReason;
     }
   | { state: 'assigned'; ownerId: string; confirmed: boolean };
 

@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T1.2 done (item state transitions)
-- **Next task:** T1.3 (visibility and availability)
+- **Current task:** T1.3 done (visibility and availability). **P1 is done.**
+- **Next task:** T2.1 (routes and identity)
 - **Scenes working end to end:** none
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-04, after T1.2
+- **Last updated:** 2026-11-04, after T1.3
 
 ## Task status
 
@@ -22,7 +22,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T0.4 | Spike: images and two windows | done | Flash read the simulated 接龙 screenshot: 7/7 facts, 3 of 3 runs, about 3 s with reasoning off. `sessionStorage` separates windows. 8/8 checks |
 | T1.1 | Types, clock, store, seed | done | `server/homemind/{types,clock,store,seed}.ts`, 4 test files, 42 tests. 183 of 183 in all. Zone = machine's; tsc covers the core |
 | T1.2 | Item state transitions | done | `server/homemind/core.ts`, 60 tests in `tests/homemindCore.test.ts`. 243 of 243 in all |
-| T1.3 | Visibility and availability | not started |  |
+| T1.3 | Visibility and availability | done | `server/homemind/{visibility,availability}.ts`, 43 tests in 2 files. 286 of 286 in all. P1 phase checks pass |
 | T2.1 | Routes and identity | not started |  |
 | T2.2 | Surface builders | not started |  |
 | T2.3 | Live events | not started |  |
@@ -52,6 +52,12 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
+- T1.3: `viewFor(state, memberId)` in `visibility.ts` is the one base for every screen, search, model context and SSE event (`eventFor`). For a non-parent it drops Parents-only items, their preparations (also checked through the parent event), their activity, reminders and "Why?" records (by `basis.ref`), and the activity of items that no longer exist. **No view carries Undo patches**, for anyone: they hold whole earlier versions of items. Rules, preferences and action cards are not filtered (they have no visibility field).
+- T1.3: when an item leaves a member's view (it became Parents-only, or an undo removed it), `eventFor` sends `item: null`, as for a deletion. A member who never saw it gets nothing.
+- T1.3: PPMA gets only `isFamilyWide(state, item)` items.
+- T1.3: a conflict is an item **assigned** (confirmed or not) to a member while an event with that member in `unavailableMemberIds` is on the board (`status: 'open'`, so not proposed, dismissed or removed). Times overlap half-open: touching ends do not clash. Not conflicts: all-day items, unowned or open items, the event itself, its preparations, and the member's own unavailability events.
+- T1.3: `proposeForConflicts` opens the item ("Who's taking this?") through `applyChange`, so it has Undo, and assigns nobody. Candidates: those who could own it and are free then, else everyone else who could own it. For a weekly item, only that occurrence moves: `cancel_occurrence` in the series, plus an open one-off copy with id `<id>-<date>` and source `{kind: 'rule', label: 'Availability check'}`. Run it when an unavailability event is created or edited, not on every change, so an owner who takes the item back is warned (`findConflicts` shows it again) but not asked again. The bridge checks `mayOpenOnItsOwn(family)` first (not paused, autonomy 2 or more). At level 1 it shows the conflicts as suggestions.
+- T1.3: the reason ("Mom is at the wedding") is stored on the ownership (`Ownership.open.reason`), not in the activity log. `redactItem` drops it for a member who can't see the event, and `unavailabilityFor` / `conflictsVisibleTo` leave out Parents-only events. So a teen sees the pickup open, with no reason and no unavailability.
 - T1.2: every change on an existing item must carry `version`, including the verbs (assign, claim, done...), not only PATCH. A wrong version gives `409 stale` with the current item. Undo needs no version: it checks that each item it touched is still at the version the change left it at.
 - T1.2: a non-parent gets the same `404` for a "Parents only" item as for a missing one, for every change and for undo, even with a wrong version. Only parents can own one or be its candidates. A preparation is as private as its event, and follows it when the event's visibility changes.
 - T1.2: only members with an account can act or own an item (so not Noa). A claim on an item someone else owns is refused (`409 conflict`), so two "I'll take it" taps can't both win. Reassigning is `assign`.
@@ -76,6 +82,7 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 ## Deviations from the plan
 
+- T1.3: added `OpenReason` to `types.ts` and an optional `reason` to `Ownership` `open` and to the core's `open` change, validated in `core.ts` (it must name an event that makes that member unavailable). The plan's types do not have it.
 - T1.2: changed T1.1 types, as T1.1 allowed. `UndoPatch` is now `{ items: UndoEntry[] }` (one change can touch several items), with `afterVersion` per item. `Activity` gained `kind`, `itemId`, `memberId`, `note`, `ref`, `undone`. `Ownership` `open` gained optional `handedBackBy` and `note`. Nothing stored used the old shapes (activity was always empty).
 - T1.2: the plan's verbs `ack` and `snooze` belong to reminders (T4.1). The core has `confirm` for "I'm on it" on an assignment; the bridge can map `ack` to it. Added `open`, `unassign`, `cancel`, `cancel_occurrence`, which the plan's verb list does not name.
 - T0.1: fixed two existing test problems, with the human's OK (2026-11-04). `playwright.config.ts` webServers now pass variables through `env` (works on Windows). `tests/epicVite.test.ts` adds `strictPort: false` (no port race).
@@ -91,6 +98,7 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 | PPMA withholds `command.outcome` from the cloud model (no sensitivity label, so treated as health and financial). | T0.3 | Low | Outcomes are still recorded. Do not widen clearances. |
 | PPMA command times come in UTC (`+00:00`). | T0.3 | Medium, for T6.2 | Convert to the family's time zone. Check the demo machine's zone. |
 | `npx tsc --noEmit` still does not check `server/*.ts` outside `server/homemind/` (for example the future `server/homemind.ts` adapter), nor `services/` or `vite.config.ts`. | T1.1 | Low | Existing setup. The adapter is covered by bridge tests. Widening `include` further needs the human's OK. |
+| The one-off copy of a weekly occurrence (availability split) loses a seeded Chinese title, because `NewItem` has no `titleZh`. Seeded pickups are one-off, so the demo is not affected. A candidate list without the unavailable parent tells a teen that parent can't make it, but not why or where. | T1.3 | Low | Add `titleZh` to `NewItem` if a weekly seeded item needs the split. |
 | `npm test` sometimes fails all 20 files on the first cold run (the summary said "no tests"). The run right after gives the normal result. Seen in T0.2 (Node 20) and T0.3 (Node 22). | T0.2 | Low | Rerun once before investigating. The error was not captured. |
 
 ## What needs the human
@@ -148,6 +156,30 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T1.3 Visibility and availability: done (2026-11-04). End of P1
+**Built:**
+- `server/homemind/visibility.ts`: `canSeeItem` (also checks a preparation's event), `redactItem`, `visibleItems`, `viewFor` (the `MemberView`: family, items, reminders, preferences, rules, action cards, activity without Undo patches, whys), `eventFor` (one `CoreEvent` per member, or `null`), `searchItems` (title in both languages and notes, cancelled items left out, at most 50), `isFamilyWide` (what may go to PPMA). Imports only `./core` and `./types`.
+- `server/homemind/availability.ts`: `findConflicts(state, from, to, {eventId?, itemId?})`, `proposeForConflicts(state, conflicts, actor, clock)` (all or nothing, weekly items split by occurrence), `conflictsVisibleTo`, `unavailabilityFor` (for summaries), `unavailableDuring`, `mayOpenOnItsOwn`. Imports only `./clock` (type), `./core`, `./types`, `./visibility`.
+- `server/homemind/types.ts` and `core.ts`: `OpenReason` on `Ownership` `open` (see Deviations).
+- Tests: `tests/homemindVisibility.test.ts` (16) and `tests/homemindAvailability.test.ts` (27). The visibility tests build a board where the counselor meeting has a history (an edit, a preparation, an owner change, a reminder, a "Why?" record, an undone Parents-only create), then check that the serialized views for Maya and Noa match none of its id, its titles in either language or its notes. Scene 4: Mom's wedding on Tuesday 15:00 to 22:00 flags her 16:30 pickup, which opens for Dad and Maya with the reason. Dad takes it, and Undo gives it back to Mom.
+**Decisions:** see "Decisions made during the build" (T1.3 entries).
+**Deviations:** `OpenReason` (see "Deviations from the plan").
+**Test results:**
+- `npm test` before any change: 25 files, 243 passed. After: 27 files, **286 passed**, in 3 runs. The first run after the change printed only the header, with no summary (I did not capture the exit code). The next two gave 286 of 286 with exit 0. It looks like the known cold-run flake (Open issues).
+- `npx vitest run tests/homemind`: 7 files, 145 passed.
+- Mutation checks, each restored from a copy and confirmed with `cmp`: (1) no reason redaction, (2) activity not filtered, (3) every SSE event passed through, (4) any member's unavailability counted. Each made 3 tests fail.
+- `npx tsc --noEmit`: clean. The strict command from T1.1 over `server/homemind/*.ts tests/homemind*.test.ts`: clean.
+- **Phase-end checks (P1)**, with `HOMEMIND_ENABLED` unset in the shell and absent from `.env.local`: `npm run build` OK (5.2 s). `npm test` 286 of 286. `npm run test:e2e` **40 of 40** (4.9 min). The Family tab and `/api/homemind/*` are absent: no file in `src/`, `services/` or `vite.config.ts` mentions Homemind, and there is no `server/homemind.ts` yet. The base app behaves as before.
+**Not done or not verified:** nothing calls these functions yet (T2.1 to T2.3). The redaction of sensitive previews ("You have a reminder") is part of the reminders (T4.1), not here. The model context (T5.1) must be built from `viewFor`.
+**Next task should know:**
+- T2.1: build every screen from `viewFor(state, member)`, and never from `state`. Search is `searchItems`. Never accept a `reason` in a client's `open` request: only `availability.ts` sets one. After a `create` or `edit` of an event with `unavailableMemberIds`, call `findConflicts(state, now, now + horizon, { eventId })`. If `mayOpenOnItsOwn(state.family)`, apply `proposeForConflicts` as the same actor, and otherwise return the conflicts as a suggestion card.
+- T2.3: send `eventFor(state, member, event)` to each member's stream, and skip `null`.
+- The activity in a view has no `undo` patches. To offer Undo on a screen, decide on the server (the activity has `undo` and no `undone`, and the member is its actor or a parent).
+**How to verify:**
+- Commands: `npx vitest run tests/homemindVisibility.test.ts tests/homemindAvailability.test.ts` · `npm test` · `npx tsc --noEmit`
+- Expected output: `Test Files  2 passed (2)` and `Tests  43 passed (43)`. Then `Test Files  27 passed (27)` and `Tests  286 passed (286)`. tsc prints nothing.
+- Manual check: run `npx tsx -e "import('./server/homemind/seed.ts').then(async s => { const v = await import('./server/homemind/visibility.ts'); const st = s.seedState({ now: Date.now() }); console.log(JSON.stringify(v.viewFor(st, 'maya')).includes('counselor'), JSON.stringify(v.viewFor(st, 'dad')).includes('counselor')) })"` and confirm it prints `false true`.
 
 ### T1.2 Item state transitions: done (2026-11-04)
 **Built:**

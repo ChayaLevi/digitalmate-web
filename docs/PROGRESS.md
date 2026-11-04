@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T2.1 done (routes and identity).
-- **Next task:** T2.2 (surface builders)
+- **Current task:** T2.2 done (surface builders).
+- **Next task:** T2.3 (live events)
 - **Scenes working end to end:** none (the API for Scene 1's assign and Scene 4's availability works; no screens yet)
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-04, after T2.1
+- **Last updated:** 2026-11-04, after T2.2
 
 ## Task status
 
@@ -24,7 +24,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T1.2 | Item state transitions | done | `server/homemind/core.ts`, 60 tests in `tests/homemindCore.test.ts`. 243 of 243 in all |
 | T1.3 | Visibility and availability | done | `server/homemind/{visibility,availability}.ts`, 43 tests in 2 files. 286 of 286 in all. P1 phase checks pass |
 | T2.1 | Routes and identity | done | `server/homemind.ts`, 26 tests in `tests/homemindBridge.test.ts`. 312 of 312 in all. Routes for later tasks answer 501 |
-| T2.2 | Surface builders | not started |  |
+| T2.2 | Surface builders | done | `src/lib/homemindSurfaces.ts`, 70 tests in `tests/homemindSurfaces.test.ts` + 1 bridge test. 382 of 382 in all. `/screen/:name` now returns the surface |
 | T2.3 | Live events | not started |  |
 | T3.1 | New components | not started |  |
 | T3.2 | Family tab | not started |  |
@@ -51,6 +51,13 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 ## Decisions made during the build
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
+
+- T2.2: `screenTurn(screen, {lang, now, view, query?, results?, undoable?, ppma?, llm?})` returns `{message, thinking, followUps, jsonl}` (same shape as a Fridge2Table turn). It never reads a clock: "now" is passed in. Surface ids are stable per screen (`homemind-my-day`), so a refresh replaces the surface. The client imports only types from `server/homemind/types`; the builder defines its own `HomemindViewData` (structurally the bridge's `MemberView`).
+- T2.2: action ids are `homemind.<verb>:<id>`, `kind: 'homemind'`, `args: {verb, itemId, version, memberId?}`. Verbs: item verbs (`claim assign ack handback done approve dismiss undo`), plus `add`, `search`, `confirm-card`, `cancel-card`, `why` (args `cardId` / `whyId`). T3.2 maps them to bridge calls. Row actions are offered by role: a parent gets "Assign to X" (not to children, and only to parents for Parents-only items); the server still decides.
+- T2.2: `TaskList` row = `{id,title,meta,ownerLabel,state,tone,simulated?,actions}`. `CalendarBoard` data = `{today, weekStartsOn, weekdays, members[{id,label}], entries[]}`; an entry has the **local** `date`, `time`, `endTime` in the family's zone (no conversion on the client) and weekly items are already expanded (7 days back, 60 ahead, cancelled dates skipped). `Simulated` is both a `simulated: true` field **and** the word in `meta` / text, so it is labeled even on a component that ignores the flag. T3.1 may drop the word from `meta` if its badge renders the flag.
+- T2.2: no per-member workload counts anywhere (CLAUDE.md: no workload comparison between partners). Family shows counts of open, not confirmed, proposed and today for the whole board.
+- T2.2: pending action cards show only to a parent and only until `expiresAt`; they use `ApprovalCard` with confirm, cancel and Why? buttons. Nobody else sees them.
+- T2.2: `undoable` (activity ids) is computed by the bridge from the full state: has an Undo patch, not undone, and the member is a parent or the actor.
 
 - T2.1: `HOMEMIND_SECRET` must be 16 characters or more. Without it, every route except `GET /health` answers `503 not_configured`, and health says `ready: false`. The session token is `<base64url payload>.<HMAC-SHA256>` with the member id and a 12-hour expiry. A valid token for a member without an account (Noa) is refused (`401`).
 - T2.1: **order of checks:** path and method match (else `404`, and a demo-only route is `404` without `HOMEMIND_DEMO=1`) → same-origin on every non-GET (`403`) → secret (`503`) → session (`401`) → body (cap 64 KB, `413`; bad JSON `400`) → core. So an unknown path never reveals whether you are signed in.
@@ -89,6 +96,9 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 - T0.2: Homemind keeps one long-lived PPMA stream and persists its last stream id, because every connect and disconnect adds a `ppma.app_stream_status` event to PPMA's memory.
 
 ## Deviations from the plan
+
+- T2.2: `GET /screen/memory` still answers 501 (T6.2 owns PPMA memory). `memoryScreen` is built and tested (saved preferences, plus a PPMA offline/not-connected notice), but not routed. `GET /screen/:name` returns the turn (`message, thinking, followUps, jsonl`) **and** keeps `screen, lang, now, view, query, results`, because T3.2's forms need ids and versions and the T2.1 tests read `view`.
+- T2.2: the surfaces name `TaskList` and `CalendarBoard`, which T3.1 builds. Until then the renderer does not know them (the parser accepts any component name).
 
 - T2.1: `GET /screen/:name` returns domain data as JSON `{screen, lang, now, view, query?, results?}` (the member's `viewFor`), not "a turn with JSONL". The JSONL comes from `src/lib/homemindSurfaces.ts`, which is T2.2. T2.2 should switch this route to build the surface (and keep the JSON shape or drop it, since nothing uses it yet).
 - T2.1: whitelisted but not built, each answering `501 {error: 'not_implemented', task}` after the normal origin and session checks: `GET /events` (T2.3), `POST /chat` (T5.2), `POST /actions/:id/confirm|cancel` (T7.1), `POST /preferences` (T5.4), `POST /rules` (T7.3), `PUT /settings` (T4.2), `POST /demo/clock` (T4.1) and `/demo/post-group-message` (T7.2), `POST /items/:id/snooze` (T4.1), `GET /screen/memory` (T6.2). The task text says "all routes"; these have nothing behind them yet and must not fake a result.
@@ -167,6 +177,27 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T2.2 Surface builders: done (2026-11-04)
+**Built:**
+- `src/lib/homemindSurfaces.ts`: `screenTurn` for `my-day`, `family`, `calendar`, `search`, `rules`, `memory`, `activity`, `settings`; `homemindErrorTurn`; `hx(lang, key)` strings in EN and ZH. Empty lists become a line of text. Seeded Chinese titles show in zh and fall back to English for user items. Time zone errors do not throw.
+- `server/homemind.ts`: `GET /screen/:name` builds the surface (see Deviations).
+- `tests/homemindSurfaces.test.ts` (69 tests: every screen x 3 members x 2 languages through `A2uiSurfaceStore.fromJsonl`; Scene 1 assign and confirm; Scene 4 away list, reason and calendar; weekly expansion; Parents-only never reaches Maya on any screen; proposals; Simulated labels; action cards; memory notices; Undo; empty and error states; bad time zone) and one bridge test.
+**Decisions:** see "Decisions made during the build" (T2.2 entries).
+**Deviations:** memory not routed; `TaskList` / `CalendarBoard` not yet rendered (see Deviations).
+**Test results:**
+- `npm test` before: 28 files, 312 passed. After: 29 files, **382 passed**.
+- Mutation checks, each restored and confirmed with `cmp`: no parent check on action cards (1 test fails), no Simulated word on rows (1 fails).
+- `npx tsc --noEmit`: clean. `npm run build`: OK. `npm run test:e2e` with the flag off: **40 of 40** (3.7 min).
+- First edit of `server/homemind.ts` with a script cut off the end of the file; caught by the bridge suite failing to load, restored with `git checkout` and redone by hand.
+**Not done or not verified:** nothing renders these surfaces yet (T3.1, T3.2). Not checked at 390 px or with axe (no UI yet). Not the end of a phase, so no flag-off phase check beyond the e2e run above.
+**Next task should know:**
+- T2.3: `runChange` in `homemind.ts` has `result.events`; publish with `eventFor` per member. The client should re-fetch `/screen/:name` on `item.changed`.
+- T3.1: read the data shapes in the Decisions above. The action `args.version` is the version the screen was built from, so a stale tap gives the bridge's 409.
+**How to verify:**
+- Commands: `npx vitest run tests/homemindSurfaces.test.ts tests/homemindBridge.test.ts` · `npm test` · `npx tsc --noEmit`
+- Expected output: `Tests  96 passed (96)` for the first (69 surfaces + 27 bridge), then `Tests  382 passed (382)`. tsc prints nothing.
+- Manual check: with `HOMEMIND_ENABLED=1`, `HOMEMIND_SECRET` (16+ characters) and `HOMEMIND_DEMO=1`, sign in as mom (`POST /api/homemind/session`) and `GET /api/homemind/screen/my-day?lang=zh` with the `x-homemind-session` header: `jsonl` has three lines and the pickup row has "我来" and "分配给 爸爸".
 
 ### T2.1 Routes and identity: done (2026-11-04)
 **Built:**

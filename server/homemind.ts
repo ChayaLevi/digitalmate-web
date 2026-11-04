@@ -29,6 +29,7 @@ import { ID_PATTERN } from './homemind/types';
 import type { HomemindState, Item, Lang, Member } from './homemind/types';
 import { redactItem, searchItems, viewFor } from './homemind/visibility';
 import { isSameOrigin } from './orbit';
+import { screenTurn } from '../src/lib/homemindSurfaces';
 
 export const SESSION_HEADER = 'x-homemind-session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -374,15 +375,24 @@ const routes: Route[] = [
       if (name === 'memory') return notBuilt('T6.2')(ctx);
       const view = viewFor(ctx.rt.state, ctx.member.id);
       if (!view) return fail(ctx.response, 404, 'not_found', 'No such member');
-      // Domain data for now; src/lib/homemindSurfaces.ts (T2.2) turns it into a surface.
-      const query = ctx.url.searchParams.get('q') ?? '';
-      json(ctx.response, 200, {
-        screen: name,
+      const query = (ctx.url.searchParams.get('q') ?? '').slice(0, 100);
+      const now = new Date(ctx.rt.clock.now()).toISOString();
+      const results = name === 'search' ? searchItems(ctx.rt.state, ctx.member.id, query) : undefined;
+      const isParent = ctx.member.role === 'parent';
+      // A view carries no Undo patches, so the server says which changes this member may undo.
+      const undoable = ctx.rt.state.activity.filter(a => a.undo && !a.undone && (isParent || a.actor === ctx.member.id)).map(a => a.id);
+      const turn = screenTurn(name, {
         lang: ctx.lang,
-        now: new Date(ctx.rt.clock.now()).toISOString(),
+        now,
         view,
-        ...(name === 'search' ? { query: query.slice(0, 100), results: searchItems(ctx.rt.state, ctx.member.id, query) } : {})
+        query: name === 'search' ? query : undefined,
+        results,
+        undoable,
+        ppma: 'off',
+        llm: process.env.HOMEMIND_LLM === 'live' ? 'live' : 'fake'
       });
+      // The surface is what screens render. `view` stays for the client's forms (ids, versions).
+      json(ctx.response, 200, { ...turn, screen: name, lang: ctx.lang, now, view, ...(results ? { query, results } : {}) });
     }
   },
   { method: 'GET', pattern: /^\/events$/, auth: true, handler: notBuilt('T2.3') },

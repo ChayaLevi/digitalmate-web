@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { SESSION_HEADER, handleHomemindRequest, resetHomemindRuntime, signSession, verifySession } from '../server/homemind';
 import type { HomemindState, Item } from '../server/homemind/types';
+import { A2uiSurfaceStore } from '../src/protocol/a2ui/store';
 
 const SECRET = 'test-secret-0123456789';
 const ENV_KEYS = ['HOMEMIND_ENABLED', 'HOMEMIND_SECRET', 'HOMEMIND_DEMO', 'HOMEMIND_DATA_FILE'] as const;
@@ -416,6 +417,26 @@ describe('persistence', () => {
     resetHomemindRuntime();
     const again = as(await login('dad'));
     expect((await item(again, 'pickup-today')).ownership).toMatchObject({ state: 'assigned', ownerId: 'dad' });
+  });
+
+  it('screens answer with an A2UI surface in the requested language, and Undo only for what the member may undo', async () => {
+    const mom = as(await login('mom'));
+    const dad = as(await login('dad'));
+    const en = await json<{ jsonl: string }>(await mom.get('/screen/my-day?lang=en'));
+    const zh = await json<{ jsonl: string }>(await mom.get('/screen/my-day?lang=zh'));
+    expect(A2uiSurfaceStore.fromJsonl(en.jsonl).list()).toHaveLength(1);
+    expect(en.jsonl).toContain('My day');
+    expect(zh.jsonl).toContain('我的一天');
+    const { version } = await item(mom, 'pickup-today');
+    await mom.send('POST', '/items/pickup-today/assign', { version, ownerId: 'dad' });
+    // Dad did not make the change and is a parent, so he may undo it; Maya may not.
+    const log = await json<{ jsonl: string }>(await dad.get('/screen/activity'));
+    expect(log.jsonl).toContain('homemind.undo:');
+    const maya = as(await login('maya'));
+    expect((await json<{ jsonl: string }>(await maya.get('/screen/activity'))).jsonl).not.toContain('homemind.undo:');
+    const search = await json<{ jsonl: string; query: string }>(await mom.get('/screen/search?q=pickup'));
+    expect(search.query).toBe('pickup');
+    expect(search.jsonl).toContain('pickup-today');
   });
 
   it('two requests at once both apply, one after the other', async () => {

@@ -217,7 +217,8 @@ describe('proposals', () => {
 });
 
 describe('simulated is always labeled', () => {
-  it('says Simulated on a simulated item and in zh 模拟, and flags the row', () => {
+  // The visible badge comes from the flag; tests/homemindComponents.test.ts checks it renders in both languages.
+  it('flags a simulated item, without repeating the word in its meta line', () => {
     const s = apply(
       seed(),
       { kind: 'create', item: { type: 'task', title: 'Bring apples', forMemberIds: ['mom'], source: { kind: 'group', label: 'Kindergarten group', simulated: true } } as never },
@@ -227,9 +228,7 @@ describe('simulated is always labeled', () => {
     const rows = [...((en.data.proposed as unknown[]) ?? []), ...((en.data.open as unknown[]) ?? [])] as Array<{ title: string; meta: string; simulated?: boolean }>;
     const row = rows.find(r => r.title === 'Bring apples')!;
     expect(row.simulated).toBe(true);
-    expect(row.meta).toContain('Simulated');
-    const zh = parse(screenTurn('family', input(s, 'mom', 'zh')).jsonl);
-    expect(JSON.stringify(zh.data)).toContain('模拟');
+    expect(row.meta).not.toContain('Simulated');
   });
 
   it('labels the simulated backup contact, the pizza rule and the fake model', () => {
@@ -245,7 +244,7 @@ describe('simulated is always labeled', () => {
     const card = { id: 'card-1', adapter: 'pizza', mode: 'simulated' as const, payload: { title: 'Friday pizza', summary: '1 large margherita, 88 CNY' }, payloadHash: 'h', status: 'pending' as const, expiresAt: new Date(NOW + 3600_000).toISOString(), whyId: 'why-1' };
     const withCard = { ...s, actionCards: [card] };
     const mom = parse(screenTurn('my-day', input(withCard, 'mom', 'en')).jsonl);
-    expect(JSON.stringify(mom.data)).toContain('Simulated');
+    expect(mom.data.cards).toMatchObject({ 'card-1': { simulated: true } });
     expect(actionsOf(mom).map(a => a.label)).toEqual(expect.arrayContaining(['Confirm', 'Cancel', 'Why?']));
     expect(actionsOf(mom).find(a => a.label === 'Confirm')!.args).toMatchObject({ verb: 'confirm-card', cardId: 'card-1' });
     expect(screenTurn('my-day', input(withCard, 'maya', 'en')).jsonl).not.toContain('Friday pizza');

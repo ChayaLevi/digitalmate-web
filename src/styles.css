@@ -6812,3 +6812,421 @@ a {
   gap: 6px;
   margin-top: 4px;
 }
+
+/* Homemind: TaskList, CalendarBoard, Simulated badge (T3.1) */
+
+.approval-head .hm-sim-badge {
+  font-size: 9px;
+  color: #6f4f0c;
+}
+
+.hm-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.hm-sim-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px dashed #b98a2c;
+  background: var(--warning-soft);
+  color: #6f4f0c;
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+  width: fit-content;
+}
+
+.hm-task-list,
+.hm-cal-entries,
+.hm-cal-week {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.hm-task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hm-task {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 11px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid #c9bcb1;
+  background: var(--card);
+}
+
+.hm-task.is-warning { border-left-color: var(--warning); }
+.hm-task.is-danger { border-left-color: var(--danger); }
+.hm-task.is-success { border-left-color: var(--success); }
+.hm-task.is-accent { border-left-color: var(--accent); }
+
+.hm-task-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hm-task-title {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.hm-task.state-done .hm-task-title {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.hm-task-state {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 650;
+  background: var(--paper-deep);
+  color: var(--text);
+}
+
+.hm-task-state.is-open { background: var(--warning-soft); color: #6f4f0c; }
+.hm-task-state.is-proposed { background: var(--accent-soft); color: var(--accent-deep); }
+.hm-task-state.is-confirmed,
+.hm-task-state.is-done { background: var(--success-soft); color: #245f43; }
+.hm-task-state.is-none { display: none; }
+
+.hm-task-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.hm-task-owner {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.hm-task-meta {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.hm-task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.hm-task-actions .a2ui-button,
+.hm-cal button,
+.hm-cal select {
+  min-height: 32px;
+}
+
+/* CalendarBoard */
+
+.hm-cal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.hm-cal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hm-seg {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--paper-deep);
+}
+
+.hm-seg button {
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.hm-seg button.is-active {
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: 0 1px 4px rgba(33, 27, 23, 0.12);
+}
+
+.hm-cal-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hm-icon-button,
+.hm-today-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 999px;
+}
+
+.hm-icon-button {
+  width: 32px;
+  padding: 0;
+}
+
+.hm-today-button {
+  padding: 0 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.hm-today-button:disabled {
+  cursor: default;
+  color: var(--muted);
+  background: transparent;
+}
+
+.hm-flip {
+  transform: scaleX(-1);
+}
+
+.hm-cal-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hm-cal-filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--text);
+}
+
+.hm-cal-filters select {
+  max-width: 150px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+}
+
+.hm-cal-title {
+  margin: 2px 0 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.hm-cal-week {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hm-cal-day {
+  padding: 7px 9px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid var(--line-soft);
+}
+
+.hm-cal-day.is-today {
+  border-color: var(--accent);
+  background: var(--card);
+}
+
+.hm-cal-day-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 3px;
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.hm-cal-day-head em {
+  font-style: normal;
+  font-size: 9.5px;
+  color: var(--accent-deep);
+}
+
+.hm-cal-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hm-cal-entry {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 7px;
+  border-radius: 9px;
+  border-left: 3px solid #c9bcb1;
+  background: var(--paper);
+}
+
+.hm-cal-entry.is-warning { border-left-color: var(--warning); }
+.hm-cal-entry.is-danger { border-left-color: var(--danger); }
+.hm-cal-entry.is-success { border-left-color: var(--success); }
+.hm-cal-entry.is-accent { border-left-color: var(--accent); }
+
+.hm-cal-time {
+  flex-shrink: 0;
+  width: 66px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.hm-cal-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.hm-cal-main strong {
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.hm-cal-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--text);
+}
+
+.hm-cal-away {
+  color: #6f4f0c;
+  font-weight: 600;
+}
+
+.hm-cal-empty {
+  margin: 0;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.hm-cal-month {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 2px;
+}
+
+.hm-cal-month th {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--text);
+  padding-bottom: 2px;
+}
+
+.hm-cal-month td {
+  padding: 0;
+}
+
+.hm-cal-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  min-height: 44px;
+  padding: 4px 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.65);
+  color: var(--ink);
+}
+
+.hm-cal-month td.is-outside .hm-cal-cell {
+  background: transparent;
+  color: var(--muted);
+}
+
+.hm-cal-month td.is-today .hm-cal-cell {
+  border-color: var(--accent);
+  background: var(--card);
+}
+
+.hm-cal-num {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.hm-cal-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.hm-cal-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #b9ada3;
+}
+
+.hm-cal-dots i.is-warning { background: var(--warning); }
+.hm-cal-dots i.is-danger { background: var(--danger); }
+.hm-cal-dots i.is-success { background: var(--success); }
+.hm-cal-dots i.is-accent { background: var(--accent); }
+
+.hm-cal-dots b {
+  font-size: 8px;
+  font-weight: 650;
+  color: var(--text);
+}

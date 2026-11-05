@@ -9,9 +9,10 @@
  * This file imports only types from server/homemind/types.ts (tests/homemindBoundary.test.ts).
  * It never sees an item the member may not see, so it adds no filtering of its own.
  *
- * Components `TaskList` and `CalendarBoard` are built in T3.1; the data shapes here are what they
- * will read. Everything simulated carries `simulated: true` and also says "Simulated / 模拟" in
- * its text, so it stays labeled even on a component that does not render the flag.
+ * `TaskList` and `CalendarBoard` (src/components/a2ui/homemindComponents.tsx) read the shapes below.
+ * Everything simulated carries `simulated: true`, and the component renders a visible "Simulated / 模拟"
+ * badge from it (TaskList, CalendarBoard, ApprovalCard, PaymentCard, ConfirmPanel, List, ExpandableCard).
+ * Components that do not render the flag (rules, settings rows) say the word in their text instead.
  */
 import type { A2uiAction, A2uiComponent } from '../types';
 import type { ActionCard, Activity, Family, Item, Lang, Member, Preference, Reminder, Rule, Why } from '../../server/homemind/types';
@@ -82,6 +83,8 @@ export interface CalendarEntry {
   allDay: boolean;
   ownerLabel: string;
   memberIds: string[];
+  /** Item type, for the board's type filter. */
+  type: Item['type'];
   tone: TaskTone;
   simulated?: boolean;
   unavailable?: string[];
@@ -221,6 +224,8 @@ function whenLabel(item: Item, today: string, zone: string, lang: HomemindLang):
   return item.allDay ? `${day} · ${hx(lang, 'allDay')}` : `${day} ${p.time}`;
 }
 
+// InfoRows text uses `accent`, not `warning`: `.tone-warning` text fails axe contrast at InfoRows size (T3.1).
+
 // --- item rows --------------------------------------------------------------------------------------
 
 const toneOf = (item: Item): TaskTone =>
@@ -295,8 +300,7 @@ function taskRow(item: Item, view: HomemindViewData, lang: HomemindLang, today: 
     item.importance === 'critical' && item.status !== 'done' ? hx(lang, 'critical') : '',
     item.visibility === 'parents' ? hx(lang, 'parentsOnly') : '',
     item.ownership.state === 'assigned' && item.status !== 'done' ? (item.ownership.confirmed ? hx(lang, 'confirmed') : hx(lang, 'notConfirmed')) : '',
-    openNote(item, view, lang),
-    item.source.simulated ? hx(lang, 'simulated') : ''
+    openNote(item, view, lang)
   ]
     .filter(Boolean)
     .join(' · ');
@@ -359,8 +363,7 @@ function pendingCards(view: HomemindViewData, lang: HomemindLang, now: string): 
     const expires = dateParts(card.expiresAt, view.family.timezone);
     data[card.id] = {
       title: typeof payload.title === 'string' ? payload.title : card.adapter,
-      body: [typeof payload.summary === 'string' ? payload.summary : '', simulated ? hx(lang, 'simulated') : ''].filter(Boolean).join(' · '),
-      risk: simulated ? hx(lang, 'simulated') : undefined,
+      body: typeof payload.summary === 'string' ? payload.summary : '',
       expires: expires ? `${hx(lang, 'expires')} ${expires.time}` : undefined,
       scope: hx(lang, 'statusPending'),
       simulated
@@ -419,7 +422,7 @@ function familyScreen(input: HomemindScreenData): HomemindTurn {
 
   const away = items
     .filter(i => i.type === 'event' && i.unavailableMemberIds.length)
-    .flatMap(i => i.unavailableMemberIds.map(id => ({ label: nameOf(memberOf(view.family, id), lang), value: `${titleOf(i, lang)} · ${whenLabel(i, today, zone, lang)}`.replace(/ · $/, ''), tone: 'warning' })));
+    .flatMap(i => i.unavailableMemberIds.map(id => ({ label: nameOf(memberOf(view.family, id), lang), value: `${titleOf(i, lang)} · ${whenLabel(i, today, zone, lang)}`.replace(/ · $/, ''), tone: 'accent' })));
 
   const children: A2uiComponent[] = [{ id: 'counts', component: 'MetricGrid', title: lang === 'zh' && view.family.nameZh ? view.family.nameZh : view.family.name, dataPath: '/counts' }];
   const data: Record<string, unknown> = {
@@ -461,6 +464,7 @@ function calendarEntries(view: HomemindViewData, lang: HomemindLang, today: stri
       allDay: item.allDay === true,
       ownerLabel: ownerLabelOf(item, view, lang),
       memberIds: [...new Set([...item.forMemberIds, ...(owner ? [owner] : [])])],
+      type: item.type,
       tone: toneOf(item),
       ...(item.source.simulated ? { simulated: true } : {}),
       ...(item.unavailableMemberIds.length ? { unavailable: item.unavailableMemberIds.map(id => nameOf(memberOf(view.family, id), lang)) } : {})
@@ -608,7 +612,7 @@ function settingsScreen(input: HomemindScreenData): HomemindTurn {
   const rows = [
     { label: hx(lang, 'signedIn'), value: nameOf(me, lang), tone: 'muted' },
     { label: hx(lang, 'autonomy'), value: levels[fam.autonomy.default - 1] ?? String(fam.autonomy.default), tone: 'muted' },
-    { label: hx(lang, 'paused'), value: fam.paused ? hx(lang, 'pausedYes') : hx(lang, 'pausedNo'), tone: fam.paused ? 'warning' : 'muted' },
+    { label: hx(lang, 'paused'), value: fam.paused ? hx(lang, 'pausedYes') : hx(lang, 'pausedNo'), tone: fam.paused ? 'accent' : 'muted' },
     { label: hx(lang, 'quiet'), value: q ? `${q.from}–${q.to}` : hx(lang, 'quietNone'), tone: 'muted' },
     {
       label: hx(lang, 'backup'),
@@ -616,7 +620,7 @@ function settingsScreen(input: HomemindScreenData): HomemindTurn {
       tone: 'muted'
     },
     { label: hx(lang, 'zone'), value: fam.timezone, tone: 'muted' },
-    ...(input.llm ? [{ label: hx(lang, 'model'), value: input.llm === 'fake' ? hx(lang, 'modelFake') : hx(lang, 'modelLive'), tone: input.llm === 'fake' ? 'warning' : 'muted' }] : [])
+    ...(input.llm ? [{ label: hx(lang, 'model'), value: input.llm === 'fake' ? hx(lang, 'modelFake') : hx(lang, 'modelLive'), tone: input.llm === 'fake' ? 'accent' : 'muted' }] : [])
   ];
   const children: A2uiComponent[] = [
     { id: 'rows', component: 'InfoRows', title: hx(lang, 'settings'), dataPath: '/rows' },

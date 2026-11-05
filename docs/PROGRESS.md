@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T2.3 done (live events). End of P2.
-- **Next task:** T3.1 (new components)
+- **Current task:** T3.1 done (new components: `TaskList`, `CalendarBoard`, Simulated badge)
+- **Next task:** T3.2 (Family tab)
 - **Scenes working end to end:** none (the API for Scene 1's assign and Scene 4's availability works; no screens yet)
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-05, after T2.3
+- **Last updated:** 2026-11-05, after T3.1
 
 ## Task status
 
@@ -26,7 +26,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T2.1 | Routes and identity | done | `server/homemind.ts`, 26 tests in `tests/homemindBridge.test.ts`. 312 of 312 in all. Routes for later tasks answer 501 |
 | T2.2 | Surface builders | done | `src/lib/homemindSurfaces.ts`, 70 tests in `tests/homemindSurfaces.test.ts` + 1 bridge test. 382 of 382 in all. `/screen/:name` now returns the surface |
 | T2.3 | Live events | done | `server/homemind/events.ts`, `src/transport/homemindEvents.ts`, `GET /events`, 18 tests in `tests/homemindEvents.test.ts`. 400 of 400 in all. P2 phase checks pass |
-| T3.1 | New components | not started |  |
+| T3.1 | New components | done | `src/components/a2ui/homemindComponents.tsx`, 38 unit tests, 4 e2e at 390 px in EN and ZH with axe. 438 of 438 unit tests in all |
 | T3.2 | Family tab | not started |  |
 | T3.3 | Live sync and alerts | not started |  |
 | T4.1 | Reminders | not started |  |
@@ -52,6 +52,11 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
+- T3.1: `TaskList` and `CalendarBoard` live in `src/components/a2ui/homemindComponents.tsx`, registered in `A2uiSurfaceView.tsx`. Every row button's accessible name is `<label>: <row title>`, so the several "Claim" buttons differ for screen readers and Playwright (`getByRole('button', {name: 'Approve: Bring apples'})`). Rows carry `data-task-id` and `data-state`; calendar entries carry `data-entry-id` and `data-item-id`; the board carries `data-view` and `data-anchor`.
+- T3.1: `CalendarBoard` keeps its view, date, person and type filter in component state, so they are kept while new data arrives, and reset when the surface is mounted again. The component may set `view: 'day'|'week'|'month'` (default `week`). The week view is a vertical list of 7 days (a 7-column grid is unreadable at 390 px); the month view is a `<table>` whose day cells open that day. Entries are not tappable yet: T3.2 can add an action if editing from the calendar is needed.
+- T3.1: the Simulated badge renders from the flag: `simulated: true` on a `TaskList` row, a calendar entry, an `ApprovalCard` / `PaymentCard` data object, a `List` row, or a `ConfirmPanel` / `ExpandableCard` component. Without the flag those cards render exactly as before (tested). So the builder no longer repeats the word: a `TaskRow` meta and an action card's body no longer say "Simulated", and the card's `risk` field is gone. Rules and settings rows still say it in their text, because `InfoRows` and `List` subtitles there carry no flag.
+- T3.1: Homemind `InfoRows` use the `accent` tone instead of `warning` (away rows, paused, simulated model). `.tone-warning` text (#a77816) fails axe contrast at that size; it was not changed globally, so the base app looks the same.
+- T3.1: component tests use `react-dom/server` `renderToStaticMarkup` in a `.ts` test (no new dependency, no jsdom). Interaction is tested in Playwright on `e2e/harness/homemind-components.html`, a test-only page served by the Vite dev server that renders My day, Family and Calendar from the seed through the real builders. `vite build` does not include it.
 - T2.3: the stream sends three messages (`StreamMessage` in `types.ts`): `hello` (first frame of every connection), `item.changed` `{itemId, item|null}` (already redacted for that member through `eventFor`), `demo.reset`. There is no `Last-Event-ID` replay: on every `hello` the client re-reads its screen, which covers what it missed. T4.1 adds `alert` to the union.
 - T2.3: `commit(rt, state, events)` in `homemind.ts` saves first, then publishes, so a stream never shows a change that was not stored. Availability proposals (`proposal.events`) are published too. The hub lives in the `Runtime`; `resetHomemindRuntime()` closes its streams.
 - T2.3: a stream ends when its session token expires, sends `: ping` every 15 s, and one member may have 8 streams (the oldest is closed). A failing subscriber is dropped and never blocks the others. Ended streams are cleaned up on `close`.
@@ -102,7 +107,8 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 ## Deviations from the plan
 
 - T2.2: `GET /screen/memory` still answers 501 (T6.2 owns PPMA memory). `memoryScreen` is built and tested (saved preferences, plus a PPMA offline/not-connected notice), but not routed. `GET /screen/:name` returns the turn (`message, thinking, followUps, jsonl`) **and** keeps `screen, lang, now, view, query, results`, because T3.2's forms need ids and versions and the T2.1 tests read `view`.
-- T2.2: the surfaces name `TaskList` and `CalendarBoard`, which T3.1 builds. Until then the renderer does not know them (the parser accepts any component name).
+- T3.1: the plan's calendar filter "by person and area" is "by person and type" (event, preparation, task). Items have no area field, only rules do. `CalendarEntry` gained `type`. The type filter shows only when the board holds more than one type.
+- T2.2: the surfaces name `TaskList` and `CalendarBoard`, which T3.1 builds (done in T3.1).
 
 - T2.1: `GET /screen/:name` returns domain data as JSON `{screen, lang, now, view, query?, results?}` (the member's `viewFor`), not "a turn with JSONL". The JSONL comes from `src/lib/homemindSurfaces.ts`, which is T2.2. T2.2 should switch this route to build the surface (and keep the JSON shape or drop it, since nothing uses it yet).
 - T2.1: whitelisted but not built, each answering `501 {error: 'not_implemented', task}` after the normal origin and session checks (`GET /events` was built in T2.3): `POST /chat` (T5.2), `POST /actions/:id/confirm|cancel` (T7.1), `POST /preferences` (T5.4), `POST /rules` (T7.3), `PUT /settings` (T4.2), `POST /demo/clock` (T4.1) and `/demo/post-group-message` (T7.2), `POST /items/:id/snooze` (T4.1), `GET /screen/memory` (T6.2). The task text says "all routes"; these have nothing behind them yet and must not fake a result.
@@ -182,6 +188,27 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T3.1 New components: done (2026-11-05)
+**Built:**
+- `src/components/a2ui/homemindComponents.tsx`: `TaskList` (title, state label, owner, meta, Simulated badge, per-row buttons named `<label>: <title>`), `CalendarBoard` (Day, Week, Month; back, Today, forward; person filter; type filter; unavailability shown on the event; a month cell opens that day; an error notice on unreadable data), `SimulatedBadge` / `simulatedBadge()`, and pure, exported date helpers (`addDays`, `addMonths`, `startOfWeek`, `weekDates`, `monthGrid`, `entriesOn`, `filterEntries`, `readBoard`, `rangeTitle`, `step`).
+- `src/components/a2ui/A2uiSurfaceView.tsx`: registers both components, and draws the badge on `ApprovalCard`, `PaymentCard`, `ConfirmPanel`, `List` and `ExpandableCard` only when they get `simulated: true`.
+- `src/lib/homemindSurfaces.ts`: `CalendarEntry.type`; the word "Simulated" removed from the `TaskRow` meta and the action-card body (the badge shows it); `InfoRows` tone `accent` instead of `warning`.
+- `src/styles.css`: `hm-*` styles at the end of the file. Controls are 32 px or taller, and text passes axe contrast.
+- `tests/homemindComponents.test.ts` (38 tests), `e2e/homemindComponents.spec.ts` (4 tests), and `e2e/harness/homemind-components.{html,tsx}` (a test-only page). Two tests in `tests/homemindSurfaces.test.ts` were updated to the new badge contract.
+**Decisions:** see "Decisions made during the build" (the T3.1 entries).
+**Deviations:** the calendar filters by person and **type**, not "area", because items have no area field.
+**Test results:**
+- `npm test`: 31 files, **438 passed** (400 before, plus 38).
+- `npx tsc --noEmit`: clean. `npm run build`: OK, and the harness is not in `dist/`.
+- `npm run test:e2e`: **44 of 44** (40 before, plus 4). The first full run had 1 failure: axe ran during the `surfaceIn` fade on a cold server and flagged existing elements (header, block titles). The spec now waits for animations to finish. Then the spec passed twice in a row (`--repeat-each 2`), and the full suite passed 44 of 44.
+- Screenshots at 390 px (week, month, day, in EN and ZH) were checked by eye: no overflow, and the Chinese text fits. They are written to `test-results/` on every run (not committed).
+**Not done or not verified:** not checked on a real phone. Dark mode does not apply (the app has none). Calendar entries are not tappable. Nothing in the app shows these components until T3.2 adds the Family tab.
+**Next task should know:** T3.2 can render the screens straight through `A2uiSurfaceView`. The board keeps its own view and filters. Row actions arrive as `kind: 'homemind'` with `args.verb`. The harness page shows the target look: `npm run dev`, then `/e2e/harness/homemind-components.html?lang=zh`.
+**How to verify:**
+- Commands: `npm test` ; `npx tsc --noEmit` ; `npx playwright test e2e/homemindComponents.spec.ts`
+- Expected output: 438 passed; no tsc output; 4 passed.
+- Manual check: run `npm run dev` and open `http://127.0.0.1:5173/e2e/harness/homemind-components.html?lang=zh` at 390 px width (DevTools device mode). On Calendar, tap 月 (month), then tap the 5th: the day view shows 婚礼 with "没空: 妈妈". On Family, the "Bring apples" row has the 模拟 badge.
 
 ### T2.3 Live events: done (2026-11-05). End of P2
 **Built:**

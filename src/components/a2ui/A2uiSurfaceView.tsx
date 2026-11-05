@@ -5,6 +5,7 @@ import { Icon } from '../Icons';
 import { useI18n } from '../../i18n/I18nContext';
 import { renderEpicComponent } from './epicComponents';
 import { renderFridgeComponent } from './fridgeComponents';
+import { renderHomemindComponent, simulatedBadge } from './homemindComponents';
 
 interface SurfaceProps {
   surface: A2uiSurface;
@@ -401,6 +402,7 @@ function renderComponent(component: A2uiComponent, ctx: RenderContext, key: stri
           </div>
           <div className="confirm-main">
             <strong>{component.title ?? tr('Needs confirmation', '需要确认')}</strong>
+            {simulatedBadge(component.simulated, tr)}
             <p>{component.body ?? component.text}</p>
             {component.actions?.length ? (
               <div className="a2ui-actions">
@@ -554,6 +556,7 @@ function renderComponent(component: A2uiComponent, ctx: RenderContext, key: stri
             <div>
               <strong>{textOf(item.title) || tr('Confirm payment', '确认支付')}</strong>
               <span>{textOf(item.merchant)}</span>
+              {simulatedBadge(item.simulated, tr)}
             </div>
             <em>{textOf(item.amount)}</em>
           </div>
@@ -623,6 +626,7 @@ function renderComponent(component: A2uiComponent, ctx: RenderContext, key: stri
                 <div>
                   <strong>{item.title}</strong>
                   <span>{item.subtitle}</span>
+                  {simulatedBadge((item as Record<string, unknown>).simulated, tr)}
                 </div>
                 <em>{item.meta}</em>
               </div>
@@ -683,6 +687,7 @@ function renderComponent(component: A2uiComponent, ctx: RenderContext, key: stri
             <span>
               <strong>{component.title}</strong>
               {component.body ? <em>{component.body}</em> : null}
+              {simulatedBadge(component.simulated, tr)}
             </span>
             <Icon name="chevronDown" size={14} />
           </summary>
@@ -975,6 +980,7 @@ function renderComponent(component: A2uiComponent, ctx: RenderContext, key: stri
             <div>
               <strong>{textOf(approval.title) || component.title}</strong>
               <span>{textOf(approval.body)}</span>
+              {simulatedBadge(approval.simulated, tr)}
             </div>
             {approval.risk ? <span className="approval-risk">{textOf(approval.risk)}</span> : null}
           </div>
@@ -1037,6 +1043,10 @@ function renderComponent(component: A2uiComponent, ctx: RenderContext, key: stri
 
     case 'RecipeOptions':
       return renderFridgeComponent(component, ctx, key);
+
+    case 'TaskList':
+    case 'CalendarBoard':
+      return renderHomemindComponent(component, ctx, key);
 
     case 'ThinkingStream': {
       const items = (resolvePath(surface.data, component.dataPath) ?? []) as Array<Record<string, string>>;

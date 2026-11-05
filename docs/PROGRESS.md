@@ -4,10 +4,10 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T4.2 done (Settings and Scene 1). **End of P4: STOP**, waiting for the human's OK on Scene 1 (the minimum viable demo)
-- **Next task:** T5.1 (LLM client and intents), after the human's OK
+- **Current task:** T4.2 done (Settings and Scene 1). End of P4; the human approved Scene 1 at the STOP (2026-11-05)
+- **Next task:** T5.1 (LLM client and intents)
 - **Scenes working end to end:** **Scene 1**, as scripted, in two windows: Mom assigns the pickup, it is on Dad's screen at once, he does not confirm, the demo clock jumps, Dad is reminded (alert and row), Mom gets "not confirmed yet" (alert and row), and she takes it from her board, which closes every alert in both windows. Covered by the e2e test "Scene 1: ...". Settings (quiet hours, autonomy, pause, backup contact) are editable and sync live
-- **Blocked on:** the P4 STOP (human's OK)
+- **Blocked on:** nothing
 - **Last updated:** 2026-11-05, after T4.2
 
 ## Task status
@@ -184,6 +184,7 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 - [x] DeepSeek key with balance (replaced on 2026-11-04)
 - [x] Model chosen: `deepseek-flash` (2026-11-04)
 - [x] OK on the P0 STOP report, including the 4 plan changes (2026-11-04)
+- [x] OK on the P4 STOP: Scene 1 approved (2026-11-05)
 - [x] PPMA clone at `../ppma`, for T0.2
 - [x] Real 接龙 screenshot: none available. A simulated one is used instead
 - [ ] Huawei phone for a browser test, if available, for T9.2

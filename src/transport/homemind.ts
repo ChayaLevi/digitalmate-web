@@ -9,13 +9,15 @@
  * - `runHomemindAction` maps a card button (`kind: 'homemind'`, `args.verb`) to its bridge call.
  *   Navigation verbs (add, edit, search, back, save) belong to the host and are not handled here.
  *
- * Chat (`HomemindTransport`) is T5.2.
+ * - Chat (`HomemindTransport`, T5.2): the Family companion's turns go to `POST /chat` with the window's
+ *   session. The bridge answers with a turn (text and a card), mapped to `ChatTurnEvent`s.
  */
 import type { A2uiAction, A2uiSurface, Language } from '../types';
 import { apiUrl } from '../lib/api';
 import { A2uiSurfaceStore } from '../protocol/a2ui/store';
 import type { HomemindScreenName } from '../lib/homemindSurfaces';
 import type { Item } from '../../server/homemind/types';
+import type { ChatTransport, ChatTurnEvent, ChatTurnRequest } from './types';
 
 export const SESSION_HEADER = 'x-homemind-session';
 const SESSION_KEY = 'homemind.session';
@@ -207,4 +209,75 @@ export async function runHomemindAction(action: A2uiAction, token: string): Prom
     return { kind: 'why', why: body.why };
   }
   throw new HomemindError(400, 'unknown_action', `Unknown Homemind action: ${verb || action.id}`);
+}
+
+// --- chat (T5.2) ------------------------------------------------------------------------------------
+
+/** Two model calls at most (one retry), 30 s each by default, plus the board work. */
+const CHAT_TIMEOUT_MS = 75_000;
+
+export interface HomemindChatTurn {
+  message: string;
+  thinking: string[];
+  followUps: string[];
+  jsonl: string;
+  ok: boolean;
+  outcome: string;
+  intent?: string;
+  activityId?: string;
+}
+
+const say = (lang: Language, en: string, zh: string) => (lang === 'zh' ? zh : en);
+
+function chatSignal(signal: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(CHAT_TIMEOUT_MS);
+  const any = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
+  return any ? any([signal, timeout]) : signal;
+}
+
+/**
+ * Chat turns for the Family companion. The window's demo sign-in decides who is writing, so two
+ * windows chat as two members. Without a sign-in the turn says so and sends nothing.
+ */
+export class HomemindTransport implements ChatTransport {
+  readonly id = 'homemind' as const;
+
+  async send(request: ChatTurnRequest, onEvent: (event: ChatTurnEvent) => void, signal: AbortSignal): Promise<void> {
+    const lang = request.lang;
+    const session = readHomemindSession();
+    if (!session) {
+      onEvent({ type: 'error', message: say(lang, 'Sign in on the Family tab first (demo sign-in), then chat here.', '请先在家庭标签页选择成员（演示登录），再在这里对话。') });
+      onEvent({ type: 'done' });
+      return;
+    }
+    const reading = say(lang, `Reading your message as ${session.member.name}`, `以${session.member.nameZh ?? session.member.name}的身份理解消息`);
+    onEvent({ type: 'thinking', step: reading, steps: [reading], index: 0, total: 1 });
+    let turn: HomemindChatTurn;
+    try {
+      turn = await call<HomemindChatTurn>(`/api/homemind/chat?lang=${lang}`, { method: 'POST', token: session.token, body: JSON.stringify({ text: request.text }), signal: chatSignal(signal) });
+    } catch (error) {
+      if (signal.aborted) return;
+      const status = error instanceof HomemindError ? error.status : 0;
+      const message =
+        status === 401
+          ? say(lang, 'Your demo sign-in has ended. Sign in again on the Family tab.', '演示登录已过期，请在家庭标签页重新选择成员。')
+          : error instanceof Error && error.name === 'TimeoutError'
+            ? say(lang, 'Homemind took too long to answer. Nothing was changed.', 'Homemind 回答超时，没有做任何更改。')
+            : error instanceof HomemindError
+              ? error.message
+              : say(lang, 'Homemind is unreachable. Nothing was changed.', '无法连接 Homemind，没有做任何更改。');
+      onEvent({ type: 'error', message });
+      onEvent({ type: 'done' });
+      return;
+    }
+    if (signal.aborted) return;
+    if (turn.message) onEvent({ type: 'text', text: turn.message });
+    if ((request.images ?? []).length) {
+      onEvent({ type: 'text', text: say(lang, '\n\nScreenshots are not read in chat yet. Only your text was sent.', '\n\n对话中暂时还不能读取截图，只发送了文字。') });
+    }
+    const surface = turn.jsonl ? A2uiSurfaceStore.fromJsonl(turn.jsonl).list()[0] : undefined;
+    if (surface) onEvent({ type: 'surface', surface });
+    if (turn.followUps?.length) onEvent({ type: 'followUps', followUps: turn.followUps });
+    onEvent({ type: 'done' });
+  }
 }

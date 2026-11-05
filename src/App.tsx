@@ -20,7 +20,7 @@ import { MockChatTransport } from './transport/mock';
 import { OrbitChatTransport, orbitHealth } from './transport/orbit';
 import { Fridge2TableTransport, fridgeHealth, runFridgeAction, surfaceOfTurn } from './transport/fridge';
 import { isKitchenIntent } from './lib/fridgeSurfaces';
-import { homemindHealth } from './transport/homemind';
+import { HomemindTransport, homemindHealth } from './transport/homemind';
 import type { HomemindHealth } from './transport/homemind';
 import { FamilyView } from './components/FamilyView';
 import { LocalDiscoveryTransport, rotateCards } from './transport/discovery';
@@ -451,10 +451,10 @@ export default function App() {
     activeController.current = controller;
 
     let transport: ChatTransport = new MockChatTransport(calendarEvents);
-    if (activePersona === 'family') {
-      showToast(tr('Homemind chat is not built yet; this turn uses the local mock. Use the Family tab.', 'Homemind 对话尚未完成，本轮使用本地模拟。请使用家庭标签页。'));
-    }
-    const wantsKitchen = activePersona === 'kitchen' || isKitchenIntent(prompt);
+    // The Family companion talks to Homemind only, before any kitchen, Orbit or mock routing.
+    const familyRouted = activePersona === 'family' && homemind !== null;
+    if (familyRouted) transport = new HomemindTransport();
+    const wantsKitchen = !familyRouted && (activePersona === 'kitchen' || isKitchenIntent(prompt));
     let kitchenRouted = false;
     if (wantsKitchen) {
       try {
@@ -476,7 +476,7 @@ export default function App() {
         }
       }
     }
-    if (!kitchenRouted && settings.cloudBackend === 'orbit') {
+    if (!kitchenRouted && !familyRouted && settings.cloudBackend === 'orbit') {
       try {
         const health = await orbitHealth(controller.signal);
         if (health.configured) {

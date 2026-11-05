@@ -15,7 +15,7 @@
  * Components that do not render the flag (rules, settings rows) say the word in their text instead.
  */
 import type { A2uiAction, A2uiComponent } from '../types';
-import type { ActionCard, Activity, Family, Item, Lang, Member, PendingReminder, Preference, Reminder, Rule, Why } from '../../server/homemind/types';
+import type { ActionCard, Activity, Family, Item, ItemExplanation, Lang, Member, PendingReminder, Preference, Reminder, Rule, Why } from '../../server/homemind/types';
 
 export type HomemindLang = Lang;
 export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit' | 'item';
@@ -941,6 +941,228 @@ function itemScreen(input: HomemindScreenData): HomemindTurn {
   const data: Record<string, unknown> = { this: [row], details: rows };
   if (item.type === 'event') preparationsBlock(item, view, lang, today, children, data);
   return turn('item', titleOf(item, lang), undefined, children, data);
+}
+
+// --- chat turns (T5.2) ------------------------------------------------------------------------------
+
+/** What one chat message did, as the bridge decided it (server/homemind/chat.ts). */
+export type ChatOutcome =
+  | { kind: 'answer'; answer: string; itemIds: string[] }
+  | {
+      kind: 'written';
+      intent: 'create_event' | 'create_task' | 'add_preparation' | 'assign' | 'claim' | 'mark_done';
+      itemId: string;
+      proposed: boolean;
+      /** Set when this member may undo it. */
+      activityId?: string;
+      /** Items availability opened ("Who's taking this?"), and clashes left as suggestions. */
+      opened: string[];
+      conflicts: number;
+    }
+  | { kind: 'suggest'; intent: 'assign' | 'claim' | 'mark_done'; itemId: string; verb: 'assign' | 'claim' | 'done'; memberId?: string; reason: 'level1' | 'paused' }
+  | { kind: 'why'; explanation: ItemExplanation }
+  | { kind: 'later'; intent: 'add_preference' | 'create_rule' | 'report_situation' }
+  | { kind: 'missing' }
+  /** `model`: the model failed or gave nothing usable. `change`: the board refused the change. */
+  | { kind: 'failed'; reason: 'model' | 'change' | 'not_configured'; code: string; message: string };
+
+export interface ChatTurnData {
+  lang: HomemindLang;
+  now: string;
+  /** The member's view after the change. */
+  view: HomemindViewData;
+  llm: 'live' | 'fake' | 'not_configured';
+  /** Makes the surface id unique, so every chat message keeps its own card. */
+  turnId: string;
+  outcome: ChatOutcome;
+  reminders?: PendingReminder[];
+}
+
+const C = {
+  added: { en: 'Added to the board:', zh: '已添加到家庭看板：' },
+  proposedAdd: { en: 'Suggested for the board, waiting for approval:', zh: '已作为建议放到看板上，等待批准：' },
+  assigned: { en: (t: string, who: string) => `Assigned “${t}” to ${who}. ${who} still needs to confirm.`, zh: (t: string, who: string) => `已把“${t}”分配给${who}，还需要${who}确认。` },
+  claimed: { en: (t: string) => `“${t}” is yours now.`, zh: (t: string) => `“${t}”现在由你负责。` },
+  doneMsg: { en: (t: string) => `Marked done: “${t}”.`, zh: (t: string) => `已标记完成：“${t}”。` },
+  undoHint: { en: 'You can undo it.', zh: '可以撤销。' },
+  opened: { en: (n: number) => `${n} item(s) clash with it and are now “Who's taking this?”.`, zh: (n: number) => `有 ${n} 个事项与它冲突，现在标记为“谁来负责？”。` },
+  conflicts: { en: (n: number) => `${n} item(s) clash with it. See the Family tab to decide who takes them.`, zh: (n: number) => `有 ${n} 个事项与它冲突，请到家庭标签页决定由谁负责。` },
+  level1: { en: 'Autonomy is set to “Suggests”, so nothing was changed. Tap to do it:', zh: '自主程度设为“仅建议”，所以没有做任何更改。点一下即可执行：' },
+  pausedMsg: { en: 'Automatic actions are paused, so nothing was changed. Tap to do it:', zh: '自动操作已暂停，所以没有做任何更改。点一下即可执行：' },
+  suggestion: { en: 'Suggestion', zh: '建议' },
+  laterPref: { en: 'Saving preferences from chat is not built yet. Nothing was saved.', zh: '通过对话保存偏好的功能尚未完成，没有保存任何内容。' },
+  laterRule: { en: 'Standing rules from chat are not built yet. Nothing was set up. A rule will only prepare a card that a parent taps.', zh: '通过对话设置长期规则的功能尚未完成，没有设置任何规则。规则只会准备卡片，由家长点一下确认。' },
+  laterSituation: { en: 'Planning around a situation (who stays home, what to postpone) is not built yet. Nothing was changed.', zh: '根据突发情况重新安排（谁留在家、推迟什么）的功能尚未完成，没有做任何更改。' },
+  missing: { en: 'That item is not on your board any more. Nothing was changed.', zh: '这个事项已不在你的看板上，没有做任何更改。' },
+  failedModel: { en: 'The model could not read this message. Nothing was changed. Try again, or use the Family tab.', zh: '模型无法理解这条消息，没有做任何更改。请重试，或使用家庭标签页。' },
+  failedOff: { en: 'The model is not set up, so chat cannot read messages. The Family tab still works.', zh: '模型未配置，对话无法理解消息。家庭标签页仍可正常使用。' },
+  failedChange: { en: 'The board did not accept this change. Nothing was changed.', zh: '看板没有接受这个更改，没有做任何更改。' },
+  whyTitle: { en: 'Why is this on the board?', zh: '为什么会在看板上？' },
+  whyOwn: { en: 'From Homemind’s own board record (not from PPMA).', zh: '来自 Homemind 自己的看板记录（不是来自 PPMA）。' },
+  whyLead: { en: (t: string) => `Here is what the board records about “${t}”.`, zh: (t: string) => `这是看板上关于“${t}”的记录。` },
+  whyAdded: { en: 'Added by', zh: '添加人' },
+  whyHow: { en: 'How', zh: '方式' },
+  whyOwner: { en: 'Who has it', zh: '负责人' },
+  whyLast: { en: 'Last change', zh: '最近的更改' },
+  whyReason: { en: 'Note', zh: '说明' },
+  whyRecord: { en: 'Explanation', zh: '解释' },
+  whySource: { en: 'Source', zh: '来源' },
+  srcRule: { en: 'a Homemind rule', zh: 'Homemind 规则' },
+  srcModel: { en: 'the model', zh: '模型' },
+  srcPpma: { en: 'PPMA', zh: 'PPMA' },
+  related: { en: 'On your board', zh: '你的看板上' },
+  answered: { en: 'Answered from your board', zh: '根据你的看板回答' }
+} as const;
+
+const SOURCE_KIND: Record<string, [string, string]> = {
+  manual: ['Typed in on the board', '在看板上手动添加'],
+  chat: ['Asked for in chat', '通过对话添加'],
+  screenshot: ['Read from a screenshot', '从截图中读取'],
+  email: ['Read from an email', '从邮件中读取'],
+  group: ['From the group chat', '来自群聊'],
+  rule: ['Added by a Homemind rule', '由 Homemind 规则添加'],
+  ppma: ['Suggested by PPMA', '由 PPMA 建议']
+};
+
+/**
+ * Model text can't carry a link: the chat renders light markdown, and `[x](javascript:...)` would
+ * become one. Breaking `](` keeps the words and drops the link.
+ */
+export const plainChatText = (value: string): string => value.replace(/\]\s*\(/g, '] (');
+
+function whyRows(e: ItemExplanation, view: HomemindViewData, lang: HomemindLang): Array<{ label: string; value: string; tone: string }> {
+  const item = view.items.find(i => i.id === e.itemId);
+  const zone = view.family.timezone;
+  const rows: Array<{ label: string; value: string; tone: string }> = [];
+  if (e.why) {
+    const src = e.why.source === 'ppma' ? C.srcPpma : e.why.source === 'model' ? C.srcModel : C.srcRule;
+    rows.push({ label: C.whyRecord[lang], value: e.why.summary, tone: 'muted' }, { label: C.whySource[lang], value: src[lang], tone: 'muted' });
+  }
+  const created = e.createdAt ? dateParts(e.createdAt, zone) : null;
+  rows.push({ label: C.whyAdded[lang], value: `${nameOf(memberOf(view.family, e.createdBy), lang) || e.createdBy}${created ? ` · ${created.date.slice(5)} ${created.time}` : ''}`, tone: 'muted' });
+  const how = SOURCE_KIND[e.source.kind];
+  rows.push({ label: C.whyHow[lang], value: `${how ? how[lang === 'zh' ? 1 : 0] : e.source.kind}${e.source.simulated ? ` (${hx(lang, 'simulated')})` : ''}`, tone: 'muted' });
+  if (item) {
+    rows.push({ label: C.whyOwner[lang], value: ownerLabelOf(item, view, lang), tone: 'muted' });
+    const note = openNote(item, view, lang);
+    if (note) rows.push({ label: C.whyReason[lang], value: note, tone: 'accent' });
+  }
+  const last = e.lastActivityId ? view.activity.find(a => a.id === e.lastActivityId) : undefined;
+  if (last) {
+    const at = dateParts(last.at, zone);
+    rows.push({ label: C.whyLast[lang], value: `${activityLine(last, view, lang)}${at ? ` · ${at.date.slice(5)} ${at.time}` : ''}`, tone: 'muted' });
+  }
+  return rows;
+}
+
+/**
+ * One chat message's answer: the text for the bubble, and a card with the rows it touched, Undo, a
+ * suggestion button, an explanation or an error. With the simulated model the card says so.
+ */
+export function chatTurn(input: ChatTurnData): HomemindTurn {
+  const { lang, outcome } = input;
+  const view = input.reminders ? { ...input.view, pending: input.reminders } : input.view;
+  const zone = view.family.timezone;
+  const today = dateParts(input.now, zone)?.date ?? '';
+  const children: A2uiComponent[] = [];
+  const data: Record<string, unknown> = {};
+  const rowsFor = (ids: string[]) => ids.flatMap(id => view.items.filter(i => i.id === id && live(i)).map(i => taskRow(i, view, lang, today)));
+  const titleById = (id: string) => {
+    const item = view.items.find(i => i.id === id);
+    return item ? titleOf(item, lang) : '';
+  };
+  let message = '';
+  let title = hx(lang, 'brand');
+
+  switch (outcome.kind) {
+    case 'answer': {
+      message = plainChatText(outcome.answer);
+      const rows = rowsFor(outcome.itemIds);
+      if (rows.length) {
+        children.push(taskList('rows', C.related[lang], '/rows'));
+        data.rows = rows;
+      }
+      title = C.answered[lang];
+      break;
+    }
+    case 'written': {
+      const t = titleById(outcome.itemId);
+      const item = view.items.find(i => i.id === outcome.itemId);
+      const owner = item?.ownership.state === 'assigned' ? nameOf(memberOf(view.family, item.ownership.ownerId), lang) : '';
+      const parts: string[] = [];
+      if (outcome.intent === 'assign') parts.push(C.assigned[lang](t, owner));
+      else if (outcome.intent === 'claim') parts.push(C.claimed[lang](t));
+      else if (outcome.intent === 'mark_done') parts.push(C.doneMsg[lang](t));
+      else parts.push(`${outcome.proposed ? C.proposedAdd[lang] : C.added[lang]} “${t}”`);
+      if (outcome.opened.length) parts.push(C.opened[lang](outcome.opened.length));
+      else if (outcome.conflicts) parts.push(C.conflicts[lang](outcome.conflicts));
+      if (outcome.activityId) parts.push(C.undoHint[lang]);
+      message = parts.join(' ');
+      const rows = rowsFor([outcome.itemId, ...outcome.opened]);
+      if (rows.length) {
+        children.push(taskList('rows', hx(lang, 'thisItem'), '/rows'));
+        data.rows = rows;
+      }
+      if (outcome.activityId) {
+        children.push({
+          id: 'actions',
+          component: 'ActionBar',
+          actions: [{ id: `homemind.undo:${outcome.activityId}`, label: hx(lang, 'undo'), variant: 'secondary', kind: 'homemind', args: { verb: 'undo', activityId: outcome.activityId, itemId: outcome.itemId } }]
+        });
+      }
+      title = t || title;
+      break;
+    }
+    case 'suggest': {
+      const item = view.items.find(i => i.id === outcome.itemId && live(i));
+      message = outcome.reason === 'paused' ? C.pausedMsg[lang] : C.level1[lang];
+      if (item) {
+        const who = nameOf(memberOf(view.family, outcome.memberId), lang);
+        const label =
+          outcome.verb === 'done' ? hx(lang, 'done') : outcome.verb === 'claim' || outcome.memberId === view.memberId ? hx(lang, 'claim') : `${hx(lang, 'assignTo')} ${who}`;
+        const row = taskRow(item, view, lang, today);
+        children.push(taskList('rows', C.suggestion[lang], '/rows'));
+        data.rows = [row];
+        children.push({ id: 'actions', component: 'ActionBar', actions: [act(outcome.verb, item, label, 'primary', outcome.memberId ? { memberId: outcome.memberId } : {})] });
+        title = titleOf(item, lang);
+      } else {
+        message = C.missing[lang];
+      }
+      break;
+    }
+    case 'why': {
+      const e = outcome.explanation;
+      message = e.why ? e.why.summary : C.whyLead[lang](titleById(e.itemId));
+      const rows = rowsFor([e.itemId]);
+      if (rows.length) {
+        children.push(taskList('rows', hx(lang, 'thisItem'), '/rows'));
+        data.rows = rows;
+      }
+      children.push({ id: 'why', component: 'InfoRows', title: C.whyTitle[lang], dataPath: '/why' });
+      data.why = whyRows(e, view, lang);
+      if (!e.why) children.push(text('why-note', C.whyOwn[lang]));
+      title = titleById(e.itemId) || C.whyTitle[lang];
+      break;
+    }
+    case 'later':
+      message = outcome.intent === 'add_preference' ? C.laterPref[lang] : outcome.intent === 'create_rule' ? C.laterRule[lang] : C.laterSituation[lang];
+      break;
+    case 'missing':
+      message = C.missing[lang];
+      break;
+    case 'failed': {
+      const body = outcome.reason === 'not_configured' ? C.failedOff[lang] : outcome.reason === 'model' ? C.failedModel[lang] : C.failedChange[lang];
+      children.push({ id: 'err', component: 'ErrorNotice', title: hx(lang, 'failed'), body: outcome.reason === 'change' && outcome.message ? `${body} (${outcome.message})` : body });
+      break;
+    }
+  }
+
+  // The simulated model is labelled on the card itself.
+  if (input.llm === 'fake' && outcome.kind !== 'failed') children.push(text('model', `**${hx(lang, 'modelFake')}**`));
+  if (!children.length) return { message, thinking: [], followUps: [], jsonl: '' };
+  const kind = `chat-${input.turnId}`;
+  const components: A2uiComponent[] = [{ id: 'root', component: 'SurfaceRoot', title, children: children.map(c => c.id) }, ...children];
+  return { message, thinking: [], followUps: [], jsonl: surfaceJsonl(kind, title, undefined, components, data, outcome.kind === 'failed' ? 'error' : 'ready') };
 }
 
 // --- public API -------------------------------------------------------------------------------------

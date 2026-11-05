@@ -24,7 +24,7 @@ export type ChatTurnEvent =
   | { type: 'done' };
 
 export interface ChatTransport {
-  readonly id: 'mock' | 'orbit' | 'fridge2table';
+  readonly id: 'mock' | 'orbit' | 'fridge2table' | 'homemind';
   send(
     request: ChatTurnRequest,
     onEvent: (event: ChatTurnEvent) => void,

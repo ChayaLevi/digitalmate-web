@@ -273,6 +273,20 @@ export interface Why {
   decisionId?: string;
 }
 
+/**
+ * "Why is this on the board?" from chat (T5.2): Homemind's own record of one item, from the asking
+ * member's view. `why` is a stored `Why` that names the item, when there is one; it carries its source.
+ */
+export interface ItemExplanation {
+  itemId: string;
+  source: ItemSource;
+  createdBy: string;
+  createdAt?: string;
+  /** The newest change after the create, in the member's view (the screen describes it). */
+  lastActivityId?: string;
+  why?: Why;
+}
+
 export const STATE_SCHEMA_VERSION = 1;
 
 /** Everything the core owns. Persisted as one JSON file by store.ts. */

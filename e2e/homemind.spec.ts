@@ -16,16 +16,17 @@ async function resetBoard(request: APIRequestContext) {
   expect(reset.ok()).toBe(true);
 }
 
-async function openFamily(page: Page, lang: 'en' | 'zh', member?: string) {
+async function openFamily(page: Page, lang: 'en' | 'zh', member?: string, persona?: string) {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.addInitScript(language => {
+  await page.addInitScript(([language, companion]) => {
     if (!window.sessionStorage.getItem('dm-e2e-initialized')) {
       window.localStorage.clear();
       window.localStorage.setItem('digitalmate.web.v2.welcomeSeen.v1', 'true');
       window.localStorage.setItem('digitalmate.web.v2.language.v1', JSON.stringify(language));
+      if (companion) window.localStorage.setItem('digitalmate.web.v2.persona.v1', JSON.stringify(companion));
       window.sessionStorage.setItem('dm-e2e-initialized', '1');
     }
-  }, lang);
+  }, [lang, persona ?? ''] as const);
   await page.goto(`${BASE}/${member ? `?member=${member}` : ''}`);
   await page.getByRole('navigation', { name: lang === 'zh' ? '主导航' : 'Main navigation' }).getByRole('button', { name: lang === 'zh' ? '家庭' : 'Family' }).click();
 }
@@ -470,4 +471,84 @@ test('Settings: a parent saves quiet hours, pause and the backup contact; the ot
   } finally {
     await Promise.all(contexts.map(c => c.close()));
   }
+});
+
+// T5.2: chat with the Family companion, against the simulated model (HOMEMIND_LLM=fake on port 5176).
+/** Sends one message and returns its reply bubble. Each test waits for the reply's text before the next send. */
+async function chatTo(page: Page, text: string) {
+  const before = await page.locator('.message-assistant').count();
+  await page.locator('.composer textarea').fill(text);
+  await page.locator('.composer-send').click();
+  return page.locator('.message-assistant').nth(before);
+}
+
+async function openChat(page: Page, lang: 'en' | 'zh') {
+  await page.getByRole('navigation', { name: lang === 'zh' ? '主导航' : 'Main navigation' }).getByRole('button', { name: lang === 'zh' ? '对话' : 'Chat' }).click();
+}
+
+test('chat (T5.2): Mom asks, adds, reassigns and asks why; Dad sees it live; Undo from the chat card works', async ({ browser }) => {
+  const momContext = await browser.newContext();
+  const dadContext = await browser.newContext();
+  try {
+    const mom = await momContext.newPage();
+    const dad = await dadContext.newPage();
+    await openFamily(mom, 'en', 'mom', 'family');
+    await openFamily(dad, 'zh', 'dad', 'family');
+    await expect(family(mom)).toHaveAttribute('data-member', 'mom');
+    await expect(family(dad)).toHaveAttribute('data-member', 'dad');
+    await expect(dad.locator('[data-stream="live"]')).toHaveText('实时');
+    const dadRow = dad.locator('[data-task-id="pickup-today"]').first();
+    await expect(dadRow).toHaveAttribute('data-state', 'open');
+
+    await openChat(mom, 'en');
+    // Answers from the board, labelled as the simulated model.
+    const answer = await chatTo(mom, "What's on today?");
+    await expect(answer).toContainText('Today on the board');
+    await expect(answer).toContainText('Kindergarten pickup');
+    await expect(answer).toContainText('Simulated model');
+
+    // Adds.
+    const added = await chatTo(mom, 'Remind me to buy milk tomorrow');
+    await expect(added).toContainText('Added to the board');
+    await expect(added.locator('[data-task-id]')).toHaveCount(1);
+
+    // Reassigns: Dad's window shows it without reloading.
+    const assigned = await chatTo(mom, 'Assign the pickup to Dad');
+    await expect(assigned).toContainText('Assigned “Kindergarten pickup” to Dad. Dad still needs to confirm.');
+    await expect(dadRow).toHaveAttribute('data-state', 'assigned');
+
+    // Explains, from Homemind's own record.
+    const why = await chatTo(mom, 'Why is the kindergarten pickup on the board?');
+    await expect(why).toContainText('not from PPMA');
+    await expect(why).toContainText('Mom assigned to Dad');
+    await noOverflow(mom);
+    expect(await seriousIssues(mom)).toEqual([]);
+    await mom.screenshot({ path: test.info().outputPath('chat-en.png'), fullPage: true });
+
+    // Dad chats in Chinese.
+    await openChat(dad, 'zh');
+    const dadWhy = await chatTo(dad, '为什么有幼儿园接孩子？');
+    await expect(dadWhy).toContainText('不是来自 PPMA');
+    await expect(dadWhy).toContainText('模拟模型');
+    expect(await seriousIssues(dad)).toEqual([]);
+
+    // Undo on the assignment's card: the Family tab runs it, and the pickup is open again for Dad.
+    await dad.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '家庭' }).click();
+    await expect(dad.locator('[data-task-id="pickup-today"]').first()).toHaveAttribute('data-state', 'assigned');
+    await assigned.getByRole('button', { name: 'Undo' }).click();
+    await expect(family(mom)).toBeVisible();
+    await expect(dad.locator('[data-task-id="pickup-today"]').first()).toHaveAttribute('data-state', 'open');
+  } finally {
+    await momContext.close();
+    await dadContext.close();
+  }
+});
+
+test('chat (T5.2): a teen asking about a Parents-only item gets no trace of it', async ({ page }) => {
+  await openFamily(page, 'en', 'maya', 'family');
+  await expect(family(page)).toHaveAttribute('data-member', 'maya');
+  await openChat(page, 'en');
+  const reply = await chatTo(page, 'When is the counselor meeting?');
+  await expect(reply).toContainText('Simulated model');
+  await expect(reply).not.toContainText(/counselor|辅导/i);
 });

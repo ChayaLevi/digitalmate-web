@@ -10,10 +10,11 @@
  * member id; the client keeps it in `sessionStorage` and sends it as `x-homemind-session`, so two
  * windows can be two people. Roles (for example "Parents only") are enforced here and in the core.
  *
- * Routes whose task has not been built yet (live events, chat, actions, rules, ...) are whitelisted
- * and answer 501 `not_implemented`, so nothing pretends to work.
+ * Routes whose task has not been built yet (actions, rules, preferences, ...) are whitelisted and
+ * answer 501 `not_implemented`, so nothing pretends to work. Chat (`POST /chat`, T5.2) reads a message
+ * through the model (server/homemind/intents.ts) and plans it with server/homemind/chat.ts.
  */
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
 import { findConflicts, conflictsVisibleTo, mayOpenOnItsOwn, proposeForConflicts } from './homemind/availability';
@@ -31,14 +32,18 @@ import type { EventHub } from './homemind/events';
 import type { Change, ChangeError, ItemPatch, NewItem } from './homemind/core';
 import { seedState } from './homemind/seed';
 import { applySettings, parseSettingsPatch } from './homemind/settings';
-import { llmConfigFromEnv, llmStatus } from './homemind/llm';
+import { createLlmClient, llmConfigFromEnv, llmStatus } from './homemind/llm';
+import type { LlmClient } from './homemind/llm';
+import { runIntent, LIMITS as INTENT_LIMITS } from './homemind/intents';
+import { planChat } from './homemind/chat';
 import { HomemindStore, dataFileFromEnv } from './homemind/store';
 import type { LoadSource } from './homemind/store';
 import { ID_PATTERN } from './homemind/types';
 import type { HomemindState, Item, Lang, Member, StreamMessage } from './homemind/types';
 import { redactItem, searchItems, viewFor } from './homemind/visibility';
 import { isSameOrigin } from './orbit';
-import { screenTurn } from '../src/lib/homemindSurfaces';
+import { chatTurn, screenTurn } from '../src/lib/homemindSurfaces';
+import type { ChatOutcome } from '../src/lib/homemindSurfaces';
 
 export const SESSION_HEADER = 'x-homemind-session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -152,6 +157,8 @@ interface Runtime {
   source: LoadSource;
   /** Open live-update streams, one subscriber each. */
   hub: EventHub;
+  /** One model client per runtime, made again only when the model settings change. */
+  llm?: { key: string; client: LlmClient };
 }
 
 interface Holder {
@@ -189,6 +196,20 @@ export function resetHomemindRuntime(): void {
   stopScheduler();
   // Close the streams of the runtime being dropped, so none is left open on a state nobody updates.
   holder?.ready.then(rt => rt.hub.closeAll(), () => undefined);
+}
+
+let llmOverride: LlmClient | undefined;
+/** For tests: answer chat with this client instead of the one `HOMEMIND_LLM` describes. */
+export function setHomemindLlmForTests(client: LlmClient | undefined): void {
+  llmOverride = client;
+}
+
+function llmOf(rt: Runtime): LlmClient {
+  if (llmOverride) return llmOverride;
+  const config = llmConfigFromEnv();
+  const key = JSON.stringify(config);
+  if (rt.llm?.key !== key) rt.llm = { key, client: createLlmClient(config) };
+  return rt.llm.client;
 }
 
 let heartbeatMs = HEARTBEAT_MS;
@@ -298,21 +319,38 @@ async function checkAvailability(ctx: Ctx, eventId: string): Promise<{ conflicts
   return { conflicts: [], opened: proposal.openedItemIds };
 }
 
-async function runChange(ctx: Ctx, change: Change, afterEventId?: (changedIds: string[]) => string | undefined): Promise<void> {
-  const { rt, member, response } = ctx;
+interface Applied {
+  ok: true;
+  activityId: string;
+  changedIds: string[];
+  items: Item[];
+  opened: string[];
+  conflicts: Conflict[];
+}
+
+/** Applies one change as the member, saves and publishes it, then runs the availability check. */
+async function applyAndCommit(ctx: Ctx, change: Change, afterEventId?: (changedIds: string[]) => string | undefined): Promise<Applied | ChangeError> {
+  const { rt, member } = ctx;
   const result = applyChange(rt.state, change, member.id, rt.clock);
-  if (!result.ok) return changeFailed(ctx, result);
+  if (!result.ok) return result;
   await commit(rt, result.state, result.events, member.id);
   const changedIds = result.items.map(i => i.id);
   const eventId = afterEventId?.(changedIds);
   const availability = eventId ? await checkAvailability(ctx, eventId) : { conflicts: [], opened: [] };
-  json(response, 200, {
+  return {
     ok: true,
     activityId: result.activity.id,
+    changedIds,
     items: itemsById(rt.state, member.id, [...changedIds, ...availability.opened]),
     opened: availability.opened,
     conflicts: availability.conflicts
-  });
+  };
+}
+
+async function runChange(ctx: Ctx, change: Change, afterEventId?: (changedIds: string[]) => string | undefined): Promise<void> {
+  const result = await applyAndCommit(ctx, change, afterEventId);
+  if (!result.ok) return changeFailed(ctx, result);
+  json(ctx.response, 200, { ok: true, activityId: result.activityId, items: result.items, opened: result.opened, conflicts: result.conflicts });
 }
 
 // --- body validation ----------------------------------------------------------------------------------
@@ -470,6 +508,66 @@ async function answerReminder(ctx: Ctx, itemId: string, response: ReminderRespon
   });
 }
 
+// --- chat ---------------------------------------------------------------------------------------------
+
+/**
+ * `POST /chat {text}`: one chat message. The model reads it against the member's own view and returns
+ * one validated intent (intents.ts); `planChat` decides what that does under the family's autonomy;
+ * a write goes through the core like a tap on the board, with Undo. The answer is a turn (text and a
+ * card), the same shape as a screen. A model failure is a card with an error, never a guess.
+ */
+async function chatHandler(ctx: Ctx): Promise<void> {
+  const body = pick(await readBody(ctx.request), ['text'], 'chat');
+  if (typeof body.text !== 'string' || !body.text.trim()) throw new HttpError(400, 'invalid', 'text must be a message');
+  if (body.text.length > INTENT_LIMITS.message) throw new HttpError(400, 'invalid', `text is longer than ${INTENT_LIMITS.message} characters`);
+  const { rt, member, lang } = ctx;
+  const llm = llmStatus(llmConfigFromEnv());
+  const before = viewFor(rt.state, member.id);
+  if (!before) return fail(ctx.response, 404, 'not_found', 'No such member');
+
+  const started = Date.now();
+  const result = await runIntent(llmOf(rt), { view: before, now: rt.clock.now(), lang, text: body.text.trim() });
+  const answer = async (outcome: ChatOutcome, extra: Record<string, unknown> = {}) => {
+    // The state may have changed while the model was thinking: the card is built from the latest view.
+    const view = viewFor(rt.state, member.id) ?? before;
+    const now = new Date(rt.clock.now()).toISOString();
+    const turn = chatTurn({ lang, now, view, llm, turnId: randomBytes(6).toString('hex'), outcome, reminders: pendingRemindersFor(rt.state, member.id, rt.clock.now()) });
+    json(ctx.response, 200, { ...turn, ok: outcome.kind !== 'failed', outcome: outcome.kind, llm, ms: Date.now() - started, ...extra });
+  };
+  if (!result.ok) {
+    return answer({ kind: 'failed', reason: result.code === 'not_configured' ? 'not_configured' : 'model', code: result.code, message: result.message });
+  }
+
+  const view = viewFor(rt.state, member.id);
+  if (!view) return fail(ctx.response, 404, 'not_found', 'No such member');
+  const plan = planChat(view, result.value);
+  const intent = result.value.intent;
+  switch (plan.kind) {
+    case 'answer':
+      return answer({ kind: 'answer', answer: plan.answer, itemIds: plan.itemIds }, { intent });
+    case 'why':
+      return answer({ kind: 'why', explanation: plan.explanation }, { intent });
+    case 'suggest':
+      return answer({ kind: 'suggest', intent: plan.intent, itemId: plan.itemId, verb: plan.verb, ...(plan.memberId ? { memberId: plan.memberId } : {}), reason: plan.reason }, { intent });
+    case 'later':
+      return answer({ kind: 'later', intent: plan.intent }, { intent, task: plan.task });
+    case 'missing':
+      return answer({ kind: 'missing' }, { intent });
+    case 'write': {
+      const isEvent = plan.change.kind === 'create' && plan.change.item.type === 'event';
+      const applied = await applyAndCommit(ctx, plan.change, ids => (isEvent ? ids[0] : undefined));
+      if (!applied.ok) return answer({ kind: 'failed', reason: 'change', code: applied.code, message: applied.message }, { intent, status: applied.status });
+      const itemId = 'itemId' in plan.change ? plan.change.itemId : applied.changedIds[0];
+      // Undo, as on the board: the member made this change, so they may undo it.
+      const undoable = rt.state.activity.some(a => a.id === applied.activityId && a.undo && !a.undone);
+      return answer(
+        { kind: 'written', intent: plan.intent, itemId, proposed: plan.proposed, ...(undoable ? { activityId: applied.activityId } : {}), opened: applied.opened, conflicts: applied.conflicts.length },
+        { intent, activityId: applied.activityId, items: applied.items }
+      );
+    }
+  }
+}
+
 // --- handlers -----------------------------------------------------------------------------------------
 
 const MEMBER_VIEW = (m: Member) => ({ id: m.id, name: m.name, nameZh: m.nameZh, role: m.role, hasAccount: m.hasAccount, lang: m.lang });
@@ -605,7 +703,7 @@ const routes: Route[] = [
       json(ctx.response, 200, { why });
     }
   },
-  { method: 'POST', pattern: /^\/chat$/, auth: true, handler: notBuilt('T5.2') },
+  { method: 'POST', pattern: /^\/chat$/, auth: true, handler: chatHandler },
   { method: 'POST', pattern: /^\/actions\/([a-z0-9][a-z0-9_-]{0,63})\/(confirm|cancel)$/, auth: true, handler: notBuilt('T7.1') },
   { method: 'POST', pattern: /^\/preferences$/, auth: true, handler: notBuilt('T5.4') },
   { method: 'POST', pattern: /^\/rules$/, auth: true, handler: notBuilt('T7.3') },

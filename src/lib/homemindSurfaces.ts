@@ -18,9 +18,10 @@ import type { A2uiAction, A2uiComponent } from '../types';
 import type { ActionCard, Activity, Family, Item, Lang, Member, Preference, Reminder, Rule, Why } from '../../server/homemind/types';
 
 export type HomemindLang = Lang;
-export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit';
+export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit' | 'item';
 
-/** What the Add and edit screen opens: an existing item, a new preparation under an event, or a new item. */
+/** What the Add and edit screen opens: an existing item, a new preparation under an event, or a new item.
+ * The `item` screen (the short summary after a save) uses `itemId` only. */
 export interface HomemindEditTarget {
   itemId?: string;
   parentId?: string;
@@ -215,7 +216,15 @@ const T = {
   noPreps: { en: 'No preparations yet.', zh: '还没有准备事项。' },
   thisItem: { en: 'This item', zh: '当前事项' },
   under: { en: 'For the event', zh: '所属活动' },
-  notFound: { en: 'This item is not on your board any more.', zh: '这个事项已不在你的看板上。' }
+  notFound: { en: 'This item is not on your board any more.', zh: '这个事项已不在你的看板上。' },
+  details: { en: 'Details', zh: '详情' },
+  dWhen: { en: 'When', zh: '时间' },
+  dNoTime: { en: 'No date', zh: '没有日期' },
+  dNotes: { en: 'Notes', zh: '备注' },
+  dFor: { en: 'For', zh: '关于' },
+  dAway: { en: 'Away', zh: '没空' },
+  dSeen: { en: 'Who sees it', zh: '可见范围' },
+  dFamily: { en: 'The whole family', zh: '全家' }
 } as const;
 
 type Key = keyof typeof T;
@@ -776,14 +785,62 @@ function editScreen(input: HomemindScreenData): HomemindTurn {
   if (item) actions.push(act('cancel', item, hx(lang, 'remove'), 'secondary'));
   children.push({ id: 'actions', component: 'ActionBar', actions });
 
-  if (item?.type === 'event') {
-    const preps = view.items.filter(i => i.parentEventId === item.id && live(i)).sort(byStart);
-    // Each preparation: tap its title to edit it, or remove it here.
-    const rows = preps.map(p => ({ ...taskRow(p, view, lang, today), actions: [act('cancel', p, hx(lang, 'remove'), 'ghost')] }));
-    section(children, data, 'preps', hx(lang, 'preparations'), rows, hx(lang, 'noPreps'));
-    children.push({ id: 'prep-actions', component: 'ActionBar', actions: [{ id: `homemind.add:${item.id}`, label: hx(lang, 'addPrep'), variant: 'secondary', kind: 'homemind', args: { verb: 'add', parentEventId: item.id } }] });
-  }
+  if (item?.type === 'event') preparationsBlock(item, view, lang, today, children, data);
   return turn('edit', title, parent && !item ? titleOf(parent, lang) : undefined, children, data);
+}
+
+/** An event's preparations: tap a title to edit it, remove it here, or add one. */
+function preparationsBlock(event: Item, view: HomemindViewData, lang: HomemindLang, today: string, children: A2uiComponent[], data: Record<string, unknown>): void {
+  const preps = view.items.filter(i => i.parentEventId === event.id && live(i)).sort(byStart);
+  const rows = preps.map(p => ({ ...taskRow(p, view, lang, today), actions: [act('cancel', p, hx(lang, 'remove'), 'ghost')] }));
+  section(children, data, 'preps', hx(lang, 'preparations'), rows, hx(lang, 'noPreps'));
+  children.push({ id: 'prep-actions', component: 'ActionBar', actions: [{ id: `homemind.add:${event.id}`, label: hx(lang, 'addPrep'), variant: 'secondary', kind: 'homemind', args: { verb: 'add', parentEventId: event.id } }] });
+}
+
+/**
+ * One item, short (T3.2): what the Family tab shows after a save, instead of the whole form.
+ * Its details, its own row (claim, assign...), Edit (opens the form), Remove, and for an event its
+ * preparations.
+ */
+function itemScreen(input: HomemindScreenData): HomemindTurn {
+  const { lang, view } = input;
+  const zone = view.family.timezone;
+  const today = dateParts(input.now, zone)?.date ?? '';
+  const id = input.edit?.itemId;
+  const item = id ? view.items.find(i => i.id === id && live(i)) : undefined;
+  const backBar: A2uiAction = { id: 'homemind.back', label: hx(lang, 'back'), variant: 'ghost', kind: 'homemind', args: { verb: 'back' } };
+  if (!item) return turn('item', hx(lang, 'thisItem'), undefined, [{ id: 'gone', component: 'ErrorNotice', title: hx(lang, 'thisItem'), body: hx(lang, 'notFound') }, { id: 'actions', component: 'ActionBar', actions: [backBar] }], {});
+
+  const names = (ids: string[]) => ids.map(m => nameOf(memberOf(view.family, m), lang)).filter(Boolean).join(lang === 'zh' ? '、' : ', ');
+  const end = item.end && !item.allDay ? dateParts(item.end, zone) : null;
+  const when = whenLabel(item, today, zone, lang);
+  const parent = item.parentEventId ? view.items.find(i => i.id === item.parentEventId) : undefined;
+  const rows = [
+    { label: hx(lang, 'dWhen'), value: when ? `${when}${end ? `–${end.time}` : ''}` : hx(lang, 'dNoTime'), tone: 'muted' },
+    ...(parent ? [{ label: hx(lang, 'under'), value: titleOf(parent, lang), tone: 'muted' }] : []),
+    ...(item.forMemberIds.length ? [{ label: hx(lang, 'dFor'), value: names(item.forMemberIds), tone: 'muted' }] : []),
+    ...(item.unavailableMemberIds.length ? [{ label: hx(lang, 'dAway'), value: names(item.unavailableMemberIds), tone: 'accent' }] : []),
+    ...(item.notes ? [{ label: hx(lang, 'dNotes'), value: item.notes, tone: 'muted' }] : []),
+    { label: hx(lang, 'dSeen'), value: item.visibility === 'parents' ? hx(lang, 'parentsOnly') : hx(lang, 'dFamily'), tone: 'muted' }
+  ];
+  const row: TaskRow = taskRow(item, view, lang, today);
+  delete row.open;
+  const children: A2uiComponent[] = [
+    taskList('this', hx(lang, 'thisItem'), '/this'),
+    { id: 'details', component: 'InfoRows', title: hx(lang, 'details'), dataPath: '/details' },
+    {
+      id: 'actions',
+      component: 'ActionBar',
+      actions: [
+        { id: `homemind.edit:${item.id}`, label: hx(lang, 'edit'), variant: 'primary', kind: 'homemind', args: { verb: 'edit', itemId: item.id } },
+        act('cancel', item, hx(lang, 'remove'), 'secondary'),
+        backBar
+      ]
+    }
+  ];
+  const data: Record<string, unknown> = { this: [row], details: rows };
+  if (item.type === 'event') preparationsBlock(item, view, lang, today, children, data);
+  return turn('item', titleOf(item, lang), undefined, children, data);
 }
 
 // --- public API -------------------------------------------------------------------------------------
@@ -797,7 +854,8 @@ const SCREEN_BUILDERS: Record<HomemindScreenName, (input: HomemindScreenData) =>
   memory: memoryScreen,
   activity: activityScreen,
   settings: settingsScreen,
-  edit: editScreen
+  edit: editScreen,
+  item: itemScreen
 };
 
 /** One screen as a turn. */

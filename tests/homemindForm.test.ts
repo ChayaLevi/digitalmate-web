@@ -285,3 +285,59 @@ describe('homemindHealth', () => {
     expect(await homemindHealth()).toMatchObject({ enabled: true, demo: true });
   });
 });
+
+describe('after a save: the short item screen', () => {
+  const itemSurface = (state: HomemindState, member: string, itemId: string, lang: HomemindLang = 'en') => {
+    const view = viewFor(state, member)!;
+    return A2uiSurfaceStore.fromJsonl(screenTurn('item', { lang, now: new Date(NOW).toISOString(), view, edit: { itemId } }).jsonl).list()[0];
+  };
+
+  it('shows details, the item row, Edit, Remove and Back, and no form fields', () => {
+    const s = itemSurface(seed(), 'mom', 'family-dinner');
+    expect(components(s).some(c => typeof c.name === 'string')).toBe(false);
+    const bar = components(s).find(c => c.id === 'actions')!;
+    expect(bar.actions!.map(a => a.args?.verb)).toEqual(['edit', 'cancel', 'back']);
+    expect(bar.actions![0].args).toEqual({ verb: 'edit', itemId: 'family-dinner' });
+    expect((s.data.details as Array<{ label: string }>).map(r => r.label)).toContain('When');
+    expect((s.data.this as Array<{ id: string; open?: unknown }>)[0]).toMatchObject({ id: 'family-dinner' });
+    expect((s.data.this as Array<{ open?: unknown }>)[0].open).toBeUndefined();
+    // An event keeps its preparations and "Add preparation" here.
+    expect((s.data.preps as Array<{ id: string }>).map(p => p.id)).toContain('family-dinner-flowers');
+    expect(allActions(s).some(a => a.args?.verb === 'add' && a.args.parentEventId === 'family-dinner')).toBe(true);
+  });
+
+  it('a preparation names its event; Chinese labels', () => {
+    const s = itemSurface(seed(), 'dad', 'family-dinner-flowers', 'zh');
+    const labels = (s.data.details as Array<{ label: string }>).map(r => r.label);
+    expect(labels).toContain('所属活动');
+    expect(labels).toContain('时间');
+    expect(s.data.preps).toBeUndefined();
+  });
+
+  it('a Parents-only item is "not on your board" for a teen, with no trace', () => {
+    const s = itemSurface(seed(), 'maya', 'counselor-meeting');
+    expect(JSON.stringify(s)).not.toMatch(/counselor/i);
+    expect(allActions(s).map(a => a.args?.verb)).toEqual(['back']);
+  });
+});
+
+describe('withFormError', () => {
+  it('puts the error just before the bar that holds Save, and changes nothing else', async () => {
+    const { withFormError } = await import('../src/components/FamilyView');
+    const s = editSurface(seed(), 'mom', {});
+    const out = withFormError(s, 'Not saved yet', 'Add a title.');
+    const before = s.components[s.root].children!;
+    const after = out.components[out.root].children!;
+    expect(after.length).toBe(before.length + 1);
+    expect(after[after.indexOf('hm-form-error') + 1]).toBe('actions');
+    expect(out.components['hm-form-error']).toMatchObject({ component: 'ErrorNotice', body: 'Add a title.' });
+    expect(s.components[s.root].children).toEqual(before); // the original surface is untouched
+  });
+
+  it('a surface without Save is left as it is', async () => {
+    const { withFormError } = await import('../src/components/FamilyView');
+    const view = viewFor(seed(), 'mom')!;
+    const s = A2uiSurfaceStore.fromJsonl(screenTurn('family', { lang: 'en', now: new Date(NOW).toISOString(), view }).jsonl).list()[0];
+    expect(withFormError(s, 't', 'm')).toBe(s);
+  });
+});

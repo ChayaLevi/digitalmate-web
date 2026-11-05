@@ -39,6 +39,9 @@ async function seriousIssues(page: Page) {
   return result.violations.filter(v => v.impact === 'critical' || v.impact === 'serious').map(v => ({ id: v.id, targets: v.nodes.map(n => n.target) }));
 }
 
+/** How far the app is scrolled sideways inside its stage (`overflow: hidden` can still be scrolled by script). */
+const stageShift = (page: Page) => page.evaluate(() => document.querySelector('.stage')?.scrollLeft ?? 0);
+
 async function noOverflow(page: Page) {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
@@ -73,30 +76,42 @@ test('create an event with preparations, edit it, delete a preparation, assign i
   await page.getByLabel('Title').fill('School concert');
   await page.getByLabel('Start time (empty for all day)').fill('18:00');
   await page.getByLabel('End time').fill('19:30');
-  await page.getByRole('button', { name: 'Save' }).click();
+  // dispatchEvent, not click(): click() first scrolls the button into view on both axes, which moves the
+  // stage sideways by itself (a real tap does not). The check below is about what the app does.
+  await page.getByRole('button', { name: 'Save' }).dispatchEvent('click');
   await expect(page.locator('.hm-notice')).toContainText('Saved. You can add preparations below.');
-  await expect(page.locator('.a2ui-surface h3')).toHaveText('Edit item');
-  await expect(page.getByLabel('Title')).toHaveValue('School concert');
+  // After a save: the short view of the item (details, Edit, Remove), not the whole form.
+  await expect(page.locator('.a2ui-surface h3')).toHaveText('School concert');
+  await expect(page.getByLabel('Title')).toHaveCount(0);
+  await expect(page.locator('.a2ui-actions').first().getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
+  await expect(page.locator('.a2ui-actions').first().getByRole('button', { name: 'Remove', exact: true })).toBeVisible();
+  await expect(page.locator('.info-row', { hasText: 'When' })).toContainText('18:00–19:30');
+  expect(await stageShift(page)).toBe(0);
+  await page.evaluate(() => Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished)));
+  await page.screenshot({ path: test.info().outputPath('family-saved-event.png') });
 
-  // Two preparations.
+  // Two preparations, each saved back to the event's short view.
   for (const title of ['Iron the shirt', 'Charge the camera']) {
     await page.getByRole('button', { name: 'Add preparation' }).last().click();
     await expect(page.locator('.a2ui-surface h3')).toHaveText('Add preparation');
     await page.getByLabel('Title').fill(title);
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(page.locator('.hm-notice')).toContainText('Saved.');
-    await expect(page.locator('.a2ui-surface h3')).toHaveText('Edit item');
+    await expect(page.locator('.a2ui-surface h3')).toHaveText('School concert');
   }
   const preps = page.locator('.hm-task-list').last().locator('.hm-task');
   await expect(preps).toHaveCount(2);
-  await preps.first().scrollIntoViewIfNeeded();
-  await page.screenshot({ path: test.info().outputPath('family-edit-event.png') });
 
-  // Edit the event.
+  // Edit the event: Edit opens the form; Save comes back to the short view.
+  await page.locator('.a2ui-actions').first().getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(page.locator('.a2ui-surface h3')).toHaveText('Edit item');
   await page.getByLabel('Notes').fill('Row 3');
   await page.getByLabel('Title').fill('School concert (Maya)');
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(page.locator('.hm-notice')).toContainText('Saved.');
+  await expect(page.locator('.a2ui-surface h3')).toHaveText('School concert (Maya)');
+  await expect(page.locator('.info-row', { hasText: 'Notes' })).toContainText('Row 3');
+  await page.getByRole('button', { name: 'Back' }).first().click();
 
   // Back on My day: open it again from its row.
   await page.getByRole('button', { name: 'Edit: School concert (Maya)' }).first().click();
@@ -126,6 +141,28 @@ test('create an event with preparations, edit it, delete a preparation, assign i
   await expect(hit.locator('.hm-task-owner')).toHaveText('Dad');
   await expect(page.locator('.hm-task', { hasText: 'Charge the camera' })).toHaveCount(0);
   await noOverflow(page);
+});
+
+test('a form problem shows right above Save, in view, and nothing is saved', async ({ page }) => {
+  await openFamily(page, 'en', 'mom');
+  await page.getByRole('button', { name: '+ Add' }).click();
+  await page.getByLabel('Start time (empty for all day)').fill('18:00');
+  await page.getByRole('button', { name: 'Save' }).dispatchEvent('click'); // see the note on dispatchEvent above
+  const error = page.locator('.hm-family .a2ui-error');
+  await expect(error).toContainText('Add a title.');
+  await expect(error).toBeInViewport();
+  await expect(page.getByRole('button', { name: 'Save' })).toBeInViewport();
+  expect(await stageShift(page)).toBe(0);
+  // The very next element is the bar with Save in it.
+  await expect(error.locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Save' })).toBeVisible();
+  await expect(page.locator('.hm-notice')).toHaveCount(0);
+  await expect(page.locator('.a2ui-surface h3')).toHaveText('Add to the board');
+  await page.screenshot({ path: test.info().outputPath('family-form-error.png') });
+  // Fixed and saved: the error goes away.
+  await page.getByLabel('Title').fill('Dentist');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.locator('.a2ui-surface h3')).toHaveText('Dentist');
+  await expect(error).toHaveCount(0);
 });
 
 test('the calendar opens an item for editing', async ({ page }) => {

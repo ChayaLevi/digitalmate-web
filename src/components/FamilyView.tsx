@@ -49,6 +49,26 @@ const TABS: Array<{ screen: HomemindScreenName; en: string; zh: string }> = [
 
 const HOME: Nav = { screen: 'my-day', params: {} };
 
+/**
+ * The surface with an error notice placed just above the bar that holds Save, so a form problem is
+ * seen where the member tapped. Host-side only: the bridge's surface is not changed.
+ */
+export function withFormError(surface: A2uiSurface, title: string, message: string): A2uiSurface {
+  const root = surface.components[surface.root];
+  const children = root?.children ?? [];
+  const barId = children.find(id => surface.components[id]?.actions?.some(a => a.args?.verb === 'save'));
+  if (!root || !barId) return surface;
+  const at = children.indexOf(barId);
+  return {
+    ...surface,
+    components: {
+      ...surface.components,
+      'hm-form-error': { id: 'hm-form-error', component: 'ErrorNotice', title, body: message },
+      [surface.root]: { ...root, children: [...children.slice(0, at), 'hm-form-error', ...children.slice(at)] }
+    }
+  };
+}
+
 function demoMemberFromUrl(): string | null {
   try {
     const id = new URL(window.location.href).searchParams.get('member');
@@ -77,6 +97,8 @@ export function FamilyView({
   const [form, setForm] = useState<Record<string, unknown>>({});
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  /** A problem with the form being saved, shown next to Save (not in the notice at the top). */
+  const [formError, setFormError] = useState<string | null>(null);
   const autoSignIn = useRef(health.demo ? demoMemberFromUrl() : null);
   const loadSeq = useRef(0);
 
@@ -144,6 +166,28 @@ export function FamilyView({
   useEffect(() => {
     if (session) void load(nav, session.token);
   }, [session, nav, load]);
+
+  useEffect(() => {
+    setFormError(null);
+    // Only this element's own scrollTop: scrollTo() here also moved the stage sideways.
+    const main = document.getElementById('main-content');
+    if (main) main.scrollTop = 0;
+  }, [nav]);
+
+  // A new form error is scrolled into view with the Save bar under it. Only the main area scrolls
+  // (scrollIntoView would also move the stage sideways).
+  useEffect(() => {
+    if (!formError) return;
+    const main = document.getElementById('main-content');
+    const error = main?.querySelector('.hm-family .a2ui-error');
+    if (!main || !error) return;
+    const bar = error.nextElementSibling ?? error;
+    const box = main.getBoundingClientRect();
+    const top = error.getBoundingClientRect().top;
+    const bottom = bar.getBoundingClientRect().bottom;
+    // Bottom of the Save bar a little above the bottom of the area, unless the error would leave the top.
+    main.scrollTop += Math.min(bottom - box.bottom + 24, top - box.top - 8);
+  }, [formError]);
 
   const pick = async (memberId: string) => {
     setBusy(true);
@@ -215,16 +259,33 @@ export function FamilyView({
     if (!surface) return;
     const { values, defaults } = formValues(surface, form);
     const plan = buildSave(args, values, defaults);
-    if (!plan.ok) return setNotice({ text: problemText(plan.problem), tone: 'error' });
-    if (!plan.request) return back();
-    const result = await sendHomemindWrite(token, plan.request);
-    const created = plan.request.method === 'POST' ? result.items?.[0] : undefined;
-    if (created?.type === 'event') {
-      // A new event opens for editing, so its preparations can be added straight away.
-      go({ screen: 'edit', params: { id: created.id } }, { replace: true, keepNotice: true });
-      afterWrite(result, tr('Saved. You can add preparations below.', '已保存。可以在下方添加准备事项。'));
+    if (!plan.ok) return setFormError(problemText(plan.problem));
+    setFormError(null);
+    const showItem = (itemId: string) => {
+      // After a save, the short view of the item (details, Edit, Remove), not the whole form again.
+      const previous = history.current[history.current.length - 1];
+      if (previous?.screen === 'item' && previous.params.id === itemId) back(true);
+      else go({ screen: 'item', params: { id: itemId } }, { replace: true, keepNotice: true });
+    };
+    if (!plan.request) {
+      if (typeof args.itemId === 'string') showItem(args.itemId);
+      else back();
       return;
     }
+    let result: MutationResult;
+    try {
+      result = await sendHomemindWrite(token, plan.request);
+    } catch (error) {
+      if (error instanceof HomemindError && (error.status === 400 || error.status === 403)) return setFormError(error.message);
+      throw error;
+    }
+    const saved = result.items?.[0];
+    if (saved && saved.type !== 'preparation') {
+      showItem(saved.id);
+      afterWrite(result, saved.type === 'event' && plan.request.method === 'POST' ? tr('Saved. You can add preparations below.', '已保存。可以在下方添加准备事项。') : tr('Saved.', '已保存。'));
+      return;
+    }
+    // A preparation goes back to its event.
     back(true);
     afterWrite(result, tr('Saved.', '已保存。'));
   };
@@ -254,7 +315,7 @@ export function FamilyView({
         setNotice({ text: `${outcome.why.summary ?? ''} (${tr('Source', '来源')}: ${source})`, tone: 'info' });
         return;
       }
-      const removedHere = verb === 'cancel' && nav.screen === 'edit' && nav.params.id === args.itemId;
+      const removedHere = verb === 'cancel' && (nav.screen === 'edit' || nav.screen === 'item') && nav.params.id === args.itemId;
       if (removedHere) back(true);
       else refresh();
       afterWrite(outcome.result, verb === 'undo' ? tr('Undone.', '已撤销。') : verb === 'cancel' ? tr('Removed.', '已删除。') : tr('Done.', '已完成。'));
@@ -282,7 +343,7 @@ export function FamilyView({
       await undoHomemind(session.token, target.itemId, target.activityId);
       setNotice({ text: tr('Undone.', '已撤销。'), tone: 'info' });
       // An undone create removes the item, so an edit screen for it would show "not on your board".
-      if (nav.screen === 'edit' && nav.params.id === target.itemId) back(true);
+      if ((nav.screen === 'edit' || nav.screen === 'item') && nav.params.id === target.itemId) back(true);
       else refresh();
     } catch (error) {
       setNotice({ text: describe(error), tone: 'error' });
@@ -362,10 +423,15 @@ export function FamilyView({
         </button>
       </nav>
       {noticeBar}
+      {formError ? (
+        <span className="hm-visually-hidden" role="alert">
+          {formError}
+        </span>
+      ) : null}
       {surface ? (
         <A2uiSurfaceView
           key={`${surface.id}-${nav.params.id ?? ''}-${nav.params.parent ?? ''}`}
-          surface={surface}
+          surface={formError ? withFormError(surface, tr('Not saved yet', '还没有保存'), formError) : surface}
           onAction={action => void onAction(action)}
           form={form}
           onInput={(field, value) => setForm(previous => ({ ...previous, [field]: value }))}

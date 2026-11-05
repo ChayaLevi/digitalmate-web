@@ -7,13 +7,14 @@ import { homemindErrorTurn } from '../lib/homemindSurfaces';
 import type { HomemindScreenName } from '../lib/homemindSurfaces';
 import { buildSave, formValues } from '../lib/homemindForm';
 import type { FormProblem } from '../lib/homemindForm';
-import { addAlert, applyItemChange } from '../lib/homemindAlerts';
-import type { AlertButton } from '../lib/homemindAlerts';
+import { addAlert, applyItemChange, closeReminder } from '../lib/homemindAlerts';
+import type { AlertVerb } from '../lib/homemindAlerts';
 import {
   HomemindError,
   fetchHomemindMembers,
   fetchHomemindScreen,
   homemindSignIn,
+  jumpHomemindClock,
   readHomemindSession,
   runHomemindAction,
   sendHomemindWrite,
@@ -78,6 +79,22 @@ export function withFormError(surface: A2uiSurface, title: string, message: stri
   };
 }
 
+/** The demo clock as last heard from the bridge, and when (real time), so the chip keeps running. */
+interface DemoClockView {
+  now: number;
+  offsetMs: number;
+  timezone: string;
+  heardAt: number;
+}
+
+function clockText(view: DemoClockView, at: number): string {
+  try {
+    return new Intl.DateTimeFormat('en-GB', { timeZone: view.timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(view.now + (at - view.heardAt)));
+  } catch {
+    return '';
+  }
+}
+
 function demoMemberFromUrl(): string | null {
   try {
     const id = new URL(window.location.href).searchParams.get('member');
@@ -113,6 +130,14 @@ export function FamilyView({
   /** Live alerts from the stream, newest first. */
   const [alerts, setAlerts] = useState<HomemindAlert[]>([]);
   const [stream, setStream] = useState<StreamStatus | null>(null);
+  const [clock, setClock] = useState<DemoClockView | null>(null);
+  /** Re-renders the clock chip every 20 s. */
+  const [tickAt, setTickAt] = useState(() => Date.now());
+  useEffect(() => {
+    if (!health.demo) return;
+    const timer = setInterval(() => setTickAt(Date.now()), 20_000);
+    return () => clearInterval(timer);
+  }, [health.demo]);
 
   const errorSurface = useCallback((message: string) => A2uiSurfaceStore.fromJsonl(homemindErrorTurn(message, lang).jsonl).list()[0] ?? null, [lang]);
 
@@ -214,8 +239,15 @@ export function FamilyView({
         if (!active) return;
         switch (message.event) {
           case 'hello':
+            setClock({ now: Date.parse(message.data.now), offsetMs: message.data.offsetMs, timezone: message.data.timezone, heardAt: Date.now() });
             // Covers anything missed while the stream was down.
             return refreshSoon();
+          case 'clock':
+            setClock({ now: Date.parse(message.data.now), offsetMs: message.data.offsetMs, timezone: message.data.timezone, heardAt: Date.now() });
+            setTickAt(Date.now());
+            return refreshSoon();
+          case 'alert.closed':
+            return setAlerts(list => closeReminder(list, message.data.reminderId));
           case 'item.changed':
             setAlerts(list => applyItemChange(list, message.data.itemId, message.data.item, memberId));
             return refreshSoon();
@@ -390,7 +422,16 @@ export function FamilyView({
       const removedHere = verb === 'cancel' && (nav.screen === 'edit' || nav.screen === 'item') && nav.params.id === args.itemId;
       if (removedHere) back(true);
       else refresh();
-      afterWrite(outcome.result, verb === 'undo' ? tr('Undone.', '已撤销。') : verb === 'cancel' ? tr('Removed.', '已删除。') : tr('Done.', '已完成。'));
+      afterWrite(
+        outcome.result,
+        verb === 'undo'
+          ? tr('Undone.', '已撤销。')
+          : verb === 'cancel'
+            ? tr('Removed.', '已删除。')
+            : verb === 'snooze'
+              ? tr('OK, a reminder again in 10 minutes.', '好的，10 分钟后再提醒。')
+              : tr('Done.', '已完成。')
+      );
     } catch (error) {
       if (error instanceof HomemindError && error.status === 401) return signOut(tr('Your demo sign-in ended. Pick a member again.', '演示登录已结束，请重新选择成员。'));
       setNotice({ text: describe(error), tone: 'error' });
@@ -424,11 +465,30 @@ export function FamilyView({
     }
   };
 
-  const onAlertButton = (alert: HomemindAlert, verb: AlertButton['verb']) => {
+  const onAlertButton = (alert: HomemindAlert, verb: AlertVerb) => {
     setAlerts(list => list.filter(a => a.id !== alert.id));
     if (verb === 'dismiss') return;
     if (verb === 'open') return go({ screen: 'item', params: { id: alert.itemId } });
-    void onAction({ id: `homemind.${verb}:${alert.itemId}`, label: verb, kind: 'homemind', args: { verb, itemId: alert.itemId, version: alert.itemVersion } });
+    const args: Record<string, unknown> = { verb, itemId: alert.itemId, version: alert.itemVersion };
+    // "I'll take it" on an item assigned to someone else: assign it to yourself.
+    if (verb === 'take') Object.assign(args, { verb: 'assign', memberId: session?.member.id });
+    if (alert.reminderId && (verb === 'ack' || verb === 'snooze')) args.reminderId = alert.reminderId;
+    void onAction({ id: `homemind.${String(args.verb)}:${alert.itemId}`, label: verb, kind: 'homemind', args });
+  };
+
+  const jumpClock = async (minutes: number) => {
+    if (!session || busy) return;
+    setBusy(true);
+    try {
+      const result = await jumpHomemindClock(session.token, minutes);
+      setClock({ now: Date.parse(result.now), offsetMs: result.offsetMs, timezone: result.timezone, heardAt: Date.now() });
+      setTickAt(Date.now());
+      refresh();
+    } catch (error) {
+      setNotice({ text: describe(error), tone: 'error' });
+    } finally {
+      setBusy(false);
+    }
   };
 
   const noticeBar = notice ? (
@@ -509,6 +569,20 @@ export function FamilyView({
           + {tr('Add', '添加')}
         </button>
       </nav>
+      {health.demo && clock ? (
+        <div className="hm-demo-clock" data-demo-clock={new Date(clock.now + (tickAt - clock.heardAt)).toISOString()} data-offset={clock.offsetMs}>
+          <span>
+            <span className="hm-demo-tag">{tr('Demo clock', '演示时钟')}</span> <strong>{clockText(clock, tickAt)}</strong>
+            {clock.offsetMs > 0 ? <em> {tr(`+${Math.round(clock.offsetMs / 60_000)} min`, `+${Math.round(clock.offsetMs / 60_000)} 分钟`)}</em> : null}
+          </span>
+          <button type="button" onClick={() => void jumpClock(15)} disabled={busy} aria-label={tr('+15 min (demo clock)', '+15 分钟（演示时钟）')}>
+            +15 {tr('min', '分钟')}
+          </button>
+          <button type="button" onClick={() => void jumpClock(60)} disabled={busy} aria-label={tr('+1 h (demo clock)', '+1 小时（演示时钟）')}>
+            +1 {tr('h', '小时')}
+          </button>
+        </div>
+      ) : null}
       <AlertBanner alerts={alerts} lang={lang} busy={busy} onButton={onAlertButton} />
       {noticeBar}
       {formError ? (

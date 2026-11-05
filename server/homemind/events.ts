@@ -28,8 +28,10 @@ export interface EventHub {
   publishChanges(state: HomemindState, events: readonly CoreEvent[]): void;
   /** Each alert to its recipient's streams only, and only while that member may still see the item in `state`. */
   publishAlerts(state: HomemindState, deliveries: readonly AlertDelivery[]): void;
+  /** A reminder was answered or stopped: close its alerts in these members' windows. */
+  publishClosed(recipientIds: readonly string[], reminderId: string): void;
   /** Everyone, whatever they may see. Only for messages that carry no item. */
-  broadcast(message: Extract<StreamMessage, { event: 'demo.reset' }>): void;
+  broadcast(message: Extract<StreamMessage, { event: 'demo.reset' | 'clock' }>): void;
   count(memberId?: string): number;
   closeAll(): void;
 }
@@ -80,6 +82,9 @@ export function createEventHub(): EventHub {
         if (!item || !canSeeItem(state, recipientId, item)) continue;
         for (const subscriber of subscribers.filter(s => s.memberId === recipientId)) deliver(subscriber, { event: 'alert', data: alert });
       }
+    },
+    publishClosed(recipientIds, reminderId) {
+      for (const subscriber of subscribers.filter(s => recipientIds.includes(s.memberId))) deliver(subscriber, { event: 'alert.closed', data: { reminderId } });
     },
     broadcast(message) {
       for (const subscriber of [...subscribers]) deliver(subscriber, message);

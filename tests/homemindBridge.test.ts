@@ -298,9 +298,11 @@ describe('items', () => {
     expect((await mom.send('POST', '/items/pickup-today/undo', { activityId })).status).toBeGreaterThanOrEqual(400);
   });
 
-  it('the verbs that belong to later tasks answer 501, not a fake result', async () => {
+  it('snooze needs a reminder for this member, and does not fake one (T4.1)', async () => {
     const mom = as(await login('mom'));
-    expect((await mom.send('POST', '/items/pickup-today/snooze', { version: 1 })).status).toBe(501);
+    expect((await mom.send('POST', '/items/pickup-today/snooze', { version: 1 })).status).toBe(404);
+    expect((await mom.send('POST', '/items/pickup-today/snooze', { version: 1, reminderId: 'Bad_Id' })).status).toBe(400);
+    expect((await mom.send('POST', '/items/pickup-today/snooze', { version: 1, extra: 1 })).status).toBe(400);
   });
 });
 
@@ -368,7 +370,6 @@ describe('routes for later tasks', () => {
       ['POST', '/preferences', 'T5.4'],
       ['POST', '/rules', 'T7.3'],
       ['PUT', '/settings', 'T4.2'],
-      ['POST', '/demo/clock', 'T4.1'],
       ['POST', '/demo/post-group-message', 'T7.2'],
       ['GET', '/screen/memory', 'T6.2']
     ]) {

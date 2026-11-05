@@ -6,7 +6,7 @@
  * anything missed while the stream was down.
  */
 import { apiUrl } from '../lib/api';
-import type { HomemindAlert, StreamMessage } from '../../server/homemind/types';
+import type { AlertBatchEntry, HomemindAlert, StreamMessage } from '../../server/homemind/types';
 
 export const SESSION_HEADER = 'x-homemind-session';
 
@@ -45,14 +45,22 @@ export function toStreamMessage(frame: { event: string; data: string }): StreamM
   if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
   const record = data as Record<string, unknown>;
   switch (frame.event) {
-    case 'hello':
-      return typeof record.memberId === 'string' && typeof record.now === 'string' ? { event: 'hello', data: { memberId: record.memberId, now: record.now } } : null;
+    case 'hello': {
+      const clock = toClock(record);
+      return typeof record.memberId === 'string' && clock ? { event: 'hello', data: { memberId: record.memberId, ...clock } } : null;
+    }
+    case 'clock': {
+      const clock = toClock(record);
+      return clock ? { event: 'clock', data: clock } : null;
+    }
     case 'item.changed':
       return typeof record.itemId === 'string' && 'item' in record ? { event: 'item.changed', data: { itemId: record.itemId, item: record.item as never } } : null;
     case 'alert': {
       const alert = toAlert(record);
       return alert ? { event: 'alert', data: alert } : null;
     }
+    case 'alert.closed':
+      return str(record.reminderId, 64) ? { event: 'alert.closed', data: { reminderId: record.reminderId } } : null;
     case 'demo.reset':
       return { event: 'demo.reset', data: {} };
     default:
@@ -62,17 +70,51 @@ export function toStreamMessage(frame: { event: string; data: string }): StreamM
 
 const str = (value: unknown, max = 300): value is string => typeof value === 'string' && value.length > 0 && value.length <= max;
 
+function toClock(record: Record<string, unknown>): { now: string; offsetMs: number; timezone: string } | null {
+  const { now, offsetMs, timezone } = record;
+  if (!str(now, 40) || !Number.isFinite(Date.parse(now)) || !str(timezone, 64)) return null;
+  if (typeof offsetMs !== 'number' || !Number.isFinite(offsetMs) || offsetMs < 0) return null;
+  return { now, offsetMs, timezone };
+}
+
+const ALERT_KINDS: readonly HomemindAlert['kind'][] = ['assigned', 'open', 'reminder', 'escalation', 'backup', 'batch'];
+const ASKS = ['heads-up', 'confirm', 'open'] as const;
+const MAX_ENTRIES = 20;
+
+function toEntries(value: unknown): AlertBatchEntry[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ENTRIES) return null;
+  const out: AlertBatchEntry[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') return null;
+    const { itemId, title, titleZh, sensitive } = raw as Record<string, unknown>;
+    if (!str(itemId, 64) || typeof sensitive !== 'boolean') return null;
+    if ((title !== undefined && !str(title)) || (titleZh !== undefined && !str(titleZh))) return null;
+    out.push({ itemId, sensitive, ...(!sensitive && title ? { title: title as string, ...(titleZh ? { titleZh: titleZh as string } : {}) } : {}) });
+  }
+  return out;
+}
+
 /** An `alert` frame's data with every field checked, else null. Unknown fields are dropped. */
 export function toAlert(record: Record<string, unknown>): HomemindAlert | null {
   const { id, kind, itemId, itemVersion, tier, at, byId, byName, byNameZh, title, titleZh, sensitive } = record;
-  if (!str(id) || (kind !== 'assigned' && kind !== 'open') || !str(itemId, 64) || !str(byId, 64) || !str(byName) || !str(at, 40)) return null;
+  const { reminderId, ask, time, recurring, contactName, contactNameZh, simulated, entries } = record;
+  if (!str(id) || !ALERT_KINDS.includes(kind as HomemindAlert['kind']) || !str(itemId, 64) || !str(byId, 64) || !str(byName) || !str(at, 40)) return null;
   if (typeof itemVersion !== 'number' || !Number.isInteger(itemVersion) || itemVersion < 1) return null;
   if (tier !== 'urgent' && tier !== 'timed' && tier !== 'summary') return null;
   if (typeof sensitive !== 'boolean') return null;
-  for (const optional of [byNameZh, title, titleZh]) if (optional !== undefined && !str(optional)) return null;
+  for (const optional of [byNameZh, title, titleZh, contactName, contactNameZh]) if (optional !== undefined && !str(optional)) return null;
+  if (reminderId !== undefined && !str(reminderId, 64)) return null;
+  if (ask !== undefined && !ASKS.includes(ask as (typeof ASKS)[number])) return null;
+  if (time !== undefined && !(typeof time === 'string' && /^\d{2}:\d{2}$/.test(time))) return null;
+  if ((recurring !== undefined && typeof recurring !== 'boolean') || (simulated !== undefined && typeof simulated !== 'boolean')) return null;
+  const batch = kind === 'batch' ? toEntries(entries) : undefined;
+  if (batch === null) return null;
+  // Reminder kinds must say which reminder and what they ask, or their buttons can't work.
+  if ((kind === 'reminder' || kind === 'escalation' || kind === 'backup') && (!reminderId || !ask)) return null;
+  if (kind === 'backup' && !contactName) return null;
   return {
     id,
-    kind,
+    kind: kind as HomemindAlert['kind'],
     itemId,
     itemVersion,
     tier,
@@ -82,7 +124,15 @@ export function toAlert(record: Record<string, unknown>): HomemindAlert | null {
     ...(byNameZh ? { byNameZh: byNameZh as string } : {}),
     // A sensitive item never shows its title, even if one were sent.
     ...(!sensitive && title ? { title: title as string, ...(titleZh ? { titleZh: titleZh as string } : {}) } : {}),
-    sensitive
+    sensitive,
+    ...(reminderId ? { reminderId: reminderId as string } : {}),
+    ...(ask ? { ask: ask as HomemindAlert['ask'] } : {}),
+    // The time is left out for a sensitive item too.
+    ...(!sensitive && time ? { time: time as string } : {}),
+    ...(recurring ? { recurring: true } : {}),
+    ...(contactName ? { contactName: contactName as string, ...(contactNameZh ? { contactNameZh: contactNameZh as string } : {}) } : {}),
+    ...(simulated ? { simulated: true } : {}),
+    ...(batch ? { entries: batch } : {})
   };
 }
 

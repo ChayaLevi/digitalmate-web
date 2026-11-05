@@ -280,3 +280,66 @@ test('live sync: an alert closes by itself when the item is answered in another 
     await Promise.all(contexts.map(c => c.close()));
   }
 });
+
+// T4.1: reminders and escalation, driven by the demo clock.
+async function pickupStart(request: APIRequestContext): Promise<number> {
+  const state = (await (await request.get(`${BASE}/api/homemind/debug/state`)).json()) as { items: Array<{ id: string; start?: string }> };
+  return Date.parse(state.items.find(i => i.id === 'pickup-today')?.start as string);
+}
+
+test('reminders: the demo clock jumps, Dad is reminded, Mom gets the escalation, and her "I\'ll take it" closes both', async ({ browser, request }) => {
+  const momContext = await browser.newContext();
+  const dadContext = await browser.newContext();
+  try {
+    const mom = await momContext.newPage();
+    const dad = await dadContext.newPage();
+    await openFamily(mom, 'en', 'mom');
+    await openFamily(dad, 'zh', 'dad');
+    await expect(mom.locator('[data-stream="live"]')).toBeVisible();
+    await expect(dad.locator('[data-stream="live"]')).toBeVisible();
+    // The demo clock chip shows in both windows, with no offset after a reset.
+    await expect(mom.locator('.hm-demo-clock')).toContainText('Demo clock');
+    await expect(dad.locator('.hm-demo-clock')).toContainText('演示时钟');
+    await expect(mom.locator('.hm-demo-clock')).toHaveAttribute('data-offset', '0');
+
+    await mom.getByRole('button', { name: 'Assign to Dad: Kindergarten pickup' }).first().click();
+    const dadAlert = dad.locator('.hm-alert[data-item-id="pickup-today"]');
+    await expect(dadAlert).toContainText('妈妈把「幼儿园接孩子」交给了你');
+
+    // Jump to 25 minutes before the pickup (the panel with exact jumps is T9.1; the API does it here).
+    const session = await request.post(`${BASE}/api/homemind/session`, { data: { memberId: 'mom' } });
+    const { token } = (await session.json()) as { token: string };
+    const minutes = Math.ceil(((await pickupStart(request)) - Date.now()) / 60_000) - 25;
+    const jump = await request.post(`${BASE}/api/homemind/demo/clock`, { headers: { 'x-homemind-session': token }, data: { minutes } });
+    expect(jump.ok()).toBe(true);
+    await expect(dad.locator('.hm-demo-clock')).toHaveAttribute('data-offset', String(minutes * 60_000));
+    await expect(mom.locator('.hm-demo-clock')).toContainText(`+${minutes} min`);
+
+    await expect(dadAlert).toHaveAttribute('data-kind', 'reminder');
+    await expect(dadAlert).toContainText('请确认：');
+    await expect(dadAlert).toContainText('幼儿园接孩子');
+    const momAlert = mom.locator('.hm-alert[data-kind="escalation"]');
+    await expect(momAlert).toContainText(/Kindergarten pickup at \d\d:\d\d is not confirmed yet\./);
+    await expect(momAlert).not.toContainText('Dad');
+
+    // Ten more minutes on the chip: the (simulated) backup contact is messaged, and both parents are told.
+    await mom.getByRole('button', { name: '+15 min (demo clock)' }).click();
+    await expect(mom.locator('.hm-alert[data-kind="backup"]')).toContainText('Grandma Lin was sent a short message to get in touch. (Simulated)');
+    await expect(dad.locator('.hm-alert[data-kind="backup"]')).toContainText('林奶奶');
+    await expect(momAlert).toBeVisible();
+    await noOverflow(mom);
+    await noOverflow(dad);
+    expect(await seriousIssues(mom)).toEqual([]);
+    expect(await seriousIssues(dad)).toEqual([]);
+    await dad.screenshot({ path: test.info().outputPath('reminder-zh.png') });
+    await mom.screenshot({ path: test.info().outputPath('escalation-en.png') });
+
+    // Mom takes it from the escalation: every alert of that reminder closes, in both windows.
+    await momAlert.getByRole('button', { name: "I'll take it: Kindergarten pickup" }).click();
+    await expect(mom.locator('.hm-alert')).toHaveCount(0);
+    await expect(dad.locator('.hm-alert')).toHaveCount(0);
+  } finally {
+    await momContext.close();
+    await dadContext.close();
+  }
+});

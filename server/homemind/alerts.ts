@@ -4,7 +4,8 @@
  *
  * Pure: no I/O, no clock reads (the time is passed in). The hub checks visibility again before it
  * delivers anything, so an alert can never carry a "Parents only" item to a teen.
- * Reminders, quiet hours, batching and escalation are T4.1 (`reminders.ts`).
+ * Quiet hours and batching are applied afterwards by `reminders.ts` (`tickReminders`), which also
+ * makes the reminder and escalation alerts.
  */
 import type { CoreEvent } from './core';
 import type { AlertKind, HomemindAlert, HomemindState, Item } from './types';
@@ -26,7 +27,8 @@ function makeAlert(state: HomemindState, item: Item, kind: AlertKind, actorId: s
     kind,
     itemId: item.id,
     itemVersion: item.version,
-    tier: 'timed',
+    // A critical item (a child's pickup) breaks quiet hours; anything else waits for them to end.
+    tier: item.importance === 'critical' ? 'urgent' : 'timed',
     at,
     byId: actorId,
     byName: by?.name ?? actorId,

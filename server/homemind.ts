@@ -23,6 +23,9 @@ import type { DemoClock } from './homemind/clock';
 import { applyChange } from './homemind/core';
 import type { CoreEvent } from './homemind/core';
 import { alertsForChange } from './homemind/alerts';
+import { activeReminderFor, respondToReminder, tickReminders } from './homemind/reminders';
+import type { ReminderResponse, TickResult } from './homemind/reminders';
+import { startScheduler, stopScheduler } from './homemind/scheduler';
 import { createEventHub } from './homemind/events';
 import type { EventHub } from './homemind/events';
 import type { Change, ChangeError, ItemPatch, NewItem } from './homemind/core';
@@ -41,6 +44,8 @@ const MIN_SECRET_LENGTH = 16;
 const MAX_BODY = 64 * 1024;
 const HEARTBEAT_MS = 15_000;
 const CONFLICT_HORIZON_MS = 90 * 24 * 60 * 60 * 1000;
+/** The demo clock jumps at most a week at a time. */
+const MAX_JUMP_MINUTES = 7 * 24 * 60;
 
 const SCREENS = ['my-day', 'family', 'calendar', 'search', 'rules', 'memory', 'activity', 'settings', 'edit', 'item'] as const;
 type Screen = (typeof SCREENS)[number];
@@ -48,8 +53,6 @@ type Screen = (typeof SCREENS)[number];
 /** Verbs on `POST /items/:id/:verb` that map straight to a core change. `ack` is the core's `confirm`. */
 const CORE_VERBS = ['assign', 'open', 'unassign', 'claim', 'ack', 'handback', 'done', 'cancel', 'cancel_occurrence', 'approve', 'dismiss', 'undo'] as const;
 type CoreVerb = (typeof CORE_VERBS)[number];
-/** Whitelisted, built by a later task. */
-const LATER_VERBS = ['snooze'] as const;
 
 const CREATE_KEYS = ['type', 'title', 'notes', 'start', 'end', 'allDay', 'forMemberIds', 'visibility', 'sensitive', 'importance', 'unavailableMemberIds', 'recurrence', 'parentEventId', 'ownerId'];
 const PATCH_KEYS = ['title', 'notes', 'start', 'end', 'allDay', 'forMemberIds', 'visibility', 'sensitive', 'importance', 'unavailableMemberIds', 'recurrence'];
@@ -168,6 +171,8 @@ async function runtime(): Promise<Runtime> {
       return { file, state, source, store, hub: createEventHub(), clock: createDemoClock(Date.now, state.clockOffsetMs) };
     });
     holders[HOLDER] = { file, ready };
+    // One tick loop per process. It ticks only the runtime that is loaded, and never loads one.
+    startScheduler(scheduledTick);
     ready.catch(() => {
       if (holders[HOLDER]?.ready === ready) delete holders[HOLDER];
     });
@@ -179,6 +184,7 @@ async function runtime(): Promise<Runtime> {
 export function resetHomemindRuntime(): void {
   const holder = (globalThis as GlobalWithHolder)[HOLDER];
   delete (globalThis as GlobalWithHolder)[HOLDER];
+  stopScheduler();
   // Close the streams of the runtime being dropped, so none is left open on a state nobody updates.
   holder?.ready.then(rt => rt.hub.closeAll(), () => undefined);
 }
@@ -189,13 +195,42 @@ export function setHomemindHeartbeatMs(ms: number | undefined): void {
   heartbeatMs = ms ?? HEARTBEAT_MS;
 }
 
-/** Saves, then tells the open streams. A change is visible to others only once it is the state. */
+/**
+ * Saves, then tells the open streams. A change is visible to others only once it is the state. The
+ * reminders follow the change in the same step (a confirmation closes its reminder for everyone), and
+ * the change's own alerts go through quiet hours and batching with them.
+ */
 async function commit(rt: Runtime, state: HomemindState, events: readonly CoreEvent[] = [], actorId?: string): Promise<void> {
   const before = rt.state;
-  rt.state = state;
-  await rt.store.save(state);
-  rt.hub.publishChanges(state, events);
-  if (actorId) rt.hub.publishAlerts(state, alertsForChange(before, state, events, actorId, new Date(rt.clock.now()).toISOString()));
+  const now = rt.clock.now();
+  const alerts = actorId ? alertsForChange(before, state, events, actorId, new Date(now).toISOString()) : [];
+  const ticked = tickReminders(state, now, alerts);
+  rt.state = ticked.state;
+  await rt.store.save(ticked.state);
+  rt.hub.publishChanges(ticked.state, events);
+  publishTick(rt, ticked);
+}
+
+function publishTick(rt: Runtime, ticked: TickResult): void {
+  for (const closed of ticked.closed) rt.hub.publishClosed(closed.recipientIds, closed.reminderId);
+  rt.hub.publishAlerts(rt.state, ticked.deliveries);
+}
+
+/** One reminder tick on the loaded state. Reads and replaces the state with no await in between. */
+async function tickNow(rt: Runtime): Promise<TickResult> {
+  const ticked = tickReminders(rt.state, rt.clock.now());
+  if (!ticked.changed && ticked.deliveries.length === 0 && ticked.closed.length === 0) return ticked;
+  rt.state = ticked.state;
+  await rt.store.save(ticked.state);
+  publishTick(rt, ticked);
+  return ticked;
+}
+
+/** The scheduler's task: tick the runtime that is loaded, if Homemind is on. */
+async function scheduledTick(): Promise<void> {
+  const holder = (globalThis as GlobalWithHolder)[HOLDER];
+  if (!holder || !enabled()) return;
+  await tickNow(await holder.ready);
 }
 
 // --- requests -----------------------------------------------------------------------------------------
@@ -390,7 +425,7 @@ function openStream(ctx: Ctx): void {
 
   response.write('retry: 3000\n\n');
   unsubscribe = rt.hub.subscribe(member.id, send, end);
-  send({ event: 'hello', data: { memberId: member.id, now: new Date(rt.clock.now()).toISOString() } });
+  send({ event: 'hello', data: { memberId: member.id, ...clockData(rt) } });
 
   const beat = setInterval(() => {
     if (response.destroyed || response.writableEnded) return end();
@@ -403,6 +438,34 @@ function openStream(ctx: Ctx): void {
   timers.push(expiry);
   request.on('close', end);
   response.on('close', end);
+}
+
+const clockData = (rt: Runtime) => ({ now: new Date(rt.clock.now()).toISOString(), offsetMs: rt.clock.offsetMs(), timezone: rt.state.family.timezone });
+
+/**
+ * "Got it" and "Remind me later" on a reminder alert. Without `reminderId` it is the member's newest
+ * active reminder for the item. (`ack` from the owner of an unconfirmed item is the item's own
+ * confirmation instead; the route handles that, so the board shows it.)
+ */
+async function answerReminder(ctx: Ctx, itemId: string, response: ReminderResponse, body: Record<string, unknown>): Promise<void> {
+  const { rt, member, response: res } = ctx;
+  pick(body, ['version', 'reminderId'], response);
+  const reminderId = body.reminderId === undefined ? activeReminderFor(rt.state, itemId, member.id)?.id : idOf(body.reminderId, 'reminderId');
+  const reminder = reminderId ? rt.state.reminders.find(r => r.id === reminderId && r.itemId === itemId) : undefined;
+  if (!reminder) return fail(res, 404, 'not_found', 'No such reminder');
+  const result = respondToReminder(rt.state, reminder.id, member.id, response, rt.clock.now());
+  if (!result.ok) return fail(res, result.status, result.code, result.message);
+  rt.state = result.state;
+  await rt.store.save(result.state);
+  for (const closed of result.closed) rt.hub.publishClosed(closed.recipientIds, closed.reminderId);
+  json(res, 200, {
+    ok: true,
+    reminderId: reminder.id,
+    ...(result.reminder.snoozedUntil ? { snoozedUntil: result.reminder.snoozedUntil } : {}),
+    items: itemsById(rt.state, member.id, [itemId]),
+    opened: [],
+    conflicts: []
+  });
 }
 
 // --- handlers -----------------------------------------------------------------------------------------
@@ -509,9 +572,17 @@ const routes: Route[] = [
     auth: true,
     handler: async ctx => {
       const [itemId, verb] = ctx.params;
-      if ((LATER_VERBS as readonly string[]).includes(verb)) return notBuilt('T4.1')(ctx);
-      if (!(CORE_VERBS as readonly string[]).includes(verb)) return fail(ctx.response, 404, 'not_found', 'Not found');
-      const change = coreChange(verb as CoreVerb, itemId, await readBody(ctx.request));
+      if (verb !== 'snooze' && !(CORE_VERBS as readonly string[]).includes(verb)) return fail(ctx.response, 404, 'not_found', 'Not found');
+      const body = await readBody(ctx.request);
+      if (verb === 'snooze') return answerReminder(ctx, itemId, 'snooze', body);
+      if (verb === 'ack' && body.reminderId !== undefined) {
+        // From a reminder alert: the owner who has not confirmed yet confirms the item; anyone else it reached says "Got it".
+        const own = ctx.rt.state.items.find(i => i.id === itemId)?.ownership;
+        const confirms = own?.state === 'assigned' && own.ownerId === ctx.member.id && !own.confirmed;
+        if (!confirms) return answerReminder(ctx, itemId, 'ack', body);
+        delete body.reminderId;
+      }
+      const change = coreChange(verb as CoreVerb, itemId, body);
       if (change.kind === 'undo') {
         // The id in the path must be an item that activity touched, so one URL can't undo another item's change.
         const activity = ctx.rt.state.activity.find(a => a.id === change.activityId);
@@ -536,7 +607,27 @@ const routes: Route[] = [
   { method: 'POST', pattern: /^\/preferences$/, auth: true, handler: notBuilt('T5.4') },
   { method: 'POST', pattern: /^\/rules$/, auth: true, handler: notBuilt('T7.3') },
   { method: 'PUT', pattern: /^\/settings$/, auth: true, handler: notBuilt('T4.2') },
-  { method: 'POST', pattern: /^\/demo\/clock$/, auth: true, demoOnly: true, handler: notBuilt('T4.1') },
+  {
+    method: 'POST',
+    pattern: /^\/demo\/clock$/,
+    auth: true,
+    demoOnly: true,
+    // Jumps the demo clock forward and ticks at once, so whatever came due shows now.
+    handler: async ctx => {
+      const body = pick(await readBody(ctx.request), ['minutes'], 'clock');
+      const minutes = body.minutes;
+      if (typeof minutes !== 'number' || !Number.isInteger(minutes) || minutes < 1 || minutes > MAX_JUMP_MINUTES) {
+        throw new HttpError(400, 'invalid', `minutes must be a whole number from 1 to ${MAX_JUMP_MINUTES}`);
+      }
+      const { rt } = ctx;
+      const offsetMs = rt.clock.advance(minutes * 60_000);
+      rt.state = { ...rt.state, clockOffsetMs: offsetMs };
+      rt.hub.broadcast({ event: 'clock', data: clockData(rt) });
+      const ticked = await tickNow(rt);
+      await rt.store.save(rt.state);
+      json(ctx.response, 200, { ok: true, ...clockData(rt), delivered: ticked.deliveries.length });
+    }
+  },
   { method: 'POST', pattern: /^\/demo\/post-group-message$/, auth: true, demoOnly: true, handler: notBuilt('T7.2') },
   {
     method: 'POST',

@@ -120,19 +120,54 @@ export interface Item {
 export type Tier = 'urgent' | 'timed' | 'summary';
 
 export interface EscalationStep {
+  /** Minutes after the reminder's first attempt (`firstAt`). */
   afterMinutes: number;
   to: 'next-parent' | 'both-parents' | 'backup';
 }
 
+/**
+ * What a reminder asks of its recipients:
+ *   heads-up  the owner already said "I'm on it": one note before it starts
+ *   confirm   assigned but not confirmed: "Please confirm"
+ *   open      nobody has it yet: "Who's taking this?"
+ */
+export type ReminderAsk = 'heads-up' | 'confirm' | 'open';
+
+/**
+ * One reminder per occurrence of a timed item (reminders.ts keeps them in line with the board).
+ * Times are ISO in UTC. A reminder never changes the item. Answering the item (confirm, claim, done)
+ * or the reminder itself closes it for every recipient at once.
+ */
 export interface Reminder {
   id: string;
   itemId: string;
+  /** Local `YYYY-MM-DD` of the occurrence, in the family's zone. */
+  occurrenceDate: string;
+  /** When the occurrence starts. */
+  occurrenceStart: string;
+  ask: ReminderAsk;
   recipientIds: string[];
-  fireAt: string;
+  /** The first attempt. Escalation steps count from here. */
+  firstAt: string;
+  /** The next attempt, absent when all attempts are used. */
+  fireAt?: string;
+  intervalMinutes: number;
+  maxAttempts: number;
   tier: Tier;
   attempts: number;
   status: 'scheduled' | 'sent' | 'acknowledged' | 'cancelled';
   escalation?: EscalationStep[];
+  /** How many escalation steps have run. */
+  escalationsDone?: number;
+  /** Who got an escalation (they may answer it too). */
+  escalatedToIds?: string[];
+  lastSentAt?: string;
+  /** "Remind me later": no alert until then, then one more. */
+  snoozedUntil?: string;
+  answeredBy?: string;
+  answeredAt?: string;
+  /** No answer: it waits for the summary at this time instead (T8.2 shows it). */
+  summaryAt?: string;
 }
 
 export interface Preference {
@@ -253,6 +288,28 @@ export interface HomemindState {
   clockOffsetMs: number;
   /** When the seed was generated (real time, ISO). */
   seededAt: string;
+  /** Alerts waiting for the end of the recipient's quiet hours (reminders.ts). Absent means none. */
+  heldAlerts?: HeldAlert[];
+  /** Messages to the backup contact. Simulated in the demo: nothing leaves the machine. */
+  backupMessages?: BackupMessage[];
+}
+
+export interface HeldAlert {
+  recipientId: string;
+  alert: HomemindAlert;
+  releaseAt: string;
+}
+
+/** A message to the backup contact. It holds no reason and no detail, only "please get in touch". */
+export interface BackupMessage {
+  id: string;
+  at: string;
+  reminderId: string;
+  to: string;
+  channel: BackupContact['channel'];
+  text: string;
+  textZh: string;
+  simulated: boolean;
 }
 
 /**
@@ -261,15 +318,33 @@ export interface HomemindState {
  */
 export type StreamMessage =
   /** First frame of every connection. The client refreshes its screen on it, which covers anything missed while it was away. */
-  | { event: 'hello'; data: { memberId: string; now: string } }
+  | { event: 'hello'; data: { memberId: string; now: string; offsetMs: number; timezone: string } }
   /** `item` is `null` when the item left this member's view or no longer exists. Already redacted for this member. */
   | { event: 'item.changed'; data: { itemId: string; item: Item | null } }
-  /** Something this member should know now (T3.3: assigned to you, "Who's taking this?"). T4.1 adds reminders and escalation. */
+  /** Something this member should know now: assigned to you, "Who's taking this?", reminders, escalation. */
   | { event: 'alert'; data: HomemindAlert }
+  /** A reminder was answered by someone (or no longer applies): close its alerts in every window. */
+  | { event: 'alert.closed'; data: { reminderId: string } }
+  /** The demo clock jumped. Carries no item, so it goes to everyone. */
+  | { event: 'clock'; data: { now: string; offsetMs: number; timezone: string } }
   /** The demo was reset: forget everything shown. */
   | { event: 'demo.reset'; data: Record<string, never> };
 
-export type AlertKind = 'assigned' | 'open';
+/**
+ * `assigned` and `open` come from a person's change (alerts.ts). The rest come from reminders.ts:
+ * `reminder` to the recipients, `escalation` to the next person, `backup` (to parents: the backup
+ * contact was messaged), `batch` (several small updates as one alert).
+ */
+export type AlertKind = 'assigned' | 'open' | 'reminder' | 'escalation' | 'backup' | 'batch';
+
+/** One line of a batched alert. */
+export interface AlertBatchEntry {
+  itemId: string;
+  /** Absent when the item is sensitive. */
+  title?: string;
+  titleZh?: string;
+  sensitive: boolean;
+}
 
 /**
  * A live alert for one member, shown by the client's AlertBanner. It names no other member's
@@ -277,7 +352,10 @@ export type AlertKind = 'assigned' | 'open';
  * the banner says only "You have a reminder".
  */
 export interface HomemindAlert {
-  /** Stable for one item version and kind, so a repeat can be ignored: `<itemId>.<version>.<kind>`. */
+  /**
+   * Stable, so a repeat can be ignored: `<itemId>.<version>.<kind>` for a change,
+   * `<reminderId>.<step>` for a reminder.
+   */
   id: string;
   kind: AlertKind;
   itemId: string;
@@ -285,7 +363,7 @@ export interface HomemindAlert {
   itemVersion: number;
   tier: Tier;
   at: string;
-  /** Who made the change: a member id. */
+  /** Who made the change: a member id, or `homemind` for a reminder. */
   byId: string;
   byName: string;
   byNameZh?: string;
@@ -293,4 +371,17 @@ export interface HomemindAlert {
   title?: string;
   titleZh?: string;
   sensitive: boolean;
+  /** Reminder kinds: the reminder, what it asks, and the local start time `HH:MM`. */
+  reminderId?: string;
+  ask?: ReminderAsk;
+  time?: string;
+  /** A weekly item can't be marked done as a whole, so its alert offers no Done. */
+  recurring?: boolean;
+  /** `backup`: who was messaged (a simulated contact in the demo). */
+  contactName?: string;
+  contactNameZh?: string;
+  /** `backup`: the contact is simulated, and the banner says so. */
+  simulated?: boolean;
+  /** `batch`: the small updates held together. `itemId` is the first one's. */
+  entries?: AlertBatchEntry[];
 }

@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { SESSION_HEADER, handleHomemindRequest, resetHomemindRuntime, setHomemindHeartbeatMs, signSession } from '../server/homemind';
 import type { CoreEvent } from '../server/homemind/core';
 import { MAX_STREAMS_PER_MEMBER, createEventHub } from '../server/homemind/events';
+import { schedulerRunning, tickSchedulerNow } from '../server/homemind/scheduler';
 import { seedState } from '../server/homemind/seed';
 import type { HomemindState, Item, StreamMessage } from '../server/homemind/types';
 import { BACKOFF, connectHomemindEvents, createSseParser, toStreamMessage } from '../src/transport/homemindEvents';
@@ -106,13 +107,35 @@ describe('the client reader', () => {
   });
 
   it('accepts only known messages of the right shape', () => {
-    expect(toStreamMessage({ event: 'hello', data: '{"memberId":"mom","now":"2026-11-04T09:00:00Z"}' })).toMatchObject({ event: 'hello' });
+    expect(toStreamMessage({ event: 'hello', data: '{"memberId":"mom","now":"2026-11-04T09:00:00Z","offsetMs":0,"timezone":"Asia/Shanghai"}' })).toMatchObject({ event: 'hello' });
     expect(toStreamMessage({ event: 'item.changed', data: '{"itemId":"a","item":null}' })).toEqual({ event: 'item.changed', data: { itemId: 'a', item: null } });
     expect(toStreamMessage({ event: 'item.changed', data: '{"item":null}' })).toBeNull();
     expect(toStreamMessage({ event: 'hello', data: '{"memberId":1}' })).toBeNull();
     expect(toStreamMessage({ event: 'nope', data: '{}' })).toBeNull();
     expect(toStreamMessage({ event: 'hello', data: 'not json' })).toBeNull();
     expect(toStreamMessage({ event: 'hello', data: '[1]' })).toBeNull();
+    expect(toStreamMessage({ event: 'clock', data: '{"now":"2026-11-04T09:00:00Z","offsetMs":60000,"timezone":"Asia/Shanghai"}' })).toMatchObject({ event: 'clock', data: { offsetMs: 60000 } });
+    expect(toStreamMessage({ event: 'clock', data: '{"now":"2026-11-04T09:00:00Z","offsetMs":-1,"timezone":"Asia/Shanghai"}' })).toBeNull();
+    expect(toStreamMessage({ event: 'alert.closed', data: '{"reminderId":"rem-1"}' })).toEqual({ event: 'alert.closed', data: { reminderId: 'rem-1' } });
+    expect(toStreamMessage({ event: 'alert.closed', data: '{}' })).toBeNull();
+  });
+
+  it('checks reminder alerts: a reminder kind needs its reminder and ask, a sensitive one loses its title and time', () => {
+    const base = { id: 'rem-1.a1', itemId: 'pickup-today', itemVersion: 2, tier: 'urgent', at: '2026-11-04T10:00:00Z', byId: 'homemind', byName: 'Homemind', sensitive: false, title: 'Pickup', time: '19:00' };
+    const parse = (data: Record<string, unknown>) => toStreamMessage({ event: 'alert', data: JSON.stringify(data) });
+    expect(parse({ ...base, kind: 'reminder', reminderId: 'rem-1', ask: 'confirm' })).toMatchObject({ data: { kind: 'reminder', ask: 'confirm', time: '19:00' } });
+    expect(parse({ ...base, kind: 'reminder', ask: 'confirm' })).toBeNull();
+    expect(parse({ ...base, kind: 'reminder', reminderId: 'rem-1', ask: 'shout' })).toBeNull();
+    expect(parse({ ...base, kind: 'reminder', reminderId: 'rem-1', ask: 'confirm', time: '7pm' })).toBeNull();
+    expect(parse({ ...base, kind: 'backup', reminderId: 'rem-1', ask: 'confirm' })).toBeNull();
+    const secret = parse({ ...base, kind: 'escalation', reminderId: 'rem-1', ask: 'confirm', sensitive: true });
+    expect(secret?.event === 'alert' && [secret.data.title, secret.data.time]).toEqual([undefined, undefined]);
+    expect(parse({ ...base, kind: 'batch', entries: [{ itemId: 'a', title: 'A', sensitive: false }, { itemId: 'b', title: 'Secret', sensitive: true }] })).toMatchObject({
+      data: { kind: 'batch', entries: [{ itemId: 'a', title: 'A' }, { itemId: 'b', sensitive: true }] }
+    });
+    const batch = parse({ ...base, kind: 'batch', entries: [{ itemId: 'b', title: 'Secret', sensitive: true }] });
+    expect(JSON.stringify(batch)).not.toContain('Secret"');
+    expect(parse({ ...base, kind: 'batch', entries: [] })).toBeNull();
   });
 
   const streamOf = (chunks: string[], hold = false) =>
@@ -125,7 +148,7 @@ describe('the client reader', () => {
       }),
       { status: 200 }
     );
-  const hello = 'event: hello\ndata: {"memberId":"mom","now":"2026-11-04T09:00:00Z"}\n\n';
+  const hello = 'event: hello\ndata: {"memberId":"mom","now":"2026-11-04T09:00:00Z","offsetMs":0,"timezone":"Asia/Shanghai"}\n\n';
 
   it('sends the token in a header, never in the URL, and backs off 1 s, 2 s, 4 s ... up to the cap', async () => {
     const sleeps: number[] = [];
@@ -364,6 +387,92 @@ describe('the stream over HTTP', () => {
     const end = new Date(Date.parse(pickup.start as string) + 3 * 60 * 60 * 1000).toISOString();
     expect((await post(momToken, '/items', { type: 'event', title: 'Wedding', start, end, unavailableMemberIds: ['mom'] })).status).toBe(200);
     expect(await dad.next(m => m.event === 'alert')).toMatchObject({ data: { kind: 'open', itemId: 'pickup-tuesday', byId: 'mom' } });
+  });
+
+  it('Scene 1 reminders: a demo clock jump reminds Dad and escalates to Mom; Mom taking it closes both', async () => {
+    const momToken = await login('mom');
+    const dadToken = await login('dad');
+    const [dad, mom, maya] = await Promise.all([listen(dadToken), listen(momToken), listen(await login('maya'))]);
+    await Promise.all([dad.next(), mom.next(), maya.next()]);
+    let full = (await (await fetch(`${base}/api/homemind/debug/state`)).json()) as HomemindState;
+    const pickup = full.items.find(i => i.id === 'pickup-today') as Item;
+    expect((await post(momToken, '/items/pickup-today/assign', { version: pickup.version, ownerId: 'dad' })).status).toBe(200);
+    await dad.next(m => m.event === 'alert');
+
+    // Jump to 25 minutes before the pickup: the three attempts and the escalation are due, the backup is not.
+    const minutes = Math.ceil((Date.parse(pickup.start as string) - Date.now()) / 60_000) - 25;
+    const jump = await post(momToken, '/demo/clock', { minutes });
+    expect(jump.status).toBe(200);
+    expect(await jump.json()).toMatchObject({ ok: true, offsetMs: minutes * 60_000 });
+    expect(await maya.next(m => m.event === 'clock')).toMatchObject({ data: { offsetMs: minutes * 60_000 } });
+    const reminder = await dad.next(m => m.event === 'alert' && m.data.kind === 'reminder');
+    expect(reminder).toMatchObject({ data: { ask: 'confirm', itemId: 'pickup-today', tier: 'urgent', byId: 'homemind' } });
+    const escalation = await mom.next(m => m.event === 'alert' && m.data.kind === 'escalation');
+    expect(escalation).toMatchObject({ data: { ask: 'confirm', itemId: 'pickup-today' } });
+    expect(await maya.next(m => m.event === 'alert', 300)).toBeNull();
+    full = (await (await fetch(`${base}/api/homemind/debug/state`)).json()) as HomemindState;
+    expect(full.reminders.find(r => r.itemId === 'pickup-today')).toMatchObject({ attempts: 3, escalationsDone: 1, escalatedToIds: ['mom'] });
+    expect(full.clockOffsetMs).toBe(minutes * 60_000);
+
+    // Mom taps "I'll take it" on the escalation: both windows close the reminder.
+    const reminderId = escalation?.event === 'alert' ? escalation.data.reminderId : undefined;
+    const now = full.items.find(i => i.id === 'pickup-today') as Item;
+    expect((await post(momToken, '/items/pickup-today/assign', { version: now.version, ownerId: 'mom' })).status).toBe(200);
+    expect(await dad.next(m => m.event === 'alert.closed')).toEqual({ event: 'alert.closed', data: { reminderId } });
+    expect(await mom.next(m => m.event === 'alert.closed')).toEqual({ event: 'alert.closed', data: { reminderId } });
+  });
+
+  it('"Remind me later" and "Got it" answer a reminder over HTTP and close it in every window', async () => {
+    const momToken = await login('mom');
+    const dadToken = await login('dad');
+    const [dad, mom] = await Promise.all([listen(dadToken), listen(momToken)]);
+    await Promise.all([dad.next(), mom.next()]);
+    let full = (await (await fetch(`${base}/api/homemind/debug/state`)).json()) as HomemindState;
+    const pickup = full.items.find(i => i.id === 'pickup-today') as Item;
+    await post(momToken, '/items/pickup-today/assign', { version: pickup.version, ownerId: 'dad' });
+    const minutes = Math.ceil((Date.parse(pickup.start as string) - Date.now()) / 60_000) - 55;
+    await post(momToken, '/demo/clock', { minutes });
+    const reminder = await dad.next(m => m.event === 'alert' && m.data.kind === 'reminder');
+    const reminderId = reminder?.event === 'alert' ? (reminder.data.reminderId as string) : '';
+    // Mom was not reached yet, so she can't answer it; Dad can.
+    expect((await post(momToken, '/items/pickup-today/snooze', { version: 2, reminderId })).status).toBe(403);
+    const snooze = await post(dadToken, '/items/pickup-today/snooze', { version: 2, reminderId });
+    expect(snooze.status).toBe(200);
+    expect(await snooze.json()).toMatchObject({ ok: true, reminderId, snoozedUntil: expect.any(String) });
+    expect(await dad.next(m => m.event === 'alert.closed')).toMatchObject({ data: { reminderId } });
+    // The escalation still comes at its time; Mom says "Got it" and both windows close it.
+    await post(momToken, '/demo/clock', { minutes: 30 });
+    expect(await mom.next(m => m.event === 'alert' && m.data.kind === 'escalation')).toBeTruthy();
+    const got = await post(momToken, '/items/pickup-today/ack', { version: 2, reminderId });
+    expect(got.status).toBe(200);
+    expect(await dad.next(m => m.event === 'alert.closed')).toMatchObject({ data: { reminderId } });
+    expect(await mom.next(m => m.event === 'alert.closed')).toMatchObject({ data: { reminderId } });
+    full = (await (await fetch(`${base}/api/homemind/debug/state`)).json()) as HomemindState;
+    expect(full.reminders.find(r => r.id === reminderId)).toMatchObject({ status: 'acknowledged', answeredBy: 'mom' });
+    // The item itself was not changed by "Got it": still Dad's, not confirmed.
+    expect(full.items.find(i => i.id === 'pickup-today')?.ownership).toEqual({ state: 'assigned', ownerId: 'dad', confirmed: false });
+    expect((await post(momToken, '/items/pickup-today/ack', { version: 2, reminderId })).status).toBe(409);
+  });
+
+  it('the 5-second loop starts with the loaded state, ticks it, and stops when the runtime is dropped', async () => {
+    const dad = await listen(await login('dad'));
+    await dad.next();
+    expect(schedulerRunning()).toBe(true);
+    // Nothing is due right after a reset, so a tick sends nothing.
+    await tickSchedulerNow();
+    expect(await dad.next(m => m.event === 'alert', 300)).toBeNull();
+    const full = (await (await fetch(`${base}/api/homemind/debug/state`)).json()) as HomemindState;
+    // The tick planned the reminders the seed calls for (no change was made, so only the loop did it).
+    expect(full.reminders.map(r => r.itemId).sort()).toEqual(['pickup-today', 'swim-today']);
+    resetHomemindRuntime();
+    expect(schedulerRunning()).toBe(false);
+  });
+
+  it('the demo clock only jumps forward, by whole minutes, at most a week', async () => {
+    const momToken = await login('mom');
+    for (const minutes of [0, -5, 1.5, '10', 7 * 24 * 60 + 1]) expect((await post(momToken, '/demo/clock', { minutes })).status, String(minutes)).toBe(400);
+    expect((await post(momToken, '/demo/clock', { minutes: 5, extra: true })).status).toBe(400);
+    expect((await fetch(`${base}/api/homemind/demo/clock`, { method: 'POST', body: '{"minutes":5}' })).status).toBe(401);
   });
 
   it('a removed item reaches the stream as item: null', async () => {

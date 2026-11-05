@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T3.3 done (live sync and alerts). P3 is done
-- **Next task:** T4.1 (Reminders)
-- **Scenes working end to end:** none yet. Scene 1's first half works live: Mom assigns the pickup, and Dad's window shows it and "Mom assigned you" without a reload. His "I'm on it" reaches Mom. The reminder, clock jump and escalation are T4.1/T4.2
+- **Current task:** T4.1 done (reminders and escalation)
+- **Next task:** T4.2 (Settings and Scene 1)
+- **Scenes working end to end:** Scene 1's mechanics work live in two windows: Mom assigns the pickup, Dad gets "Mom assigned you", the demo clock jumps, Dad gets "Please confirm", Mom gets "The pickup is not confirmed yet", the (simulated) backup contact is messaged, and Mom's "I'll take it" closes every alert in both windows. Covered by one e2e test. T4.2 adds the Settings screen and the scripted Scene 1 e2e
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-05, after T3.3
+- **Last updated:** 2026-11-05, after T4.1
 
 ## Task status
 
@@ -29,7 +29,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T3.1 | New components | done | `src/components/a2ui/homemindComponents.tsx`, 38 unit tests, 4 e2e at 390 px in EN and ZH with axe. 438 of 438 unit tests in all |
 | T3.2 | Family tab | done | `src/components/FamilyView.tsx`, `src/transport/homemind.ts`, `src/lib/homemindForm.ts`, `edit` and `item` screens. 469 of 469 unit tests, 51 of 51 e2e (after the human's review fixes) |
 | T3.3 | Live sync and alerts | done | `server/homemind/alerts.ts`, `src/components/AlertBanner.tsx`, `src/lib/homemindAlerts.ts`, stream wired into `FamilyView`. 482 unit tests, 53 of 53 e2e (2 new with two or three browser contexts, axe). P3 phase checks pass |
-| T4.1 | Reminders | not started |  |
+| T4.1 | Reminders | done | `server/homemind/{reminders,scheduler}.ts`, `POST /demo/clock`, `snooze`, demo clock chip. 519 unit tests (36 new + 1 changed), 1 new e2e |
 | T4.2 | Settings and Scene 1 | not started |  |
 | T5.1 | LLM client and intents | not started |  |
 | T5.2 | Chat transport | not started |  |
@@ -51,6 +51,17 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 ## Decisions made during the build
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
+
+- T4.1: **one reminder per occurrence of a timed item**, kept in line with the board by `syncReminders` on every tick (`server/homemind/reminders.ts`, pure). What it asks: `heads-up` (assigned and confirmed: to the owner, once, no escalation), `confirm` (assigned, not confirmed: to the owner), `open` (to the candidates; if none can see it, to both parents). An item nobody owns or was asked about gets a reminder only if it is **critical** (`open`, to everyone who could own it). All-day items get none (they belong to the summary, T8.2). Planned 26 hours ahead; nothing fires later than 60 minutes after the start.
+- T4.1: **timing.** Regular: one attempt 30 minutes before the start (at once if that has passed); a regular open item also asks both parents 15 minutes before. Critical: first attempt 60 minutes before, 3 attempts 10 minutes apart (closer when there is less time: a quarter of what is left, at least 1 minute), then **one** escalation (to the other parent for `confirm`, to both parents for `open`, so a teen's pickup goes to both), then the backup contact one interval later, if the family set one. So the seeded pickup: -60, -50, -40, escalation -30, backup -20. A clock jump past several steps counts them all and sends **one** reminder (and the escalation, if due), not a burst.
+- T4.1: **no answer:** once a reminder is sent and nothing is left to send, after 30 minutes it gets `tier: 'summary'` and `summaryAt` = the next 20:00 local (`REMINDER_TIMING.summaryTime`). T8.2 shows those. A scheduled reminder whose start passed by more than an hour is dropped quietly.
+- T4.1: **answers close it for everyone it reached** (recipients, whoever it escalated to, and parents after a backup notice), with a new stream message `alert.closed {reminderId}`. On the board: confirmed, taken, reassigned to yourself, done, removed. On the reminder: `POST /items/:id/ack {version, reminderId}` ("Got it"; from the owner of an unconfirmed item it is the core's confirm instead, so the board shows it) and `POST /items/:id/snooze {version, reminderId}` ("Remind me later": nothing for 10 minutes, then one more alert; escalation times do not move). Only a member it reached may answer (`403`); for anyone who can't see the item it is `404`. A second answer is `409`. After a confirmation answered a reminder, no heads-up is planned for that occurrence.
+- T4.1: **quiet hours apply to every alert that is not `urgent`**, including the T3.3 change alerts. Alerts about a **critical** item are `urgent` (changed from T3.3's `timed`), so Scene 1 works at any hour. Held alerts live in `state.heldAlerts` with `releaseAt` (the end of the member's quiet hours) and are released by the tick, only if they still apply. **Batching:** several non-urgent alerts for one member in one tick become one `batch` alert listing the items. The change's own alert to a member ("Mom assigned you") replaces that tick's reminder alert about the same item (the attempt still counts).
+- T4.1: **the backup message** is fixed text with no reason, item, time or names (`BACKUP_TEXT`: "Homemind: please get in touch with the family when you can."), stored in `state.backupMessages` with `simulated: true`. Nothing is sent anywhere. Both parents get a `backup` notice: "Grandma Lin was sent a short message to get in touch. (Simulated)".
+- T4.1: reminders write **no `Activity`** (they are not changes to an item, and Undo makes no sense for them). Their history is on the reminder itself (`attempts`, `escalationsDone`, `escalatedToIds`, `answeredBy`, `answeredAt`).
+- T4.1: **scheduler:** `server/homemind/scheduler.ts`, a `globalThis` singleton, every 5 s, never overlapping, a failing tick is logged and the loop goes on; the timer does not keep the process alive. The bridge starts it when it loads the state, and its task ticks only the runtime that is loaded (it never loads one, so tests that drop the runtime are safe). `resetHomemindRuntime()` stops it. `commit()` runs the same tick right after a change, so a confirmation closes its reminder in the same step.
+- T4.1: **demo clock:** `POST /demo/clock {minutes}` (whole minutes, 1 to 10080, demo only) moves the offset forward, saves it, broadcasts `clock {now, offsetMs, timezone}` to every stream, ticks at once and answers `{ok, now, offsetMs, timezone, delivered}`. `hello` now carries `offsetMs` and `timezone` too. The Family tab shows a **Demo clock** chip (only with `HOMEMIND_DEMO=1`) with the simulated local time, the offset, and **+15 min** / **+1 h** buttons; it keeps running between messages.
+- T4.1: client alerts (`src/lib/homemindAlerts.ts`): one alert **that asks something** per item (the newest replaces older ones for that item; T3.3 kept one per item and kind), plus notices (`backup`, `batch`) beside them, at most 3. Buttons: reminder `confirm`: I'm on it, Hand off, Remind me later, Open. `heads-up`: Done (not for a weekly item), Got it, Remind me later, Open. `open`: I'll take it, Remind me later, Open. Escalation: I'll take it (assigns it to yourself when someone else has it, else claims), Got it, Open. Only the first answer is drawn as primary. Wording is neutral ("Kindergarten pickup at 19:00 is not confirmed yet.") and tested to name nobody.
 
 - T3.3: the stream gains `alert` (`HomemindAlert` in `types.ts`). Kinds for now: `assigned` (someone else assigned you an unconfirmed item) and `open` (an item just became "Who's taking this?": to its candidates). Never to the member who made the change, never for a proposed or removed item. `alertsForChange(before, after, events, actor, at)` in `server/homemind/alerts.ts` (pure) makes them; `commit(rt, state, events, actorId)` publishes them after the item changes; `hub.publishAlerts` delivers to the recipient's streams only and checks visibility again. A sensitive item's alert has no title ("You have a reminder"). Tier is `timed`. **T4.1 adds reminder and escalation kinds, quiet hours and batching on top**; these live alerts ignore quiet hours today (they only show in an open Family tab, nothing is pushed).
 - T3.3: the alert id is `<itemId>.<version>.<kind>`. The client keeps at most 3, one per item and kind, newest first. An alert closes by itself when an `item.changed` shows it was answered anywhere (confirmed, taken by someone else, removed, hidden), so one member's answer closes it in all their windows. Otherwise it follows the item's version, so its own button does not get a 409. Buttons: "I'm on it" (`ack`) or "I'll take it" (`claim`), Open (item screen), Dismiss (this window only). The labels match the board's (`我来处理`, `我来`).
@@ -122,6 +133,9 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 ## Deviations from the plan
 
+- T4.1: `Reminder` in `types.ts` gained fields (`occurrenceDate`, `occurrenceStart`, `ask`, `firstAt`, `intervalMinutes`, `maxAttempts`, `escalationsDone`, `escalatedToIds`, `lastSentAt`, `snoozedUntil`, `answeredBy`, `answeredAt`, `summaryAt`), and `fireAt` is now optional (the next attempt). `EscalationStep.afterMinutes` counts from `firstAt`. `HomemindState` gained optional `heldAlerts` and `backupMessages` (no schema version change: older files load). `AlertKind` gained `reminder`, `escalation`, `backup`, `batch`, and `HomemindAlert` optional reminder fields. Nothing stored used the old reminder shape (always empty).
+- T4.1: the plan names the chip only; it also has **+15 min** and **+1 h** buttons (demo only), so the human can try reminders by hand before the T9.1 panel. "Hand off" on a reminder is the existing `handback`.
+
 - T2.2: `GET /screen/memory` still answers 501 (T6.2 owns PPMA memory). `memoryScreen` is built and tested (saved preferences, plus a PPMA offline/not-connected notice), but not routed. `GET /screen/:name` returns the turn (`message, thinking, followUps, jsonl`) **and** keeps `screen, lang, now, view, query, results`, because T3.2's forms need ids and versions and the T2.1 tests read `view`.
 - T3.1: the plan's calendar filter "by person and area" is "by person and type" (event, preparation, task). Items have no area field, only rules do. `CalendarEntry` gained `type`. The type filter shows only when the board holds more than one type.
 - T2.2: the surfaces name `TaskList` and `CalendarBoard`, which T3.1 builds (done in T3.1).
@@ -189,6 +203,9 @@ Things that are simulated or limited, kept current for the presenter.
 - Real WeChat group access is not available. The realistic product route is sharing and screenshots.
 - The 接龙 screenshot used in tests is simulated and says so. Extraction was measured only on that one clean image, not on real photos.
 - PPMA's memory and proposals need the live model and network on stage (replay does not work). Without them the board still works, and the memory screen says PPMA is offline.
+- Reminders and escalation are banners inside the open app (Family tab). There are no push notifications, so a phone in a pocket gets nothing.
+- The backup contact (Grandma Lin) is simulated: nothing is sent. The banner says "(Simulated)".
+- The demo clock moves only the app's own time, and only forward. A reset puts it back.
 
 ## Log
 
@@ -207,6 +224,29 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T4.1 Reminders: done (2026-11-05)
+**Built:**
+- `server/homemind/reminders.ts` (pure): `askFor`, `syncReminders`, `tickReminders(state, now, fromChange)`, `routeAlerts` (quiet hours, held alerts, batching), `respondToReminder` (ack, snooze), `activeReminderFor`, `inQuietHours`, `quietHoursEnd`, `nextSummaryAt`, `REMINDER_TIMING`, `BACKUP_TEXT`.
+- `server/homemind/scheduler.ts`: `globalThis` singleton, 5 s tick, no overlap, `startScheduler`, `stopScheduler`, `schedulerRunning`, `tickSchedulerNow`.
+- `server/homemind/types.ts`: extended `Reminder`, `ReminderAsk`, `HeldAlert`, `BackupMessage`, new alert kinds and fields, `alert.closed` and `clock` stream messages, `hello` with `offsetMs` and `timezone`. `alerts.ts`: a critical item's alert is `urgent`. `events.ts`: `publishClosed`, `broadcast` for `clock`.
+- `server/homemind.ts`: the scheduler starts with the runtime; `commit` runs the tick (change alerts go through quiet hours); `POST /demo/clock`; `POST /items/:id/snooze`; `ack` with `reminderId`.
+- Client: `src/transport/homemindEvents.ts` (checks the new kinds, `clock`, `alert.closed`), `src/lib/homemindAlerts.ts` (text, buttons, relevance, `closeReminder`, one asking alert per item), `src/components/AlertBanner.tsx`, `src/components/FamilyView.tsx` (Demo clock chip, button mapping), `src/transport/homemind.ts` (`snooze`, `reminderId`, `jumpHomemindClock`), `src/styles.css`.
+- Tests: `tests/homemindReminders.test.ts` (32, fake clock), 5 new in `tests/homemindEvents.test.ts` (Scene 1 over HTTP with the clock jump; snooze and "Got it" over HTTP; clock input checks; the loop's wiring; parsing of the new frames), 3 updated (snooze and `/demo/clock` no longer 501, critical tier `urgent`, `hello` fields), 1 e2e in `e2e/homemind.spec.ts`.
+**Decisions:** see "Decisions made during the build" (the T4.1 entries).
+**Deviations:** see "Deviations from the plan" (the T4.1 entries): extended types, and the chip has +15 min / +1 h buttons.
+**Test results:**
+- `npm test`: 34 files, **519 passed** (482 before, plus 37). The first cold run before the task had one file fail, the known flake in Open issues; the rerun was clean.
+- `npx tsc --noEmit`: clean.
+- `npm run test:e2e`: **54 of 54** (53 before, plus 1), first full run (7.9 min).
+- The plan's list, each a unit test with a fake clock: a single regular reminder (and then the summary), critical attempts then escalation then backup, open item escalating to both parents, quiet hours (held, released, urgent breaks them), batching, one response closing it for all, backup text with no details, neutral wording, pause.
+- Screenshots at 390 px, Dad in Chinese with the reminder and the backup notice, Mom in English with the escalation: checked by eye, no overflow. Axe passes on both.
+**Not done or not verified:** editing quiet hours, the backup contact and the "an alert can be missed" note in Settings are T4.2. Summary cards for reminders with `summaryAt` are T8.2. Reminders do not appear on My day, only as alerts. Not tried on a real phone. A held alert released at the end of quiet hours is tested in units only, not in e2e. `npm run build` and the flag-off check run at the end of P4 (after T4.2).
+**Next task should know:** Scene 1 timing with the seed: the pickup starts 2 to 2.5 hours after a reset; Dad's attempts at -60, -50, -40, Mom's escalation at -30, backup at -20. The e2e test jumps to -25 with the API (`minutes = ceil((start - now)/60000) - 25`), then taps +15 min. Settings must save quiet hours as `Member.quietHours` and the backup contact as `Family.backupContact`; `syncReminders` picks up changes on the next tick (an escalation without a backup contact has no backup step, tested). `PUT /settings` still answers 501.
+**How to verify:**
+- Commands: `npm test` ; `npx tsc --noEmit` ; `npx playwright test e2e/homemind.spec.ts -g "reminders:"`
+- Expected output: 519 passed; no tsc output; 1 passed.
+- Manual check: with `HOMEMIND_ENABLED=1`, `HOMEMIND_DEMO=1` and a `HOMEMIND_SECRET` in `.env.local`, run `npm run dev`. Open `http://127.0.0.1:5173/?member=mom` in one browser profile and `?member=dad` in another, Family tab in both. Each shows a **Demo clock** chip. In Mom's window tap **Assign to Dad** on "Kindergarten pickup". Then tap **+1 h** once and **+15 min** two or three times, until the chip reads about 25 minutes before the pickup's time: Dad's window shows "Please confirm: Kindergarten pickup at HH:MM", and Mom's shows "Kindergarten pickup at HH:MM is not confirmed yet." (no name in it). Tap **I'll take it** in Mom's window: the alerts close in both windows.
 
 ### T3.3 Live sync and alerts: done (2026-11-05). End of P3
 **Built:**

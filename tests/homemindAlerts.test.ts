@@ -42,7 +42,7 @@ describe('alerts made by a change', () => {
     const pickup = item(st, 'pickup-today');
     const { alerts } = change(st, { kind: 'assign', itemId: pickup.id, version: pickup.version, ownerId: 'dad' }, 'mom');
     expect(alerts).toHaveLength(1);
-    expect(alerts[0]).toMatchObject({ recipientId: 'dad', alert: { kind: 'assigned', itemId: 'pickup-today', itemVersion: pickup.version + 1, byId: 'mom', byName: 'Mom', title: pickup.title, sensitive: false, tier: 'timed' } });
+    expect(alerts[0]).toMatchObject({ recipientId: 'dad', alert: { kind: 'assigned', itemId: 'pickup-today', itemVersion: pickup.version + 1, byId: 'mom', byName: 'Mom', title: pickup.title, sensitive: false, tier: 'urgent' } });
     expect(alerts[0].alert.id).toBe(`pickup-today.${pickup.version + 1}.assigned`);
   });
 

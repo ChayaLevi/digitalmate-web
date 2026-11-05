@@ -144,7 +144,8 @@ export async function fetchHomemindScreen(token: string, name: HomemindScreenNam
 
 export interface MutationResult {
   ok: true;
-  activityId: string;
+  /** Absent for an answer to a reminder, which changes no item and has no Undo. */
+  activityId?: string;
   items: Item[];
   opened: string[];
   conflicts: unknown[];
@@ -160,10 +161,15 @@ export async function undoHomemind(token: string, itemId: string, activityId: st
   return call(`/api/homemind/items/${encodeURIComponent(itemId)}/undo`, { method: 'POST', token, body: JSON.stringify({ activityId }) });
 }
 
+/** Demo only (`HOMEMIND_DEMO=1`): moves the demo clock forward and ticks the reminders at once. */
+export async function jumpHomemindClock(token: string, minutes: number): Promise<{ ok: true; now: string; offsetMs: number; timezone: string; delivered: number }> {
+  return call('/api/homemind/demo/clock', { method: 'POST', token, body: JSON.stringify({ minutes }) });
+}
+
 /** Verbs the host handles itself (navigation and forms). */
 export const HOST_VERBS = ['add', 'edit', 'search', 'back', 'save'] as const;
 
-const ITEM_VERBS = new Set(['claim', 'assign', 'ack', 'handback', 'done', 'approve', 'dismiss', 'cancel', 'open', 'unassign']);
+const ITEM_VERBS = new Set(['claim', 'assign', 'ack', 'handback', 'done', 'approve', 'dismiss', 'cancel', 'open', 'unassign', 'snooze']);
 
 export type ActionOutcome = { kind: 'mutation'; result: MutationResult; verb: string } | { kind: 'why'; why: { summary?: string; source?: string } };
 
@@ -178,6 +184,8 @@ export async function runHomemindAction(action: A2uiAction, token: string): Prom
   if (ITEM_VERBS.has(verb)) {
     const body: Record<string, unknown> = { version: args.version };
     if (verb === 'assign') body.ownerId = args.memberId;
+    // From a reminder alert: which reminder is answered ("Got it", "Remind me later").
+    if ((verb === 'ack' || verb === 'snooze') && typeof args.reminderId === 'string') body.reminderId = args.reminderId;
     const result = await call<MutationResult>(`/api/homemind/items/${id(args.itemId)}/${verb}`, { method: 'POST', token, body: JSON.stringify(body) });
     return { kind: 'mutation', result, verb };
   }

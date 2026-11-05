@@ -7362,5 +7362,21 @@ a {
   color: var(--ink);
 }
 .hm-live.is-reconnecting, .hm-live.is-connecting { background: #f1f1f1; color: #444; }
+.hm-alert.is-escalation { border-width: 2px; }
+.hm-demo-clock { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
+.hm-demo-clock strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.hm-demo-clock em { font-style: normal; color: var(--text); }
+.hm-demo-clock > span { margin-right: auto; }
+.hm-demo-clock button {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line, rgba(128,128,128,.35));
+  background: var(--surface, #fff);
+  color: var(--accent-deep);
+  font: inherit;
+  cursor: pointer;
+}
+.hm-demo-clock button:disabled { opacity: .6; cursor: default; }
 @keyframes hm-alert-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .hm-alert { animation: none; } }

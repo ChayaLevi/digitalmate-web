@@ -83,6 +83,20 @@ interface TaskRowData {
   tone: string;
   simulated: boolean;
   actions: A2uiAction[];
+  open?: A2uiAction;
+}
+
+const actionOf = (value: unknown): A2uiAction | undefined =>
+  value && typeof value === 'object' && typeof (value as A2uiAction).label === 'string' && typeof (value as A2uiAction).id === 'string' ? (value as A2uiAction) : undefined;
+
+/** A title that opens the item when the row carries an `open` action, plain text otherwise. */
+function OpenTitle({ title, open, onAction, className }: { title: string; open?: A2uiAction; onAction: Ctx['onAction']; className: string }) {
+  if (!open) return <strong className={className}>{title}</strong>;
+  return (
+    <button type="button" className={`${className} hm-open`} onClick={() => onAction(open)} aria-label={`${open.label}: ${title}`}>
+      {title}
+    </button>
+  );
 }
 
 function readRows(raw: unknown): TaskRowData[] {
@@ -97,7 +111,8 @@ function readRows(raw: unknown): TaskRowData[] {
       state: str(row.state),
       tone: toneOf(row.tone),
       simulated: row.simulated === true,
-      actions: Array.isArray(row.actions) ? (row.actions.filter(a => a && typeof a === 'object' && typeof (a as A2uiAction).label === 'string') as A2uiAction[]) : []
+      actions: Array.isArray(row.actions) ? (row.actions.filter(a => a && typeof a === 'object' && typeof (a as A2uiAction).label === 'string') as A2uiAction[]) : [],
+      ...(actionOf(row.open) ? { open: actionOf(row.open) } : {})
     }));
 }
 
@@ -115,7 +130,7 @@ function TaskList({ component, ctx, id }: { component: A2uiComponent; ctx: Ctx; 
         {rows.map(row => (
           <li className={`hm-task is-${row.tone} state-${row.state || 'none'}`} key={row.id} data-task-id={row.id} data-state={row.state}>
             <div className="hm-task-head">
-              <strong className="hm-task-title">{row.title}</strong>
+              <OpenTitle className="hm-task-title" title={row.title} open={row.open} onAction={ctx.onAction} />
               <span className={`hm-task-state is-${row.state || 'none'}`}>{taskStateLabel(row.state, ctx.tr)}</span>
             </div>
             <div className="hm-task-sub">
@@ -203,6 +218,7 @@ export interface BoardEntry {
   tone: string;
   simulated: boolean;
   unavailable: string[];
+  open?: A2uiAction;
 }
 
 export interface BoardData {
@@ -237,7 +253,8 @@ export function readBoard(raw: unknown): BoardData | null {
       ...(str(e.type) ? { type: str(e.type) } : {}),
       tone: toneOf(e.tone),
       simulated: e.simulated === true,
-      unavailable: strings(e.unavailable)
+      unavailable: strings(e.unavailable),
+      ...(actionOf(e.open) ? { open: actionOf(e.open) } : {})
     }));
   return {
     today,
@@ -309,12 +326,12 @@ function timeLabel(entry: BoardEntry, tr: Tr): string {
   return entry.endTime ? `${entry.time}–${entry.endTime}` : entry.time;
 }
 
-function EntryRow({ entry, tr }: { entry: BoardEntry; tr: Tr }) {
+function EntryRow({ entry, tr, onAction }: { entry: BoardEntry; tr: Tr; onAction: Ctx['onAction'] }) {
   return (
     <li className={`hm-cal-entry is-${entry.tone}`} data-entry-id={entry.id} data-item-id={entry.itemId}>
       <span className="hm-cal-time">{timeLabel(entry, tr)}</span>
       <span className="hm-cal-main">
-        <strong>{entry.title}</strong>
+        <OpenTitle className="hm-cal-entry-title" title={entry.title} open={entry.open} onAction={onAction} />
         <span className="hm-cal-sub">
           {entry.ownerLabel ? <span>{entry.ownerLabel}</span> : null}
           {entry.unavailable.length ? (
@@ -329,13 +346,13 @@ function EntryRow({ entry, tr }: { entry: BoardEntry; tr: Tr }) {
   );
 }
 
-function DayList({ date, entries, tr, emptyText }: { date: string; entries: BoardEntry[]; tr: Tr; emptyText: string }) {
+function DayList({ date, entries, tr, emptyText, onAction }: { date: string; entries: BoardEntry[]; tr: Tr; emptyText: string; onAction: Ctx['onAction'] }) {
   const list = entriesOn(entries, date);
   if (!list.length) return <p className="hm-cal-empty">{emptyText}</p>;
   return (
     <ul className="hm-cal-entries">
       {list.map(entry => (
-        <EntryRow key={`${date}-${entry.id}`} entry={entry} tr={tr} />
+        <EntryRow key={`${date}-${entry.id}`} entry={entry} tr={tr} onAction={onAction} />
       ))}
     </ul>
   );
@@ -377,7 +394,7 @@ function CalendarBoard({ component, ctx, id }: { component: A2uiComponent; ctx: 
 
   let body: ReactNode;
   if (view === 'day') {
-    body = <DayList date={at} entries={shown} tr={tr} emptyText={emptyDay} />;
+    body = <DayList date={at} entries={shown} tr={tr} emptyText={emptyDay} onAction={ctx.onAction} />;
   } else if (view === 'week') {
     body = (
       <ol className="hm-cal-week">
@@ -387,7 +404,7 @@ function CalendarBoard({ component, ctx, id }: { component: A2uiComponent; ctx: 
               <span>{dayTitle(date, board.weekdays, tr)}</span>
               {date === board.today ? <em>{tr('Today', '今天')}</em> : null}
             </div>
-            <DayList date={date} entries={shown} tr={tr} emptyText={emptyDay} />
+            <DayList date={date} entries={shown} tr={tr} emptyText={emptyDay} onAction={ctx.onAction} />
           </li>
         ))}
       </ol>

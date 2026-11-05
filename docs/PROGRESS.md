@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T3.1 done (new components: `TaskList`, `CalendarBoard`, Simulated badge)
-- **Next task:** T3.2 (Family tab)
-- **Scenes working end to end:** none (the API for Scene 1's assign and Scene 4's availability works; no screens yet)
+- **Current task:** T3.2 done (Family tab: demo sign-in, sub-navigation, all screens, Add and edit)
+- **Next task:** T3.3 (Live sync and alerts), the last task of P3, so the phase-end checks follow it
+- **Scenes working end to end:** none yet. In the browser, Mom can assign the pickup to Dad and he sees it after switching screen or reloading (live sync is T3.3); a Wedding with "Mom is away" opens her Tuesday pickup
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-05, after T3.1
+- **Last updated:** 2026-11-05, after T3.2
 
 ## Task status
 
@@ -27,7 +27,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T2.2 | Surface builders | done | `src/lib/homemindSurfaces.ts`, 70 tests in `tests/homemindSurfaces.test.ts` + 1 bridge test. 382 of 382 in all. `/screen/:name` now returns the surface |
 | T2.3 | Live events | done | `server/homemind/events.ts`, `src/transport/homemindEvents.ts`, `GET /events`, 18 tests in `tests/homemindEvents.test.ts`. 400 of 400 in all. P2 phase checks pass |
 | T3.1 | New components | done | `src/components/a2ui/homemindComponents.tsx`, 38 unit tests, 4 e2e at 390 px in EN and ZH with axe. 438 of 438 unit tests in all |
-| T3.2 | Family tab | not started |  |
+| T3.2 | Family tab | done | `src/components/FamilyView.tsx`, `src/transport/homemind.ts`, `src/lib/homemindForm.ts`, `edit` screen. 464 of 464 unit tests, 50 of 50 e2e |
 | T3.3 | Live sync and alerts | not started |  |
 | T4.1 | Reminders | not started |  |
 | T4.2 | Settings and Scene 1 | not started |  |
@@ -52,6 +52,14 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
+- T3.2: the Family tab shows only when `GET /api/homemind/health` answers JSON `{enabled: true}` (`homemindHealth()`). Without the flag the bridge does not answer, Vite or the static server returns the app page, and the tab, the Family companion and the Homemind top bar stay absent. If the stored companion is `family` and Homemind is off, it falls back to the default.
+- T3.2: Add and edit is a bridge screen like the others: `GET /screen/edit` (new item), `?parent=<eventId>` (new preparation), `?id=<itemId>` (edit). A bad id is `400`; a missing or not-visible item is an `ErrorNotice` "not on your board" with only a Back button. The form fields carry their starting value in `default`; `src/lib/homemindForm.ts` (`formValues`, `buildSave`, `localToIso`) turns form + defaults into `POST /items` or a `PATCH` with **only the changed fields**, so saving in Chinese does not overwrite a seeded English title with its `titleZh`.
+- T3.2: form rules: no start time means all day, from local midnight to the next local midnight (the core needs an end for "away"). An end time needs a start time and must be later the same day. "Away" with a start time needs an end time. Times are local to the family's zone, which travels in the Save action's args. Only events have "Who is away" (parents and teens; a child is never away). Only a parent sees "Parents only", and not on a preparation (it follows its event). The owner choice is on create only; on edit, the item's own row (with its usual Claim/Assign/I'm on it buttons) is at the top of the form.
+- T3.2: `TaskRow` and `CalendarEntry` gained `open` (verb `edit`): the title becomes a button named `Edit: <title>`. Not on the edit screen's own row, nor on activity rows. A new event opens straight in its edit screen, so preparations can be added under it. In the edit screen a preparation has a Remove button and its title opens it.
+- T3.2: the `TextField` component accepts an optional `inputType: 'date' | 'time'` (anything else stays `text`), so Epic Replay's fields are unchanged.
+- T3.2: after every write, the tab shows a notice with **Undo** (the activity id and an item it touched). 409 `stale` shows "This changed. Here is the latest." and re-reads the screen; 401 signs the window out back to the picker; 501 says "not built yet". Card buttons from other tabs (`kind: 'homemind'`, for chat in T5.2) switch to the Family tab and run there.
+- T3.2: the Family companion (`FAMILY_PERSONA`, not in `PERSONAS`) is offered only with Homemind on. Its chat still goes to the local mock until T5.2, and a toast says so on every turn.
+- T3.2: e2e for Homemind runs against a **second dev server** on port 5176 with `HOMEMIND_ENABLED=1`, `HOMEMIND_DEMO=1`, `HOMEMIND_LLM=fake` and `.homemind/e2e-state.json` (`playwright.config.ts`). The base server on 5175 keeps Homemind off, so the base tests are the flag-off run. `e2e/homemind.spec.ts` is serial and resets the board before each test through `/demo/reset`.
 - T3.1: `TaskList` and `CalendarBoard` live in `src/components/a2ui/homemindComponents.tsx`, registered in `A2uiSurfaceView.tsx`. Every row button's accessible name is `<label>: <row title>`, so the several "Claim" buttons differ for screen readers and Playwright (`getByRole('button', {name: 'Approve: Bring apples'})`). Rows carry `data-task-id` and `data-state`; calendar entries carry `data-entry-id` and `data-item-id`; the board carries `data-view` and `data-anchor`.
 - T3.1: `CalendarBoard` keeps its view, date, person and type filter in component state, so they are kept while new data arrives, and reset when the surface is mounted again. The component may set `view: 'day'|'week'|'month'` (default `week`). The week view is a vertical list of 7 days (a 7-column grid is unreadable at 390 px); the month view is a `<table>` whose day cells open that day. Entries are not tappable yet: T3.2 can add an action if editing from the calendar is needed.
 - T3.1: the Simulated badge renders from the flag: `simulated: true` on a `TaskList` row, a calendar entry, an `ApprovalCard` / `PaymentCard` data object, a `List` row, or a `ConfirmPanel` / `ExpandableCard` component. Without the flag those cards render exactly as before (tested). So the builder no longer repeats the word: a `TaskRow` meta and an action card's body no longer say "Simulated", and the card's `risk` field is gone. Rules and settings rows still say it in their text, because `InfoRows` and `List` subtitles there carry no flag.
@@ -117,6 +125,9 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 - T1.2: changed T1.1 types, as T1.1 allowed. `UndoPatch` is now `{ items: UndoEntry[] }` (one change can touch several items), with `afterVersion` per item. `Activity` gained `kind`, `itemId`, `memberId`, `note`, `ref`, `undone`. `Ownership` `open` gained optional `handedBackBy` and `note`. Nothing stored used the old shapes (activity was always empty).
 - T1.2: the plan's verbs `ack` and `snooze` belong to reminders (T4.1). The core has `confirm` for "I'm on it" on an assignment; the bridge can map `ack` to it. Added `open`, `unassign`, `cancel`, `cancel_occurrence`, which the plan's verb list does not name.
 - T0.1: fixed two existing test problems, with the human's OK (2026-11-04). `playwright.config.ts` webServers now pass variables through `env` (works on Windows). `tests/epicVite.test.ts` adds `strictPort: false` (no port race).
+
+- T3.2: editing the date or a time of a multi-day item collapses it to one day (the form has one date and an end time). Seeded items are one day. "For whom" and "Who is away" are toggles, one per member, because `ChoiceGroup` is single-choice.
+- T3.2: the plan lists "Add and edit" among the screens; it is not a sub-navigation tab but the "+ Add" button, row titles, calendar entries and "Add preparation".
 
 ## Open issues
 
@@ -188,6 +199,30 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T3.2 Family tab: done (2026-11-05)
+**Built:**
+- `src/components/FamilyView.tsx`: demo sign-in picker (members with an account, labelled "Demo sign-in"), `?member=` pre-select only with `HOMEMIND_DEMO=1`, "Switch member", sub-navigation (My day, Family, Calendar, Search, Rules, Activity, Settings, + Add), host-owned `form`, JSONL rendered through `A2uiSurfaceView`, action → bridge calls, notice with Undo, back stack.
+- `src/transport/homemind.ts`: `homemindHealth`, members, `homemindSignIn`, per-window session in `sessionStorage`, `fetchHomemindScreen`, `sendHomemindWrite`, `undoHomemind`, `runHomemindAction` (item verbs, undo, card confirm/cancel, Why?), `HomemindError`.
+- `src/lib/homemindForm.ts`: `formValues`, `buildSave` (changed fields only), `localToIso`.
+- `src/lib/homemindSurfaces.ts`: `edit` screen (new item, new preparation, edit with the item's own row, preparations with Remove, "Add preparation"); `open` (Edit) on rows and calendar entries; EN/ZH strings.
+- `server/homemind.ts`: `edit` in the screen whitelist, `?id=` / `?parent=` validated with `ID_PATTERN`.
+- `src/components/a2ui/homemindComponents.tsx`: title as an Edit button when a row or entry has `open`. `epicComponents.tsx`: `TextField` `inputType` date/time.
+- `src/App.tsx` (minimal): `Tab` gains `family`, health check on load, Homemind top bar, `FamilyView`, `kind: 'homemind'` in `onAction`, Family companion in the sheet, mock-chat toast for it. `Overlays.tsx`: `BottomNav` `showFamily`. `personas.ts`: `FAMILY_PERSONA`. `ComposerSheets.tsx`: `extra` companions. `styles.css`: `hm-*` Family tab styles.
+- Tests: `tests/homemindForm.test.ts` (23), 3 bridge tests in `tests/homemindBridge.test.ts`, `e2e/homemind.spec.ts` (6), second dev server in `playwright.config.ts`.
+**Decisions:** see "Decisions made during the build" (the T3.2 entries).
+**Deviations:** "Add and edit" is reached from "+ Add", row titles, calendar entries and "Add preparation", not a tab. Multi-day editing collapses to one day (see Deviations).
+**Test results:**
+- `npm test`: 32 files, **464 passed** (438 before, plus 26).
+- `npx tsc --noEmit`: clean.
+- `npm run test:e2e`: **50 of 50** (44 before, plus 6), first full run. The base tests ran on the Homemind-off server (5175), so the base app is unchanged with the flag off.
+- Screenshots at 390 px (Add form in ZH, an event with two preparations in EN) checked by eye: no overflow, text fits.
+**Not done or not verified:** live sync (another window updates only on screen change or reload) and alerts are T3.3. Not tried on a real phone. `npm run build` and the phase-end flag-off check are for the end of P3 (after T3.3). Rules, Activity and Settings are read-only screens (editing settings is T4.2, rules T7.3). Why? and card confirm answer what the bridge has (404 / 501) until T6.2 / T7.1.
+**Next task should know:** `FamilyView`'s `load(nav, token)` re-reads the current screen; T3.3 can call it on `hello` and `item.changed` from `connectHomemindEvents`, and reconnect on member switch (`session` state). For two contexts in Playwright, use the 5176 server and `?member=mom` / `?member=dad`.
+**How to verify:**
+- Commands: `npm test` ; `npx tsc --noEmit` ; `npx playwright test e2e/homemind.spec.ts`
+- Expected output: 464 passed; no tsc output; 6 passed.
+- Manual check: add `HOMEMIND_ENABLED=1`, `HOMEMIND_DEMO=1` and a `HOMEMIND_SECRET` of 16+ characters to `.env.local`, run `npm run dev`, open `http://127.0.0.1:5173/?member=mom`, tap **Family** in the bottom bar. Tap **+ Add**, title "School concert", start 18:00, end 19:30, **Save**: the event opens for editing; tap **Add preparation**, add "Iron the shirt", Save. Remove it and tap **Undo** in the notice: it comes back. On **Search**, type "concert": the event is found. Remove those lines from `.env.local` afterwards, and the Family tab is gone.
 
 ### T3.1 New components: done (2026-11-05)
 **Built:**

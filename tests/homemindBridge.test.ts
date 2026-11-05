@@ -450,3 +450,88 @@ describe('persistence', () => {
     expect(titles).toEqual(expect.arrayContaining(['First', 'Second']));
   });
 });
+
+describe('T3.2: Add and edit through the bridge', () => {
+  const surfaceOf = async (res: Response) => {
+    expect(res.status).toBe(200);
+    return A2uiSurfaceStore.fromJsonl((await json<{ jsonl: string }>(res)).jsonl).list()[0];
+  };
+  const saveArgsOf = (surface: ReturnType<typeof A2uiSurfaceStore.prototype.list>[number]) => {
+    const bar = Object.values(surface.components).find(c => c.component === 'ActionBar' && c.actions?.some(a => a.args?.verb === 'save'));
+    return bar!.actions!.find(a => a.args?.verb === 'save')!.args!;
+  };
+
+  it('create an event with a preparation, edit it, remove the preparation, assign it and find it', async () => {
+    const { buildSave, formValues } = await import('../src/lib/homemindForm');
+    const mom = as(await login('mom'));
+
+    // Create the event from the form, as the Family tab does.
+    let form = await surfaceOf(await mom.get('/screen/edit'));
+    let fv = formValues(form, { title: 'School concert', time: '18:00', endTime: '19:30' });
+    let plan = buildSave(saveArgsOf(form), fv.values, fv.defaults);
+    if (!plan.ok || !plan.request) throw new Error('no request');
+    let res = await mom.send(plan.request.method, plan.request.path.replace('/api/homemind', ''), plan.request.body);
+    expect(res.status).toBe(200);
+    const eventId = (await json<{ items: Item[] }>(res)).items[0].id;
+
+    // Add a preparation under it.
+    form = await surfaceOf(await mom.get(`/screen/edit?parent=${eventId}`));
+    fv = formValues(form, { title: 'Iron the shirt' });
+    plan = buildSave(saveArgsOf(form), fv.values, fv.defaults);
+    if (!plan.ok || !plan.request) throw new Error('no request');
+    res = await mom.send(plan.request.method, plan.request.path.replace('/api/homemind', ''), plan.request.body);
+    expect(res.status).toBe(200);
+    const prepId = (await json<{ items: Item[] }>(res)).items[0].id;
+    expect((await item(mom, prepId)).parentEventId).toBe(eventId);
+
+    // Edit the event: the form lists the preparation; change the notes only.
+    form = await surfaceOf(await mom.get(`/screen/edit?id=${eventId}`));
+    expect((form.data.preps as Array<{ id: string }>).map(p => p.id)).toEqual([prepId]);
+    fv = formValues(form, { notes: 'Row 3' });
+    plan = buildSave(saveArgsOf(form), fv.values, fv.defaults);
+    if (!plan.ok || !plan.request) throw new Error('no request');
+    expect(Object.keys((plan.request.body as { patch: object }).patch)).toEqual(['notes']);
+    res = await mom.send(plan.request.method, plan.request.path.replace('/api/homemind', ''), plan.request.body);
+    expect(res.status).toBe(200);
+    expect((await item(mom, eventId)).notes).toBe('Row 3');
+
+    // Remove the preparation; the event's form no longer lists it.
+    res = await mom.send('POST', `/items/${prepId}/cancel`, { version: (await item(mom, prepId)).version });
+    expect(res.status).toBe(200);
+    form = await surfaceOf(await mom.get(`/screen/edit?id=${eventId}`));
+    expect(form.data.preps).toBeUndefined();
+
+    // Assign it to Dad and find it.
+    res = await mom.send('POST', `/items/${eventId}/assign`, { version: (await item(mom, eventId)).version, ownerId: 'dad' });
+    expect(res.status).toBe(200);
+    const found = await json<{ jsonl: string; results: Item[] }>(await mom.get('/screen/search?q=concert'));
+    expect(found.results.map(i => i.id)).toEqual([eventId]);
+    expect(found.results[0].ownership).toMatchObject({ state: 'assigned', ownerId: 'dad' });
+  });
+
+  it('an event created with Mom away opens her clashing pickup', async () => {
+    const { buildSave, formValues } = await import('../src/lib/homemindForm');
+    const mom = as(await login('mom'));
+    const pickup = await item(mom, 'pickup-tuesday');
+    const zone = (await json<{ view: { family: { timezone: string } } }>(await mom.get('/screen/family'))).view.family.timezone;
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone: zone }).format(new Date(pickup.start!));
+    const form = await surfaceOf(await mom.get('/screen/edit'));
+    const fv = formValues(form, { title: 'Wedding', date: day, 'away.mom': true });
+    const plan = buildSave(saveArgsOf(form), fv.values, fv.defaults);
+    if (!plan.ok || !plan.request) throw new Error('no request');
+    const res = await mom.send(plan.request.method, plan.request.path.replace('/api/homemind', ''), plan.request.body);
+    const body = await json<{ opened: string[]; conflicts: unknown[] }>(res);
+    expect(res.status).toBe(200);
+    expect([...body.opened, ...body.conflicts.map(c => (c as { itemId: string }).itemId)]).toContain('pickup-tuesday');
+  });
+
+  it('a Parents-only item is not on a teen\'s edit screen, and a bad id is refused', async () => {
+    const maya = as(await login('maya'));
+    const res = await maya.get('/screen/edit?id=counselor-meeting');
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toMatch(/counselor/i);
+    expect((await maya.get('/screen/edit?id=Bad%20Id')).status).toBe(400);
+    expect((await maya.get('/screen/edit?parent=../x')).status).toBe(400);
+  });
+});

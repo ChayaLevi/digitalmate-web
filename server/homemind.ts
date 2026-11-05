@@ -41,7 +41,7 @@ const MAX_BODY = 64 * 1024;
 const HEARTBEAT_MS = 15_000;
 const CONFLICT_HORIZON_MS = 90 * 24 * 60 * 60 * 1000;
 
-const SCREENS = ['my-day', 'family', 'calendar', 'search', 'rules', 'memory', 'activity', 'settings'] as const;
+const SCREENS = ['my-day', 'family', 'calendar', 'search', 'rules', 'memory', 'activity', 'settings', 'edit'] as const;
 type Screen = (typeof SCREENS)[number];
 
 /** Verbs on `POST /items/:id/:verb` that map straight to a core change. `ack` is the core's `confirm`. */
@@ -346,6 +346,12 @@ function newItemFrom(ctx: Ctx, body: Record<string, unknown>): NewItem {
   return item;
 }
 
+function editTarget(url: URL): { itemId?: string; parentId?: string } {
+  const id = url.searchParams.get('id');
+  const parent = url.searchParams.get('parent');
+  return { ...(id ? { itemId: idOf(id, 'id') } : {}), ...(parent ? { parentId: idOf(parent, 'parent') } : {}) };
+}
+
 // --- live updates (SSE) -------------------------------------------------------------------------------
 
 const frame = (message: StreamMessage) => `event: ${message.event}\ndata: ${JSON.stringify(message.data)}\n\n`;
@@ -451,6 +457,8 @@ const routes: Route[] = [
       const query = (ctx.url.searchParams.get('q') ?? '').slice(0, 100);
       const now = new Date(ctx.rt.clock.now()).toISOString();
       const results = name === 'search' ? searchItems(ctx.rt.state, ctx.member.id, query) : undefined;
+      // Add and edit: `?id=` opens an item, `?parent=` adds a preparation under an event. A bad id is a 400.
+      const edit = name === 'edit' ? editTarget(ctx.url) : undefined;
       const isParent = ctx.member.role === 'parent';
       // A view carries no Undo patches, so the server says which changes this member may undo.
       const undoable = ctx.rt.state.activity.filter(a => a.undo && !a.undone && (isParent || a.actor === ctx.member.id)).map(a => a.id);
@@ -462,7 +470,8 @@ const routes: Route[] = [
         results,
         undoable,
         ppma: 'off',
-        llm: process.env.HOMEMIND_LLM === 'live' ? 'live' : 'fake'
+        llm: process.env.HOMEMIND_LLM === 'live' ? 'live' : 'fake',
+        ...(edit ? { edit } : {})
       });
       // The surface is what screens render. `view` stays for the client's forms (ids, versions).
       json(ctx.response, 200, { ...turn, screen: name, lang: ctx.lang, now, view, ...(results ? { query, results } : {}) });

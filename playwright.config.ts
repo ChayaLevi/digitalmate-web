@@ -2,6 +2,8 @@ import { defineConfig, devices } from '@playwright/test';
 
 const port = 5175;
 const baseURL = `http://127.0.0.1:${port}`;
+/** The Homemind-enabled dev server (e2e/homemind.spec.ts). */
+const homemindPort = 5176;
 
 export default defineConfig({
   testDir: './e2e',
@@ -42,6 +44,21 @@ export default defineConfig({
       command: `npm run dev -- --port ${port}`,
       env: { EPIC_REPLAY_URL: 'http://127.0.0.1:18010', FRIDGE2TABLE_URL: 'http://127.0.0.1:18020' },
       url: baseURL,
+      reuseExistingServer: false,
+      timeout: 120_000
+    },
+    {
+      // Homemind on, with its own state file and the simulated model. The server above keeps Homemind
+      // off, so the base app's tests run exactly as before.
+      command: `npm run dev -- --port ${homemindPort}`,
+      env: {
+        HOMEMIND_ENABLED: '1',
+        HOMEMIND_SECRET: 'e2e-only-homemind-secret-0123',
+        HOMEMIND_DEMO: '1',
+        HOMEMIND_DATA_FILE: '.homemind/e2e-state.json',
+        HOMEMIND_LLM: 'fake'
+      },
+      url: `http://127.0.0.1:${homemindPort}/api/homemind/health`,
       reuseExistingServer: false,
       timeout: 120_000
     }

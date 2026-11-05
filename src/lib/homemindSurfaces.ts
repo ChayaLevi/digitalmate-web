@@ -18,7 +18,13 @@ import type { A2uiAction, A2uiComponent } from '../types';
 import type { ActionCard, Activity, Family, Item, Lang, Member, Preference, Reminder, Rule, Why } from '../../server/homemind/types';
 
 export type HomemindLang = Lang;
-export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings';
+export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit';
+
+/** What the Add and edit screen opens: an existing item, a new preparation under an event, or a new item. */
+export interface HomemindEditTarget {
+  itemId?: string;
+  parentId?: string;
+}
 
 /** The part of the bridge's `MemberView` that screens read. */
 export interface HomemindViewData {
@@ -45,6 +51,8 @@ export interface HomemindScreenData {
   /** `off`: not configured. `offline`: configured but unreachable. */
   ppma?: 'off' | 'offline' | 'ok';
   llm?: 'live' | 'fake';
+  /** For the `edit` screen. */
+  edit?: HomemindEditTarget;
 }
 
 /** What the bridge sends the browser for every Homemind screen. Same shape as a Fridge2Table turn. */
@@ -69,6 +77,8 @@ export interface TaskRow {
   tone: TaskTone;
   simulated?: boolean;
   actions: A2uiAction[];
+  /** Tapping the title opens the item in Add and edit (T3.2). */
+  open?: A2uiAction;
 }
 
 /** One entry of `CalendarBoard`: local date and time in the family's zone, so no conversion on the client. */
@@ -88,6 +98,8 @@ export interface CalendarEntry {
   tone: TaskTone;
   simulated?: boolean;
   unavailable?: string[];
+  /** Tapping the entry opens the item in Add and edit (T3.2). */
+  open?: A2uiAction;
 }
 
 // --- strings ----------------------------------------------------------------------------------------
@@ -174,7 +186,36 @@ const T = {
   level2: { en: '2 Organizes', zh: '2 整理' },
   level3: { en: '3 Advanced', zh: '3 进阶' },
   level4: { en: '4 Executes (simulated services only)', zh: '4 执行（仅限模拟服务）' },
-  failed: { en: 'Homemind could not answer', zh: 'Homemind 暂时无法回答' }
+  failed: { en: 'Homemind could not answer', zh: 'Homemind 暂时无法回答' },
+  edit: { en: 'Edit', zh: '编辑' },
+  addItem: { en: 'Add to the board', zh: '添加到家庭看板' },
+  editItem: { en: 'Edit item', zh: '编辑事项' },
+  addPrep: { en: 'Add preparation', zh: '添加准备事项' },
+  fType: { en: 'What is it?', zh: '类型' },
+  tEvent: { en: 'Event', zh: '活动' },
+  tEventHint: { en: 'Something that happens at a time', zh: '在某个时间发生的事' },
+  tTask: { en: 'Task', zh: '任务' },
+  tTaskHint: { en: 'Something someone has to do', zh: '需要有人去做的事' },
+  fTitle: { en: 'Title', zh: '标题' },
+  fDate: { en: 'Date', zh: '日期' },
+  fTime: { en: 'Start time (empty for all day)', zh: '开始时间（留空表示全天）' },
+  fEnd: { en: 'End time', zh: '结束时间' },
+  fNotes: { en: 'Notes', zh: '备注' },
+  fFor: { en: 'Who is it for?', zh: '和谁有关？' },
+  fAway: { en: 'Who is away during this?', zh: '这段时间谁没空？' },
+  fOwner: { en: 'Who takes it?', zh: '谁来负责？' },
+  fImportant: { en: 'Important (for example a child pickup)', zh: '重要（例如接孩子）' },
+  fParents: { en: 'Parents only', zh: '仅限家长' },
+  forName: { en: 'For', zh: '关于' },
+  awayName: { en: 'is away', zh: '没空' },
+  save: { en: 'Save', zh: '保存' },
+  back: { en: 'Back', zh: '返回' },
+  remove: { en: 'Remove', zh: '删除' },
+  preparations: { en: 'Preparations', zh: '准备事项' },
+  noPreps: { en: 'No preparations yet.', zh: '还没有准备事项。' },
+  thisItem: { en: 'This item', zh: '当前事项' },
+  under: { en: 'For the event', zh: '所属活动' },
+  notFound: { en: 'This item is not on your board any more.', zh: '这个事项已不在你的看板上。' }
 } as const;
 
 type Key = keyof typeof T;
@@ -292,6 +333,13 @@ function itemActions(item: Item, view: HomemindViewData, lang: HomemindLang): A2
   return actions;
 }
 
+/** "Edit" on a row or calendar entry: opens the item in Add and edit. Only for items still on the board. */
+function openAction(item: Item, view: HomemindViewData, lang: HomemindLang): A2uiAction | undefined {
+  const me = memberOf(view.family, view.memberId);
+  if (!me?.hasAccount || !live(item)) return undefined;
+  return { id: `homemind.edit:${item.id}`, label: hx(lang, 'edit'), variant: 'ghost', kind: 'homemind', args: { verb: 'edit', itemId: item.id } };
+}
+
 function taskRow(item: Item, view: HomemindViewData, lang: HomemindLang, today: string): TaskRow {
   const zone = view.family.timezone;
   const meta = [
@@ -312,9 +360,12 @@ function taskRow(item: Item, view: HomemindViewData, lang: HomemindLang, today: 
     state: stateOf(item),
     tone: toneOf(item),
     ...(item.source.simulated ? { simulated: true } : {}),
-    actions: itemActions(item, view, lang)
+    actions: itemActions(item, view, lang),
+    ...withOpen(openAction(item, view, lang))
   };
 }
+
+const withOpen = (open: A2uiAction | undefined) => (open ? { open } : {});
 
 const byStart = (a: Item, b: Item) => (a.start ?? '9').localeCompare(b.start ?? '9') || a.id.localeCompare(b.id);
 const live = (item: Item) => item.status === 'open' || item.status === 'proposed';
@@ -467,7 +518,8 @@ function calendarEntries(view: HomemindViewData, lang: HomemindLang, today: stri
       type: item.type,
       tone: toneOf(item),
       ...(item.source.simulated ? { simulated: true } : {}),
-      ...(item.unavailableMemberIds.length ? { unavailable: item.unavailableMemberIds.map(id => nameOf(memberOf(view.family, id), lang)) } : {})
+      ...(item.unavailableMemberIds.length ? { unavailable: item.unavailableMemberIds.map(id => nameOf(memberOf(view.family, id), lang)) } : {}),
+      ...withOpen(openAction(item, view, lang))
     };
     const duration = end && end.date > start.date ? end.date : undefined;
     const dates: string[] = [];
@@ -629,6 +681,111 @@ function settingsScreen(input: HomemindScreenData): HomemindTurn {
   return turn('settings', hx(lang, 'settings'), undefined, children, { rows });
 }
 
+/**
+ * Add and edit (T3.2). Form components carry their starting value in `default`; the host keeps what
+ * the member typed in its `form` map and, on Save, sends only the fields that changed
+ * (src/lib/homemindForm.ts). The Save action's args say what to save; times are local to the family's
+ * zone, and the host converts them with the zone in those args.
+ */
+function editScreen(input: HomemindScreenData): HomemindTurn {
+  const { lang, view } = input;
+  const zone = view.family.timezone;
+  const today = dateParts(input.now, zone)?.date ?? '';
+  const me = memberOf(view.family, view.memberId);
+  const target = input.edit ?? {};
+  const item = target.itemId ? view.items.find(i => i.id === target.itemId && live(i)) : undefined;
+  const parentId = item ? item.parentEventId : target.parentId;
+  const parent = parentId ? view.items.find(i => i.id === parentId && i.type === 'event' && live(i)) : undefined;
+
+  const title = item ? hx(lang, 'editItem') : parent ? hx(lang, 'addPrep') : hx(lang, 'addItem');
+  const backBar = (): A2uiComponent => ({ id: 'actions', component: 'ActionBar', actions: [{ id: 'homemind.back', label: hx(lang, 'back'), variant: 'ghost', kind: 'homemind', args: { verb: 'back' } }] });
+  // A missing item (removed, or never visible to this member) and a missing parent look the same.
+  if ((target.itemId && !item) || (target.parentId && !item && !parent) || !me?.hasAccount) {
+    return turn('edit', title, undefined, [{ id: 'gone', component: 'ErrorNotice', title, body: hx(lang, 'notFound') }, backBar()], {});
+  }
+
+  const type: Item['type'] | undefined = item ? item.type : parent ? 'preparation' : undefined;
+  const start = item?.start ? dateParts(item.start, zone) : null;
+  const end = item?.end ? dateParts(item.end, zone) : null;
+  const parentStart = parent?.start ? dateParts(parent.start, zone) : null;
+  const isParent = me.role === 'parent';
+
+  const children: A2uiComponent[] = [];
+  const data: Record<string, unknown> = {};
+  if (item) {
+    // The item itself, with its usual buttons (claim, assign, I'm on it...), so ownership is changed here too.
+    const row: TaskRow = taskRow(item, view, lang, today);
+    delete row.open;
+    children.push(taskList('this', hx(lang, 'thisItem'), '/this'));
+    data.this = [row];
+  }
+  if (parent) children.push(text('parent', `${hx(lang, 'under')}: **${titleOf(parent, lang)}**`));
+  if (!type) {
+    children.push({
+      id: 'f-type',
+      component: 'ChoiceGroup',
+      name: 'type',
+      title: hx(lang, 'fType'),
+      default: 'event',
+      options: [
+        { value: 'event', label: hx(lang, 'tEvent'), description: hx(lang, 'tEventHint') },
+        { value: 'task', label: hx(lang, 'tTask'), description: hx(lang, 'tTaskHint') }
+      ]
+    });
+  }
+  const field = (name: string, label: string, value: string, extra: Record<string, unknown> = {}): A2uiComponent => ({ id: `f-${name}`, component: 'TextField', name, label, default: value, ...extra });
+  const newDate = type === 'preparation' ? parentStart?.date ?? '' : today;
+  children.push(field('title', hx(lang, 'fTitle'), item ? titleOf(item, lang) : '', { maxLength: 200 }));
+  children.push(field('date', hx(lang, 'fDate'), item ? start?.date ?? '' : newDate, { inputType: 'date' }));
+  children.push(field('time', hx(lang, 'fTime'), start && !item?.allDay ? start.time : '', { inputType: 'time' }));
+  children.push(field('endTime', hx(lang, 'fEnd'), end && !item?.allDay ? end.time : '', { inputType: 'time' }));
+  children.push(field('notes', hx(lang, 'fNotes'), item?.notes ?? '', { maxLength: 2000 }));
+
+  const toggles = (prefix: string, heading: string, ids: string[], label: (m: Member) => string, members: Member[]) => {
+    children.push(text(`${prefix}-title`, `**${heading}**`));
+    for (const m of members) children.push({ id: `f-${prefix}-${m.id}`, component: 'Toggle', name: `${prefix}.${m.id}`, label: label(m), default: ids.includes(m.id) });
+  };
+  const everyone = view.family.members;
+  toggles('for', hx(lang, 'fFor'), item?.forMemberIds ?? [], m => (lang === 'zh' ? `${hx(lang, 'forName')}${nameOf(m, lang)}` : `${hx(lang, 'forName')} ${nameOf(m, lang)}`), everyone);
+  if (type === 'event' || !type) {
+    // Shown for a new item too; the host sends it only when the type is "event".
+    toggles('away', hx(lang, 'fAway'), item?.unavailableMemberIds ?? [], m => (lang === 'zh' ? `${nameOf(m, lang)}${hx(lang, 'awayName')}` : `${nameOf(m, lang)} ${hx(lang, 'awayName')}`), everyone.filter(m => m.role !== 'child'));
+  }
+  if (!item) {
+    const owners = everyone.filter(m => m.hasAccount);
+    children.push({
+      id: 'f-owner',
+      component: 'ChoiceGroup',
+      name: 'owner',
+      title: hx(lang, 'fOwner'),
+      default: 'none',
+      options: [{ value: 'none', label: hx(lang, 'noOwner') }, ...owners.map(m => ({ value: m.id, label: m.id === me.id ? `${nameOf(m, lang)} (${hx(lang, 'you')})` : nameOf(m, lang) }))]
+    });
+  }
+  children.push({ id: 'f-important', component: 'Toggle', name: 'important', label: hx(lang, 'fImportant'), default: item?.importance === 'critical' });
+  // Only a parent can change who sees an item; a preparation follows its event, so it has no toggle.
+  if (isParent && type !== 'preparation') children.push({ id: 'f-parents', component: 'Toggle', name: 'parentsOnly', label: hx(lang, 'fParents'), default: item?.visibility === 'parents' });
+
+  const saveArgs: Record<string, unknown> = item
+    ? { verb: 'save', mode: 'edit', itemId: item.id, version: item.version, type: item.type, zone }
+    : { verb: 'save', mode: 'create', zone, ...(type ? { type } : {}), ...(parent ? { parentEventId: parent.id } : {}) };
+  const actions: A2uiAction[] = [
+    { id: 'homemind.save', label: hx(lang, 'save'), variant: 'primary', kind: 'homemind', args: saveArgs },
+    { id: 'homemind.back', label: hx(lang, 'back'), variant: 'ghost', kind: 'homemind', args: { verb: 'back' } }
+  ];
+  if (item) actions.push(act('cancel', item, hx(lang, 'remove'), 'secondary'));
+  children.push({ id: 'actions', component: 'ActionBar', actions });
+
+  if (item?.type === 'event') {
+    const preps = view.items.filter(i => i.parentEventId === item.id && live(i)).sort(byStart);
+    // Each preparation: tap its title to edit it, or remove it here.
+    const rows = preps.map(p => ({ ...taskRow(p, view, lang, today), actions: [act('cancel', p, hx(lang, 'remove'), 'ghost')] }));
+    section(children, data, 'preps', hx(lang, 'preparations'), rows, hx(lang, 'noPreps'));
+    children.push({ id: 'prep-actions', component: 'ActionBar', actions: [{ id: `homemind.add:${item.id}`, label: hx(lang, 'addPrep'), variant: 'secondary', kind: 'homemind', args: { verb: 'add', parentEventId: item.id } }] });
+  }
+  return turn('edit', title, parent && !item ? titleOf(parent, lang) : undefined, children, data);
+}
+
 // --- public API -------------------------------------------------------------------------------------
 
 const SCREEN_BUILDERS: Record<HomemindScreenName, (input: HomemindScreenData) => HomemindTurn> = {
@@ -639,7 +796,8 @@ const SCREEN_BUILDERS: Record<HomemindScreenName, (input: HomemindScreenData) =>
   rules: rulesScreen,
   memory: memoryScreen,
   activity: activityScreen,
-  settings: settingsScreen
+  settings: settingsScreen,
+  edit: editScreen
 };
 
 /** One screen as a turn. */

@@ -9,6 +9,7 @@ import {
   PERSONAS,
   type CapabilityOption,
   type ModelOption,
+  type PersonaDefinition,
   type PersonaId,
   type ProjectOption
 } from '../data/personas';
@@ -26,7 +27,8 @@ export function PersonaSheet({
   onNotes,
   onSoul,
   onSkills,
-  onClose
+  onClose,
+  extra = []
 }: {
   active: PersonaId;
   notes: string;
@@ -37,6 +39,8 @@ export function PersonaSheet({
   onSoul: (soul: string) => void;
   onSkills: (skills: string[]) => void;
   onClose: () => void;
+  /** Companions offered only when their service is on (the Family companion with Homemind). */
+  extra?: PersonaDefinition[];
 }) {
   const { lang, tr } = useI18n();
   const [skillText, setSkillText] = useState(skills.join(', '));
@@ -53,7 +57,7 @@ export function PersonaSheet({
       wide
     >
       <div className="persona-list">
-        {PERSONAS.map(persona => {
+        {[...PERSONAS, ...extra].map(persona => {
           const isActive = persona.id === active;
           return (
             <button

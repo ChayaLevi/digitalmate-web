@@ -117,7 +117,9 @@ export function Sheet({
   );
 }
 
-export function BottomNav({ tab, onTab }: { tab: 'chat' | 'discover'; onTab: (tab: 'chat' | 'discover') => void }) {
+type NavTab = 'chat' | 'discover' | 'family';
+
+export function BottomNav({ tab, onTab, showFamily = false }: { tab: NavTab; onTab: (tab: NavTab) => void; showFamily?: boolean }) {
   const { tr } = useI18n();
   return (
     <nav className={`bottom-nav ${tab === 'discover' ? 'is-glass' : ''}`} aria-label={tr('Main navigation', '主导航')}>
@@ -139,6 +141,18 @@ export function BottomNav({ tab, onTab }: { tab: 'chat' | 'discover'; onTab: (ta
         <Icon name="compass" size={22} />
         <span>{tr('Discover', '发现')}</span>
       </button>
+      {/* Homemind: only when the bridge has it enabled. */}
+      {showFamily ? (
+        <button
+          type="button"
+          className={`nav-item ${tab === 'family' ? 'is-active' : ''}`}
+          onClick={() => onTab('family')}
+          aria-current={tab === 'family' ? 'page' : undefined}
+        >
+          <Icon name="calendar" size={22} />
+          <span>{tr('Family', '家庭')}</span>
+        </button>
+      ) : null}
     </nav>
   );
 }

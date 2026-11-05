@@ -20,6 +20,9 @@ import { MockChatTransport } from './transport/mock';
 import { OrbitChatTransport, orbitHealth } from './transport/orbit';
 import { Fridge2TableTransport, fridgeHealth, runFridgeAction, surfaceOfTurn } from './transport/fridge';
 import { isKitchenIntent } from './lib/fridgeSurfaces';
+import { homemindHealth } from './transport/homemind';
+import type { HomemindHealth } from './transport/homemind';
+import { FamilyView } from './components/FamilyView';
 import { LocalDiscoveryTransport, rotateCards } from './transport/discovery';
 import type { ChatTransport } from './transport/types';
 import { seedFor } from './data/seed';
@@ -38,7 +41,7 @@ import { artifactFromText, findDuplicateArtifact } from './lib/artifacts';
 import { nativeNotification, nativeShare, isNativeApp, configureNativeShell, consumeSharedText, onNativeNotificationTap, consumeLaunchTab } from './lib/native';
 import { installDiagnostics } from './lib/diagnostics';
 import { dedupeCards } from './lib/discoveryExperience';
-import { DEFAULT_PERSONA, PERSONAS, DEFAULT_PROJECTS, personaById, personaName, personaSuggestions } from './data/personas';
+import { DEFAULT_PERSONA, PERSONAS, DEFAULT_PROJECTS, FAMILY_PERSONA, personaById, personaName, personaSuggestions } from './data/personas';
 import type { CapabilityOption, ModelOption, PersonaId, ProjectOption } from './data/personas';
 import { CapabilitiesSheet, ModelSheet, PersonaSheet, ProjectSheet, modelLabel } from './components/ComposerSheets';
 import { LabsSheet } from './components/LabsSheet';
@@ -51,7 +54,7 @@ import { BrandMark, IconButton, StatusBar, TopBar } from './components/Chrome';
 import { Icon } from './components/Icons';
 import { BottomNav, DetailView, HistorySheet, MemorySheet, MoreSheet, SettingsSheet, SkillsSheet, ArtifactsSheet, TaskShellSheet, Toast } from './components/Overlays';
 
-type Tab = 'chat' | 'discover';
+type Tab = 'chat' | 'discover' | 'family';
 type SheetName = 'history' | 'more' | 'skills' | 'settings' | 'memory' | 'artifacts' | 'tasks' | 'persona' | 'model' | 'project' | 'capabilities' | 'labs' | null;
 
 const defaultSettings: Settings = {
@@ -114,6 +117,9 @@ export default function App() {
   const [feedSeed, setFeedSeed] = useState(0);
   const [demoRunning, setDemoRunning] = useState(false);
   const demoRun = useRef(0);
+  // Homemind (Family tab): null until the bridge says it is enabled, so without the flag nothing changes.
+  const [homemind, setHomemind] = useState<HomemindHealth | null>(null);
+  const [homemindAction, setHomemindAction] = useState<A2uiAction | null>(null);
 
   const [settings, setSettings] = usePersistentState<Settings>(STORAGE_KEYS.settings, defaultSettings);
   const [lang, setLang] = usePersistentState<Language>(STORAGE_KEYS.language, 'en');
@@ -343,6 +349,20 @@ export default function App() {
     });
   };
 
+  useEffect(() => {
+    let live = true;
+    void homemindHealth().then(health => {
+      if (!live) return;
+      setHomemind(health);
+      // The Family companion exists only with Homemind on.
+      if (!health) setActivePersona(current => (current === 'family' ? DEFAULT_PERSONA : current));
+    });
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Fridge2Table keeps one chat session per DigitalMate chat (its own memory of the conversation).
   const fridgeSession = useRef(newId('dm'));
 
@@ -431,6 +451,9 @@ export default function App() {
     activeController.current = controller;
 
     let transport: ChatTransport = new MockChatTransport(calendarEvents);
+    if (activePersona === 'family') {
+      showToast(tr('Homemind chat is not built yet; this turn uses the local mock. Use the Family tab.', 'Homemind 对话尚未完成，本轮使用本地模拟。请使用家庭标签页。'));
+    }
     const wantsKitchen = activePersona === 'kitchen' || isKitchenIntent(prompt);
     let kitchenRouted = false;
     if (wantsKitchen) {
@@ -903,6 +926,11 @@ export default function App() {
   };
 
   const onAction = (action: A2uiAction) => {
+    if (action.kind === 'homemind' && homemind) {
+      setHomemindAction(action);
+      setTab('family');
+      return;
+    }
     if (action.kind === 'fridge') {
       void showFridgeAction(action);
       return;
@@ -1155,6 +1183,18 @@ export default function App() {
               }
             />
           )
+        ) : tab === 'family' ? (
+          <TopBar
+            left={
+              <div className="brand">
+                <BrandMark />
+                <div>
+                  <strong>Homemind</strong>
+                  <span>{tr('Family board', '家庭看板')}</span>
+                </div>
+              </div>
+            }
+          />
         ) : (
           <TopBar
             left={
@@ -1182,7 +1222,7 @@ export default function App() {
           />
         )}
 
-        <main id="main-content" tabIndex={-1} ref={contentRef} className={`screen-content ${tab === 'chat' && home ? 'is-home' : ''} ${tab === 'discover' ? 'is-discovery' : ''}`}>
+        <main id="main-content" tabIndex={-1} ref={contentRef} className={`screen-content ${tab === 'chat' && home ? 'is-home' : ''} ${tab === 'discover' ? 'is-discovery' : ''} ${tab === 'family' ? 'is-family' : ''}`}>
           {tab === 'chat' ? (
             home ? (
               <HomeView
@@ -1216,6 +1256,8 @@ export default function App() {
                 onSaveArtifact={saveArtifact}
               />
             )
+          ) : tab === 'family' && homemind ? (
+            <FamilyView health={homemind} incoming={homemindAction} onIncomingHandled={() => setHomemindAction(null)} />
           ) : (
             <DiscoveryView
               cards={allCards}
@@ -1347,7 +1389,8 @@ export default function App() {
         ) : null}
 
         <BottomNav
-          tab={tab}
+          tab={tab === 'family' && !homemind ? 'chat' : tab}
+          showFamily={homemind !== null}
           onTab={next => {
             setTab(next);
             if (next === 'chat') setHome(true);
@@ -1439,6 +1482,7 @@ export default function App() {
         {sheet === 'persona' ? (
           <PersonaSheet
             active={activePersona}
+            extra={homemind ? [FAMILY_PERSONA] : []}
             notes={personaNotes[activePersona] ?? ''}
             soul={
               personaProfiles[activePersona]?.soul ??

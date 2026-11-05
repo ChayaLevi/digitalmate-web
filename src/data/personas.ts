@@ -8,7 +8,8 @@ export type PersonaId =
   | 'work'
   | 'entertainment'
   | 'game'
-  | 'shopping';
+  | 'shopping'
+  | 'family';
 
 export interface PersonaDefinition {
   id: PersonaId;
@@ -161,9 +162,31 @@ export const PERSONAS: PersonaDefinition[] = [
   }
 ];
 
+/**
+ * The Family companion (Homemind). Not in `PERSONAS`: the app offers it only when the bridge says
+ * Homemind is enabled (`HOMEMIND_ENABLED=1`), so without the flag the companion list is unchanged.
+ */
+export const FAMILY_PERSONA: PersonaDefinition = {
+  id: 'family',
+  avatar: '⌂',
+  accent: '#7d6b9e',
+  name: { en: 'Family companion', zh: '家庭搭子' },
+  tagline: { en: 'One family board: who does what, and when · Homemind', zh: '一个家庭看板：谁做什么、什么时候 · Homemind' },
+  soul: {
+    en: 'I keep the family board: who owns each thing, who has not confirmed, and who is away. I never buy, order or send anything without a parent tapping for it.',
+    zh: '我负责家庭看板：每件事由谁负责、谁还没确认、谁没空。未经家长逐项点按，我不会购买、下单或发送任何东西。'
+  },
+  skills: { en: ['Family board', 'Ownership', 'Availability'], zh: ['家庭看板', '分工', '谁有空'] },
+  suggestions: [
+    { en: "What's on for the family today?", zh: '今天家里有什么安排？' },
+    { en: 'Who is picking up Noa?', zh: '谁去接诺娅？' }
+  ]
+};
+
 export const DEFAULT_PERSONA: PersonaId = 'default';
 
 export function personaById(id: PersonaId): PersonaDefinition {
+  if (id === 'family') return FAMILY_PERSONA;
   return PERSONAS.find(persona => persona.id === id) ?? PERSONAS[0];
 }
 

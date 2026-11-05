@@ -22,6 +22,7 @@ import { createDemoClock } from './homemind/clock';
 import type { DemoClock } from './homemind/clock';
 import { applyChange } from './homemind/core';
 import type { CoreEvent } from './homemind/core';
+import { alertsForChange } from './homemind/alerts';
 import { createEventHub } from './homemind/events';
 import type { EventHub } from './homemind/events';
 import type { Change, ChangeError, ItemPatch, NewItem } from './homemind/core';
@@ -189,10 +190,12 @@ export function setHomemindHeartbeatMs(ms: number | undefined): void {
 }
 
 /** Saves, then tells the open streams. A change is visible to others only once it is the state. */
-async function commit(rt: Runtime, state: HomemindState, events: readonly CoreEvent[] = []): Promise<void> {
+async function commit(rt: Runtime, state: HomemindState, events: readonly CoreEvent[] = [], actorId?: string): Promise<void> {
+  const before = rt.state;
   rt.state = state;
   await rt.store.save(state);
   rt.hub.publishChanges(state, events);
+  if (actorId) rt.hub.publishAlerts(state, alertsForChange(before, state, events, actorId, new Date(rt.clock.now()).toISOString()));
 }
 
 // --- requests -----------------------------------------------------------------------------------------
@@ -254,7 +257,7 @@ async function checkAvailability(ctx: Ctx, eventId: string): Promise<{ conflicts
   }
   const proposal = proposeForConflicts(rt.state, found, member.id, rt.clock);
   if (!proposal.ok) return { conflicts: conflictsVisibleTo(rt.state, member.id, found), opened: [] };
-  await commit(rt, proposal.state, proposal.events);
+  await commit(rt, proposal.state, proposal.events, member.id);
   return { conflicts: [], opened: proposal.openedItemIds };
 }
 
@@ -262,7 +265,7 @@ async function runChange(ctx: Ctx, change: Change, afterEventId?: (changedIds: s
   const { rt, member, response } = ctx;
   const result = applyChange(rt.state, change, member.id, rt.clock);
   if (!result.ok) return changeFailed(ctx, result);
-  await commit(rt, result.state, result.events);
+  await commit(rt, result.state, result.events, member.id);
   const changedIds = result.items.map(i => i.id);
   const eventId = afterEventId?.(changedIds);
   const availability = eventId ? await checkAvailability(ctx, eventId) : { conflicts: [], opened: [] };

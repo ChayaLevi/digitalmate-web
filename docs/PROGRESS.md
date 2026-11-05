@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T3.2 done (Family tab: demo sign-in, sub-navigation, all screens, Add and edit)
-- **Next task:** T3.3 (Live sync and alerts), the last task of P3, so the phase-end checks follow it
-- **Scenes working end to end:** none yet. In the browser, Mom can assign the pickup to Dad and he sees it after switching screen or reloading (live sync is T3.3); a Wedding with "Mom is away" opens her Tuesday pickup
+- **Current task:** T3.3 done (live sync and alerts). P3 is done
+- **Next task:** T4.1 (Reminders)
+- **Scenes working end to end:** none yet. Scene 1's first half works live: Mom assigns the pickup, and Dad's window shows it and "Mom assigned you" without a reload. His "I'm on it" reaches Mom. The reminder, clock jump and escalation are T4.1/T4.2
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-05, after T3.2
+- **Last updated:** 2026-11-05, after T3.3
 
 ## Task status
 
@@ -28,7 +28,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T2.3 | Live events | done | `server/homemind/events.ts`, `src/transport/homemindEvents.ts`, `GET /events`, 18 tests in `tests/homemindEvents.test.ts`. 400 of 400 in all. P2 phase checks pass |
 | T3.1 | New components | done | `src/components/a2ui/homemindComponents.tsx`, 38 unit tests, 4 e2e at 390 px in EN and ZH with axe. 438 of 438 unit tests in all |
 | T3.2 | Family tab | done | `src/components/FamilyView.tsx`, `src/transport/homemind.ts`, `src/lib/homemindForm.ts`, `edit` and `item` screens. 469 of 469 unit tests, 51 of 51 e2e (after the human's review fixes) |
-| T3.3 | Live sync and alerts | not started |  |
+| T3.3 | Live sync and alerts | done | `server/homemind/alerts.ts`, `src/components/AlertBanner.tsx`, `src/lib/homemindAlerts.ts`, stream wired into `FamilyView`. 482 unit tests, 53 of 53 e2e (2 new with two or three browser contexts, axe). P3 phase checks pass |
 | T4.1 | Reminders | not started |  |
 | T4.2 | Settings and Scene 1 | not started |  |
 | T5.1 | LLM client and intents | not started |  |
@@ -52,6 +52,11 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
+- T3.3: the stream gains `alert` (`HomemindAlert` in `types.ts`). Kinds for now: `assigned` (someone else assigned you an unconfirmed item) and `open` (an item just became "Who's taking this?": to its candidates). Never to the member who made the change, never for a proposed or removed item. `alertsForChange(before, after, events, actor, at)` in `server/homemind/alerts.ts` (pure) makes them; `commit(rt, state, events, actorId)` publishes them after the item changes; `hub.publishAlerts` delivers to the recipient's streams only and checks visibility again. A sensitive item's alert has no title ("You have a reminder"). Tier is `timed`. **T4.1 adds reminder and escalation kinds, quiet hours and batching on top**; these live alerts ignore quiet hours today (they only show in an open Family tab, nothing is pushed).
+- T3.3: the alert id is `<itemId>.<version>.<kind>`. The client keeps at most 3, one per item and kind, newest first. An alert closes by itself when an `item.changed` shows it was answered anywhere (confirmed, taken by someone else, removed, hidden), so one member's answer closes it in all their windows. Otherwise it follows the item's version, so its own button does not get a 409. Buttons: "I'm on it" (`ack`) or "I'll take it" (`claim`), Open (item screen), Dismiss (this window only). The labels match the board's (`我来处理`, `我来`).
+- T3.3: `FamilyView` opens one stream per signed-in window (`connectHomemindEvents`, token in the header). `hello` and `item.changed` re-read the current screen after 150 ms (several changes, one read), **except on the edit form**: typing is never interrupted, and a stale Save gets the usual 409 "This changed. Here is the latest." `demo.reset` clears alerts and goes to My day. A `signed-out` stream signs the window out. A chip next to "Demo sign-in" shows Live / Connecting... / Reconnecting... (`data-stream`).
+- T3.3: the stream and the banner live in `FamilyView`, so they work only while the Family tab is open (the demo setup). Lifting them to `App.tsx` is possible later if an alert must show on the chat tab.
+- T3.3: **the phase-end flag-off run needs `HOMEMIND_ENABLED=` (empty) in the shell**, because `.env.local` now has `HOMEMIND_ENABLED=1` and `vite.config.ts` copies `.env.local` values only into variables that are not set. A plain `npm run test:e2e` runs the 5175 "base" server with Homemind **on**.
 - T3.2: the Family tab shows only when `GET /api/homemind/health` answers JSON `{enabled: true}` (`homemindHealth()`). Without the flag the bridge does not answer, Vite or the static server returns the app page, and the tab, the Family companion and the Homemind top bar stay absent. If the stored companion is `family` and Homemind is off, it falls back to the default.
 - T3.2: Add and edit is a bridge screen like the others: `GET /screen/edit` (new item), `?parent=<eventId>` (new preparation), `?id=<itemId>` (edit). A bad id is `400`; a missing or not-visible item is an `ErrorNotice` "not on your board" with only a Back button. The form fields carry their starting value in `default`; `src/lib/homemindForm.ts` (`formValues`, `buildSave`, `localToIso`) turns form + defaults into `POST /items` or a `PATCH` with **only the changed fields**, so saving in Chinese does not overwrite a seeded English title with its `titleZh`.
 - T3.2: form rules: no start time means all day, from local midnight to the next local midnight (the core needs an end for "away"). An end time needs a start time and must be later the same day. "Away" with a start time needs an end time. Times are local to the family's zone, which travels in the Save action's args. Only events have "Who is away" (parents and teens; a child is never away). Only a parent sees "Parents only", and not on a preparation (it follows its event). The owner choice is on create only; on edit, the item's own row (with its usual Claim/Assign/I'm on it buttons) is at the top of the form.
@@ -202,6 +207,29 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T3.3 Live sync and alerts: done (2026-11-05). End of P3
+**Built:**
+- `server/homemind/alerts.ts`: `alertsForChange` (pure): `assigned` to the new owner, `open` to the candidates, not to the actor, only for live items the recipient may see, no title for a sensitive item.
+- `server/homemind/types.ts`: `HomemindAlert`, `AlertKind`, `alert` in `StreamMessage`. `server/homemind/events.ts`: `publishAlerts` (recipient only, visibility checked again). `server/homemind.ts`: `commit` takes the actor and publishes alerts after the item changes (item changes and availability proposals).
+- `src/transport/homemindEvents.ts`: `toAlert` checks every field of an `alert` frame and drops a sensitive alert's title.
+- `src/lib/homemindAlerts.ts`: text in EN and ZH (neutral), buttons, `stillRelevant`, `addAlert`, `applyItemChange`. `src/components/AlertBanner.tsx`: the banner (polite live region, buttons named `<label>: <title>`).
+- `src/components/FamilyView.tsx`: the stream, refreshes, alerts and their buttons, the Live chip. `src/styles.css`: `hm-alert*`, `hm-live`.
+- Tests: `tests/homemindAlerts.test.ts` (11), 2 HTTP tests in `tests/homemindEvents.test.ts` (Scene 1 alert only to Dad; Scene 4 "Who's taking this?" to Dad), 2 e2e tests in `e2e/homemind.spec.ts` (Mom and Dad in two contexts, Dad in Chinese, axe on both; three contexts, where Dad answers in one window and the alert closes in the other).
+**Decisions:** see "Decisions made during the build" (the T3.3 entries).
+**Deviations:** the plan names only `AlertBanner` "on `alert`", and alerts come from reminders in T4.1. T3.3 also makes alerts for assignment and for "Who's taking this?", so the banner has something real to show and Scene 1 shows the assignment arriving. Without those, the banner would only be testable with fake data.
+**Test results:**
+- `npm test`: 33 files, **482 passed** (469 before, plus 13).
+- `npx tsc --noEmit`: clean. `npm run build`: OK (15 s).
+- `npm run test:e2e`: **53 of 53** (51 before, plus 2), first full run (6.1 min).
+- **Phase-end checks (P3), flag off** (`HOMEMIND_ENABLED=` empty in the shell, which `.env.local` does not override): `npm test` **482 of 482**, `npm run test:e2e` **53 of 53** (5.8 min). During that run, `GET /api/homemind/health` on the base server (5175) returned the app page (`text/html`), not JSON, so the Family tab and `/api/homemind/*` are absent. The Homemind server (5176) answered `{"enabled":true,...}`. The base tests passed unchanged.
+- Screenshot of Dad's window at 390 px in Chinese with the alert (`test-results/.../live-alert-zh.png`) checked by eye: no overflow, text fits.
+**Not done or not verified:** not tried on a real phone or on two physical devices (two browser contexts on one machine only). Alerts show only while the Family tab is open. Quiet hours, batching, "any recipient closes it for all recipients" for multi-recipient reminders, and escalation are T4.1. The `open` alert for a Parents-only item going only to parents is tested at the core level, not in e2e.
+**Next task should know:** T4.1 can add reminder kinds to `AlertKind` and send them with `hub.publishAlerts`. `toAlert` accepts only `assigned` and `open` today, so add the new kinds there and in `alertText` / `alertButtons`. `applyItemChange` already drops an alert when the item no longer asks anything of the member. A reminder that closes without an item change needs its own message (for example `alert.closed`).
+**How to verify:**
+- Commands: `npm test` ; `npx tsc --noEmit` ; `npx playwright test e2e/homemind.spec.ts -g "live sync"`
+- Expected output: 482 passed; no tsc output; 2 passed.
+- Manual check: with `HOMEMIND_ENABLED=1`, `HOMEMIND_DEMO=1` and a `HOMEMIND_SECRET` in `.env.local`, run `npm run dev`. Open `http://127.0.0.1:5173/?member=mom` in one browser profile and `http://127.0.0.1:5173/?member=dad` in another (or a private window), each on the **Family** tab. Both show a **Live** chip. In Mom's window, on **Family**, tap **Assign to Dad** on "Kindergarten pickup". Within a second, Dad's window shows "Mom assigned you: Kindergarten pickup" at the top, and the row says Assigned, with no reload. Tap **I'm on it** there: the alert goes away, and the pickup leaves Mom's waiting list on her Family screen.
 
 ### T3.2 Family tab: done (2026-11-05)
 **Built:**

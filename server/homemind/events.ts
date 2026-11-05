@@ -4,9 +4,10 @@
  *
  * Pure of HTTP: a subscriber is a function. The bridge turns frames into SSE. No network, no timers.
  */
+import type { AlertDelivery } from './alerts';
 import type { CoreEvent } from './core';
 import type { HomemindState, StreamMessage } from './types';
-import { eventFor } from './visibility';
+import { canSeeItem, eventFor } from './visibility';
 
 export type Send = (message: StreamMessage) => void;
 
@@ -25,6 +26,8 @@ export interface EventHub {
   subscribe(memberId: string, send: Send, close: () => void): () => void;
   /** Sends each core event to each member who may see it, judged against `state` (the state after the change). */
   publishChanges(state: HomemindState, events: readonly CoreEvent[]): void;
+  /** Each alert to its recipient's streams only, and only while that member may still see the item in `state`. */
+  publishAlerts(state: HomemindState, deliveries: readonly AlertDelivery[]): void;
   /** Everyone, whatever they may see. Only for messages that carry no item. */
   broadcast(message: Extract<StreamMessage, { event: 'demo.reset' }>): void;
   count(memberId?: string): number;
@@ -69,6 +72,13 @@ export function createEventHub(): EventHub {
           const visible = eventFor(state, subscriber.memberId, event);
           if (visible?.type === 'item.changed') deliver(subscriber, { event: 'item.changed', data: { itemId: visible.itemId, item: visible.item } });
         }
+      }
+    },
+    publishAlerts(state, deliveries) {
+      for (const { recipientId, alert } of deliveries) {
+        const item = state.items.find(i => i.id === alert.itemId);
+        if (!item || !canSeeItem(state, recipientId, item)) continue;
+        for (const subscriber of subscribers.filter(s => s.memberId === recipientId)) deliver(subscriber, { event: 'alert', data: alert });
       }
     },
     broadcast(message) {

@@ -264,5 +264,33 @@ export type StreamMessage =
   | { event: 'hello'; data: { memberId: string; now: string } }
   /** `item` is `null` when the item left this member's view or no longer exists. Already redacted for this member. */
   | { event: 'item.changed'; data: { itemId: string; item: Item | null } }
+  /** Something this member should know now (T3.3: assigned to you, "Who's taking this?"). T4.1 adds reminders and escalation. */
+  | { event: 'alert'; data: HomemindAlert }
   /** The demo was reset: forget everything shown. */
   | { event: 'demo.reset'; data: Record<string, never> };
+
+export type AlertKind = 'assigned' | 'open';
+
+/**
+ * A live alert for one member, shown by the client's AlertBanner. It names no other member's
+ * failings (neutral wording is the client's job too). For a sensitive item the title is left out, so
+ * the banner says only "You have a reminder".
+ */
+export interface HomemindAlert {
+  /** Stable for one item version and kind, so a repeat can be ignored: `<itemId>.<version>.<kind>`. */
+  id: string;
+  kind: AlertKind;
+  itemId: string;
+  /** The item's version when the alert was made, for the banner's own buttons ("I'm on it", "I'll take it"). */
+  itemVersion: number;
+  tier: Tier;
+  at: string;
+  /** Who made the change: a member id. */
+  byId: string;
+  byName: string;
+  byNameZh?: string;
+  /** Absent when the item is sensitive. */
+  title?: string;
+  titleZh?: string;
+  sensitive: boolean;
+}

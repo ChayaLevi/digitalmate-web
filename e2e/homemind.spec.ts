@@ -204,3 +204,79 @@ for (const lang of ['en', 'zh'] as const) {
     await page.screenshot({ path: test.info().outputPath(`family-add-${lang}.png`), fullPage: true });
   });
 }
+
+// T3.3: live sync and alerts. Two browser contexts are two separate windows with their own sign-in.
+test('live sync: Mom assigns the pickup, Dad sees it and an alert without reloading, and his "I\'m on it" reaches Mom', async ({ browser }) => {
+  const momContext = await browser.newContext();
+  const dadContext = await browser.newContext();
+  try {
+    const mom = await momContext.newPage();
+    const dad = await dadContext.newPage();
+    await openFamily(mom, 'en', 'mom');
+    await openFamily(dad, 'zh', 'dad');
+    await expect(family(mom)).toHaveAttribute('data-member', 'mom');
+    await expect(family(dad)).toHaveAttribute('data-member', 'dad');
+    // Both streams are open before anything changes.
+    await expect(mom.locator('[data-stream="live"]')).toHaveText('Live');
+    await expect(dad.locator('[data-stream="live"]')).toHaveText('实时');
+    await expect(dad.locator('.hm-alert')).toHaveCount(0);
+    let dadLoads = 0;
+    dad.on('framenavigated', frame => {
+      if (frame === dad.mainFrame()) dadLoads++;
+    });
+
+    // Mom watches from the Family screen: once the pickup is Dad's, it leaves her own My day.
+    await family(mom).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'Family', exact: true }).click();
+    await expect(family(mom)).toHaveAttribute('data-screen', 'family');
+    const momRow = mom.locator('[data-task-id="pickup-today"]').first();
+    await expect(momRow).toHaveAttribute('data-state', 'open');
+    await mom.getByRole('button', { name: 'Assign to Dad: Kindergarten pickup' }).first().click();
+    await expect(momRow).toHaveAttribute('data-state', 'assigned');
+
+    // Dad's window: the row changes and the alert appears, with no reload.
+    const dadRow = dad.locator('[data-task-id="pickup-today"]').first();
+    await expect(dadRow).toHaveAttribute('data-state', 'assigned');
+    const alert = dad.locator('.hm-alert[data-item-id="pickup-today"]');
+    await expect(alert).toContainText('妈妈把「幼儿园接孩子」交给了你');
+    expect(dadLoads).toBe(0);
+    // Mom made the change, so she gets no alert about it.
+    await expect(mom.locator('.hm-alert')).toHaveCount(0);
+    await noOverflow(dad);
+    expect(await seriousIssues(dad)).toEqual([]);
+    await dad.screenshot({ path: test.info().outputPath('live-alert-zh.png') });
+
+    // Dad answers from the alert; Mom's window shows it confirmed, and the alert is gone.
+    await alert.getByRole('button', { name: '我来处理: 幼儿园接孩子' }).click();
+    await expect(alert).toHaveCount(0);
+    await expect(dadRow).toHaveAttribute('data-state', 'confirmed');
+    // Mom's Family screen lists it as waiting for an answer, then drops it once Dad confirmed.
+    await expect(momRow).toHaveCount(0);
+    expect(await seriousIssues(mom)).toEqual([]);
+  } finally {
+    await momContext.close();
+    await dadContext.close();
+  }
+});
+
+test('live sync: an alert closes by itself when the item is answered in another window', async ({ browser }) => {
+  const contexts = await Promise.all([browser.newContext(), browser.newContext(), browser.newContext()]);
+  try {
+    const [mom, dadPhone, dadLaptop] = await Promise.all(contexts.map(c => c.newPage()));
+    await openFamily(mom, 'en', 'mom');
+    await openFamily(dadPhone, 'en', 'dad');
+    await openFamily(dadLaptop, 'en', 'dad');
+    for (const page of [mom, dadPhone, dadLaptop]) await expect(page.locator('[data-stream="live"]')).toBeVisible();
+    await mom.getByRole('button', { name: 'Assign to Dad: Kindergarten pickup' }).first().click();
+    const phoneAlert = dadPhone.locator('.hm-alert[data-item-id="pickup-today"]');
+    const laptopAlert = dadLaptop.locator('.hm-alert[data-item-id="pickup-today"]');
+    await expect(phoneAlert).toContainText('Mom assigned you: Kindergarten pickup');
+    await expect(laptopAlert).toBeVisible();
+    // Dad answers on the board in one window (not on the alert): the other window's alert goes away.
+    await dadLaptop.locator('[data-task-id="pickup-today"]').first().getByRole('button', { name: "I'm on it: Kindergarten pickup" }).click();
+    await expect(phoneAlert).toHaveCount(0);
+    await expect(laptopAlert).toHaveCount(0);
+    await expect(dadPhone.locator('[data-task-id="pickup-today"]').first()).toHaveAttribute('data-state', 'confirmed');
+  } finally {
+    await Promise.all(contexts.map(c => c.close()));
+  }
+});

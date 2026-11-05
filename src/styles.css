@@ -7322,3 +7322,45 @@ a {
   font-size: 11px;
   font-weight: 600;
 }
+
+/* Homemind live alerts and stream status (T3.3) */
+.hm-alerts { display: flex; flex-direction: column; gap: 8px; }
+.hm-alerts:empty { display: none; }
+.hm-alert {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--accent-deep);
+  background: var(--surface, #fff);
+  color: var(--ink);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .08);
+  animation: hm-alert-in .25s ease-out;
+}
+.hm-alert p { margin: 0; font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
+.hm-alert-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.hm-alert-actions button {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line, rgba(128,128,128,.35));
+  background: var(--surface, #fff);
+  color: var(--accent-deep);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.hm-alert-actions button.is-primary { background: var(--accent-deep); border-color: var(--accent-deep); color: #fff; }
+.hm-alert-actions button:disabled { opacity: .6; cursor: default; }
+.hm-live {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+.hm-live.is-reconnecting, .hm-live.is-connecting { background: #f1f1f1; color: #444; }
+@keyframes hm-alert-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .hm-alert { animation: none; } }

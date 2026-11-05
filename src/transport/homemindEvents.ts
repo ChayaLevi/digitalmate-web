@@ -6,7 +6,7 @@
  * anything missed while the stream was down.
  */
 import { apiUrl } from '../lib/api';
-import type { StreamMessage } from '../../server/homemind/types';
+import type { HomemindAlert, StreamMessage } from '../../server/homemind/types';
 
 export const SESSION_HEADER = 'x-homemind-session';
 
@@ -49,11 +49,41 @@ export function toStreamMessage(frame: { event: string; data: string }): StreamM
       return typeof record.memberId === 'string' && typeof record.now === 'string' ? { event: 'hello', data: { memberId: record.memberId, now: record.now } } : null;
     case 'item.changed':
       return typeof record.itemId === 'string' && 'item' in record ? { event: 'item.changed', data: { itemId: record.itemId, item: record.item as never } } : null;
+    case 'alert': {
+      const alert = toAlert(record);
+      return alert ? { event: 'alert', data: alert } : null;
+    }
     case 'demo.reset':
       return { event: 'demo.reset', data: {} };
     default:
       return null;
   }
+}
+
+const str = (value: unknown, max = 300): value is string => typeof value === 'string' && value.length > 0 && value.length <= max;
+
+/** An `alert` frame's data with every field checked, else null. Unknown fields are dropped. */
+export function toAlert(record: Record<string, unknown>): HomemindAlert | null {
+  const { id, kind, itemId, itemVersion, tier, at, byId, byName, byNameZh, title, titleZh, sensitive } = record;
+  if (!str(id) || (kind !== 'assigned' && kind !== 'open') || !str(itemId, 64) || !str(byId, 64) || !str(byName) || !str(at, 40)) return null;
+  if (typeof itemVersion !== 'number' || !Number.isInteger(itemVersion) || itemVersion < 1) return null;
+  if (tier !== 'urgent' && tier !== 'timed' && tier !== 'summary') return null;
+  if (typeof sensitive !== 'boolean') return null;
+  for (const optional of [byNameZh, title, titleZh]) if (optional !== undefined && !str(optional)) return null;
+  return {
+    id,
+    kind,
+    itemId,
+    itemVersion,
+    tier,
+    at,
+    byId,
+    byName,
+    ...(byNameZh ? { byNameZh: byNameZh as string } : {}),
+    // A sensitive item never shows its title, even if one were sent.
+    ...(!sensitive && title ? { title: title as string, ...(titleZh ? { titleZh: titleZh as string } : {}) } : {}),
+    sensitive
+  };
 }
 
 export interface StreamOptions {

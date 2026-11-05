@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { A2uiSurfaceView } from './a2ui/A2uiSurfaceView';
+import { AlertBanner } from './AlertBanner';
 import { A2uiSurfaceStore } from '../protocol/a2ui/store';
 import { useI18n } from '../i18n/I18nContext';
 import { homemindErrorTurn } from '../lib/homemindSurfaces';
 import type { HomemindScreenName } from '../lib/homemindSurfaces';
 import { buildSave, formValues } from '../lib/homemindForm';
 import type { FormProblem } from '../lib/homemindForm';
+import { addAlert, applyItemChange } from '../lib/homemindAlerts';
+import type { AlertButton } from '../lib/homemindAlerts';
 import {
   HomemindError,
   fetchHomemindMembers,
@@ -18,6 +21,9 @@ import {
   writeHomemindSession
 } from '../transport/homemind';
 import type { HomemindHealth, HomemindMember, HomemindSession, MutationResult, ScreenParams } from '../transport/homemind';
+import { connectHomemindEvents } from '../transport/homemindEvents';
+import type { StreamStatus } from '../transport/homemindEvents';
+import type { HomemindAlert } from '../../server/homemind/types';
 import type { A2uiAction, A2uiSurface } from '../types';
 
 /**
@@ -48,6 +54,9 @@ const TABS: Array<{ screen: HomemindScreenName; en: string; zh: string }> = [
 ];
 
 const HOME: Nav = { screen: 'my-day', params: {} };
+
+/** Several changes in a row (a wedding opening two pickups) cause one screen read, not several. */
+const REFRESH_DELAY_MS = 150;
 
 /**
  * The surface with an error notice placed just above the bar that holds Save, so a form problem is
@@ -101,6 +110,9 @@ export function FamilyView({
   const [formError, setFormError] = useState<string | null>(null);
   const autoSignIn = useRef(health.demo ? demoMemberFromUrl() : null);
   const loadSeq = useRef(0);
+  /** Live alerts from the stream, newest first. */
+  const [alerts, setAlerts] = useState<HomemindAlert[]>([]);
+  const [stream, setStream] = useState<StreamStatus | null>(null);
 
   const errorSurface = useCallback((message: string) => A2uiSurfaceStore.fromJsonl(homemindErrorTurn(message, lang).jsonl).list()[0] ?? null, [lang]);
 
@@ -166,6 +178,66 @@ export function FamilyView({
   useEffect(() => {
     if (session) void load(nav, session.token);
   }, [session, nav, load]);
+
+  // The stream handler outlives renders, so it reads the current screen and loader through a ref.
+  const latest = useRef({ nav, load, signOut, tr });
+  latest.current = { nav, load, signOut, tr };
+
+  // Live updates (T3.3): one stream per signed-in window. A change re-reads the screen, except the
+  // form being typed in (its Save gets "This changed. Here is the latest." instead).
+  useEffect(() => {
+    if (!session) return;
+    const { token } = session;
+    const memberId = session.member.id;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // A stopped stream still reports 'closed' a moment later; by then it may belong to an old member.
+    let active = true;
+    const refreshSoon = (force = false) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const { nav: current, load: read } = latest.current;
+        if (force || current.screen !== 'edit') void read(current, token);
+      }, REFRESH_DELAY_MS);
+    };
+    setAlerts([]);
+    const stop = connectHomemindEvents({
+      token,
+      onStatus: status => {
+        if (!active) return;
+        setStream(status);
+        if (status === 'signed-out') {
+          const { signOut: out, tr: t } = latest.current;
+          out(t('Your demo sign-in ended. Pick a member again.', '演示登录已结束，请重新选择成员。'));
+        }
+      },
+      onMessage: message => {
+        if (!active) return;
+        switch (message.event) {
+          case 'hello':
+            // Covers anything missed while the stream was down.
+            return refreshSoon();
+          case 'item.changed':
+            setAlerts(list => applyItemChange(list, message.data.itemId, message.data.item, memberId));
+            return refreshSoon();
+          case 'alert':
+            return setAlerts(list => addAlert(list, message.data));
+          case 'demo.reset':
+            setAlerts([]);
+            history.current = [];
+            setForm({});
+            setNotice(null);
+            setNav(HOME);
+            return refreshSoon(true);
+        }
+      }
+    });
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      stop();
+      setStream(null);
+    };
+  }, [session]);
 
   useEffect(() => {
     setFormError(null);
@@ -352,6 +424,13 @@ export function FamilyView({
     }
   };
 
+  const onAlertButton = (alert: HomemindAlert, verb: AlertButton['verb']) => {
+    setAlerts(list => list.filter(a => a.id !== alert.id));
+    if (verb === 'dismiss') return;
+    if (verb === 'open') return go({ screen: 'item', params: { id: alert.itemId } });
+    void onAction({ id: `homemind.${verb}:${alert.itemId}`, label: verb, kind: 'homemind', args: { verb, itemId: alert.itemId, version: alert.itemVersion } });
+  };
+
   const noticeBar = notice ? (
     <div className={`hm-notice ${notice.tone === 'error' ? 'is-error' : ''}`} role={notice.tone === 'error' ? 'alert' : 'status'}>
       <span>{notice.text}</span>
@@ -397,6 +476,14 @@ export function FamilyView({
       <div className="hm-who">
         <span>
           {tr('Signed in as', '当前身份')} <strong>{name}</strong> · <span className="hm-demo-tag">{tr('Demo sign-in', '演示登录')}</span>
+          {stream ? (
+            <>
+              {' '}
+              <span className={`hm-live is-${stream}`} data-stream={stream}>
+                {stream === 'live' ? tr('Live', '实时') : stream === 'connecting' ? tr('Connecting…', '连接中…') : tr('Reconnecting…', '重新连接中…')}
+              </span>
+            </>
+          ) : null}
         </span>
         <button type="button" onClick={() => signOut()}>
           {tr('Switch member', '切换成员')}
@@ -422,6 +509,7 @@ export function FamilyView({
           + {tr('Add', '添加')}
         </button>
       </nav>
+      <AlertBanner alerts={alerts} lang={lang} busy={busy} onButton={onAlertButton} />
       {noticeBar}
       {formError ? (
         <span className="hm-visually-hidden" role="alert">

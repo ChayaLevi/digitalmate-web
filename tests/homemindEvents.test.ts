@@ -340,6 +340,32 @@ describe('the stream over HTTP', () => {
     expect(opened).toMatchObject({ data: { item: { ownership: { state: 'open' } } } });
   });
 
+  it('Scene 1 alert: Dad gets "Mom assigned you" on his stream; Mom and Maya get no alert', async () => {
+    const momToken = await login('mom');
+    const [dad, mom, maya] = await Promise.all([listen(await login('dad')), listen(momToken), listen(await login('maya'))]);
+    await Promise.all([dad.next(), mom.next(), maya.next()]);
+    const full = (await (await fetch(`${base}/api/homemind/debug/state`)).json()) as HomemindState;
+    const pickup = full.items.find(i => i.id === 'pickup-today') as Item;
+    expect((await post(momToken, '/items/pickup-today/assign', { version: pickup.version, ownerId: 'dad' })).status).toBe(200);
+    expect(await dad.next(m => m.event === 'alert')).toMatchObject({ event: 'alert', data: { kind: 'assigned', itemId: 'pickup-today', byId: 'mom', itemVersion: pickup.version + 1 } });
+    // Maya still gets the change (it is family-wide), but no alert: it is not hers.
+    expect(await maya.next(m => m.event === 'item.changed')).toBeTruthy();
+    expect(await maya.next(m => m.event === 'alert', 300)).toBeNull();
+    expect(await mom.next(m => m.event === 'alert', 300)).toBeNull();
+  });
+
+  it(`Scene 4 alert: the wedding opens the pickup, and Dad gets "Who's taking this?"`, async () => {
+    const momToken = await login('mom');
+    const dad = await listen(await login('dad'));
+    await dad.next();
+    const full = (await (await fetch(`${base}/api/homemind/debug/state`)).json()) as HomemindState;
+    const pickup = full.items.find(i => i.id === 'pickup-tuesday') as Item;
+    const start = new Date(Date.parse(pickup.start as string) - 60 * 60 * 1000).toISOString();
+    const end = new Date(Date.parse(pickup.start as string) + 3 * 60 * 60 * 1000).toISOString();
+    expect((await post(momToken, '/items', { type: 'event', title: 'Wedding', start, end, unavailableMemberIds: ['mom'] })).status).toBe(200);
+    expect(await dad.next(m => m.event === 'alert')).toMatchObject({ data: { kind: 'open', itemId: 'pickup-tuesday', byId: 'mom' } });
+  });
+
   it('a removed item reaches the stream as item: null', async () => {
     const momToken = await login('mom');
     const dad = await listen(await login('dad'));

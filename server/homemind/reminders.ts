@@ -30,6 +30,7 @@ import type {
   HomemindState,
   Item,
   Member,
+  PendingReminder,
   Reminder,
   ReminderAsk,
   Tier
@@ -584,4 +585,20 @@ export function respondToReminder(state: HomemindState, reminderId: string, memb
 /** The member's active reminder for an item, if any (the newest). For answering from an alert. */
 export function activeReminderFor(state: HomemindState, itemId: string, memberId: string): Reminder | undefined {
   return state.reminders.filter(r => r.itemId === itemId && isActive(r) && reachedBy(state, r).includes(memberId)).pop();
+}
+
+/** Active reminders already sent that reached `memberId`, newest per item. */
+export function pendingRemindersFor(state: HomemindState, memberId: string, now: number): PendingReminder[] {
+  const byItem = new Map<string, PendingReminder>();
+  for (const r of state.reminders) {
+    if (!isActive(r) || !wasSent(r) || !reachedBy(state, r).includes(memberId)) continue;
+    byItem.set(r.itemId, {
+      itemId: r.itemId,
+      reminderId: r.id,
+      ask: r.ask,
+      escalated: !r.recipientIds.includes(memberId),
+      snoozed: r.snoozedUntil !== undefined && Date.parse(r.snoozedUntil) > now
+    });
+  }
+  return [...byItem.values()];
 }

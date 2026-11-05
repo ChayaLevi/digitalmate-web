@@ -23,13 +23,14 @@ import type { DemoClock } from './homemind/clock';
 import { applyChange } from './homemind/core';
 import type { CoreEvent } from './homemind/core';
 import { alertsForChange } from './homemind/alerts';
-import { activeReminderFor, respondToReminder, tickReminders } from './homemind/reminders';
+import { activeReminderFor, pendingRemindersFor, respondToReminder, tickReminders } from './homemind/reminders';
 import type { ReminderResponse, TickResult } from './homemind/reminders';
 import { startScheduler, stopScheduler } from './homemind/scheduler';
 import { createEventHub } from './homemind/events';
 import type { EventHub } from './homemind/events';
 import type { Change, ChangeError, ItemPatch, NewItem } from './homemind/core';
 import { seedState } from './homemind/seed';
+import { applySettings, parseSettingsPatch } from './homemind/settings';
 import { HomemindStore, dataFileFromEnv } from './homemind/store';
 import type { LoadSource } from './homemind/store';
 import { ID_PATTERN } from './homemind/types';
@@ -537,6 +538,7 @@ const routes: Route[] = [
         undoable,
         ppma: 'off',
         llm: process.env.HOMEMIND_LLM === 'live' ? 'live' : 'fake',
+        reminders: pendingRemindersFor(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()),
         ...(edit ? { edit } : {})
       });
       // The surface is what screens render. `view` stays for the client's forms (ids, versions).
@@ -606,7 +608,27 @@ const routes: Route[] = [
   { method: 'POST', pattern: /^\/actions\/([a-z0-9][a-z0-9_-]{0,63})\/(confirm|cancel)$/, auth: true, handler: notBuilt('T7.1') },
   { method: 'POST', pattern: /^\/preferences$/, auth: true, handler: notBuilt('T5.4') },
   { method: 'POST', pattern: /^\/rules$/, auth: true, handler: notBuilt('T7.3') },
-  { method: 'PUT', pattern: /^\/settings$/, auth: true, handler: notBuilt('T4.2') },
+  {
+    method: 'PUT',
+    pattern: /^\/settings$/,
+    auth: true,
+    // Quiet hours are the member's own; autonomy, pause and the backup contact are the family's (parents only).
+    handler: async ctx => {
+      const parsed = parseSettingsPatch(await readBody(ctx.request));
+      if (!parsed.ok) throw new HttpError(400, 'invalid', parsed.message);
+      const { rt, member } = ctx;
+      const result = applySettings(rt.state, parsed.patch, member.id, rt.clock.now());
+      if (!result.ok) return fail(ctx.response, result.status, result.code, result.message);
+      if (result.changed.length) {
+        rt.state = result.state;
+        await rt.store.save(result.state);
+        rt.hub.broadcast({ event: 'settings.changed', data: {} });
+        // A new backup contact or new quiet hours apply from this tick, not 5 seconds later.
+        await tickNow(rt);
+      }
+      json(ctx.response, 200, { ok: true, changed: result.changed, ...(result.activity ? { activityId: result.activity.id } : {}) });
+    }
+  },
   {
     method: 'POST',
     pattern: /^\/demo\/clock$/,

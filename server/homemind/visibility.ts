@@ -79,7 +79,7 @@ export function viewFor(state: HomemindState, memberId: string): MemberView | nu
     rules: state.rules,
     actionCards: state.actionCards,
     activity: state.activity
-      .filter(a => (a.itemId ? canSeeId(state, memberId, a.itemId) : isParent(state, memberId)))
+      .filter(a => (a.itemId ? canSeeId(state, memberId, a.itemId) : isParent(state, memberId) || a.actor === memberId))
       .map(({ undo: _patch, ...rest }) => rest),
     whys: state.whys.filter(w => !w.basis.some(b => b.ref !== undefined && hiddenIds.has(b.ref)))
   };

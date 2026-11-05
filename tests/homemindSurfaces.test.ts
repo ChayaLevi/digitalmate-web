@@ -235,7 +235,10 @@ describe('simulated is always labeled', () => {
     const s = seed();
     expect(JSON.stringify(parse(screenTurn('settings', input(s, 'mom', 'en', { llm: 'fake' })).jsonl).data)).toContain('Simulated model');
     expect(JSON.stringify(parse(screenTurn('settings', input(s, 'mom', 'zh', { llm: 'fake' })).jsonl).data)).toContain('模拟模型');
-    expect(JSON.stringify(parse(screenTurn('settings', input(s, 'mom', 'en')).jsonl).data)).toMatch(/Grandma Lin · Simulated/);
+    // A parent edits the contact in the form, with the label right under it; others see it as a row.
+    const momSettings = screenTurn('settings', input(s, 'mom', 'en')).jsonl;
+    expect(momSettings).toContain('**Simulated**: In this demo nothing is sent to the backup contact.');
+    expect(JSON.stringify(parse(screenTurn('settings', input(s, 'maya', 'en')).jsonl).data)).toMatch(/Grandma Lin · Simulated/);
     expect(JSON.stringify(parse(screenTurn('rules', input(s, 'mom', 'en')).jsonl).data)).toContain('Simulated');
   });
 

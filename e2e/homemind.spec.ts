@@ -343,3 +343,131 @@ test('reminders: the demo clock jumps, Dad is reminded, Mom gets the escalation,
     await dadContext.close();
   }
 });
+
+// T4.2: Scene 1 as scripted, answered from the board rows, and the Settings screen.
+async function momToken(request: APIRequestContext): Promise<string> {
+  const session = await request.post(`${BASE}/api/homemind/session`, { data: { memberId: 'mom' } });
+  return ((await session.json()) as { token: string }).token;
+}
+
+test('Scene 1: Mom assigns the pickup, Dad does not confirm, the clock jumps, Mom is alerted and takes it from the board', async ({ browser, request }) => {
+  const momContext = await browser.newContext();
+  const dadContext = await browser.newContext();
+  try {
+    const mom = await momContext.newPage();
+    const dad = await dadContext.newPage();
+    await openFamily(mom, 'en', 'mom');
+    await openFamily(dad, 'zh', 'dad');
+    await expect(mom.locator('[data-stream="live"]')).toBeVisible();
+    await expect(dad.locator('[data-stream="live"]')).toBeVisible();
+
+    // 1. Mom assigns the kindergarten pickup to Dad. It is on his screen at once, with an alert.
+    await family(mom).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'Family', exact: true }).click();
+    await expect(family(mom)).toHaveAttribute('data-screen', 'family');
+    await mom.getByRole('button', { name: 'Assign to Dad: Kindergarten pickup' }).first().click();
+    const dadRow = dad.locator('[data-task-id="pickup-today"]').first();
+    await expect(dadRow).toHaveAttribute('data-state', 'assigned');
+    await expect(dad.locator('.hm-alert[data-item-id="pickup-today"]')).toContainText('妈妈把「幼儿园接孩子」交给了你');
+
+    // 2. The demo clock jumps to 55 minutes before the pickup: Dad is reminded, on the alert and on the row.
+    const token = await momToken(request);
+    const minutes = Math.ceil(((await pickupStart(request)) - Date.now()) / 60_000) - 55;
+    expect((await request.post(`${BASE}/api/homemind/demo/clock`, { headers: { 'x-homemind-session': token }, data: { minutes } })).ok()).toBe(true);
+    await expect(dad.locator('.hm-alert[data-item-id="pickup-today"]')).toHaveAttribute('data-kind', 'reminder');
+    await expect(dadRow).toContainText('已提醒');
+    await expect(dadRow.getByRole('button', { name: '稍后提醒: 幼儿园接孩子' })).toBeVisible();
+    await expect(dadRow.getByRole('button', { name: '我来处理: 幼儿园接孩子' })).toBeVisible();
+    await expect(mom.locator('.hm-alert')).toHaveCount(0);
+
+    // 3. Dad does not answer. Two jumps of 15 minutes on Mom's chip: Mom gets the escalation, in neutral words.
+    await mom.getByRole('button', { name: '+15 min (demo clock)' }).click();
+    await mom.getByRole('button', { name: '+15 min (demo clock)' }).click();
+    const momAlert = mom.locator('.hm-alert[data-kind="escalation"]');
+    await expect(momAlert).toContainText(/Kindergarten pickup at \d\d:\d\d is not confirmed yet\./);
+    await expect(momAlert).not.toContainText('Dad');
+    const momRow = mom.locator('[data-task-id="pickup-today"]').first();
+    await expect(momRow).toContainText('reminder sent');
+    await expect(momRow.getByRole('button', { name: 'Got it: Kindergarten pickup' })).toBeVisible();
+    await noOverflow(mom);
+    await noOverflow(dad);
+    expect(await seriousIssues(mom)).toEqual([]);
+    expect(await seriousIssues(dad)).toEqual([]);
+    await mom.screenshot({ path: test.info().outputPath('scene1-mom-en.png') });
+    await dad.screenshot({ path: test.info().outputPath('scene1-dad-zh.png') });
+
+    // 4. Mom takes it from the row on her board: the pickup is hers, and every alert closes in both windows.
+    await momRow.getByRole('button', { name: "I'll take it: Kindergarten pickup" }).click();
+    await expect(mom.locator('.hm-alert')).toHaveCount(0);
+    await expect(dad.locator('.hm-alert')).toHaveCount(0);
+    const st = (await (await request.get(`${BASE}/api/homemind/debug/state`)).json()) as { items: Array<{ id: string; ownership: { state: string; ownerId?: string } }> };
+    expect(st.items.find(i => i.id === 'pickup-today')?.ownership).toMatchObject({ state: 'assigned', ownerId: 'mom' });
+    await expect(dad.locator('[data-task-id="pickup-today"]')).toHaveCount(0);
+  } finally {
+    await momContext.close();
+    await dadContext.close();
+  }
+});
+
+test('Settings: a parent saves quiet hours, pause and the backup contact; the other parent sees it live; a teen sets only her quiet hours', async ({ browser }) => {
+  const contexts = await Promise.all([browser.newContext(), browser.newContext(), browser.newContext()]);
+  try {
+    const [mom, dad, maya] = await Promise.all(contexts.map(c => c.newPage()));
+    await openFamily(mom, 'en', 'mom');
+    await openFamily(dad, 'zh', 'dad');
+    await openFamily(maya, 'en', 'maya');
+    for (const page of [mom, dad, maya]) await expect(page.locator('[data-stream="live"]')).toBeVisible();
+    await family(mom).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'Settings', exact: true }).click();
+    await family(dad).getByRole('navigation', { name: '家庭页面' }).getByRole('button', { name: '设置', exact: true }).click();
+    await family(maya).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'Settings', exact: true }).click();
+
+    await expect(family(mom)).toContainText('Homemind helps, but an alert can be missed.');
+    await expect(family(mom)).toContainText('In this demo nothing is sent to the backup contact.');
+    await expect(family(dad)).toContainText('Homemind 会帮忙，但提醒仍可能被错过。');
+    await expect(mom.getByLabel('Backup contact name (empty for none)')).toHaveValue('Grandma Lin');
+    await expect(dad.getByLabel('备用联系人姓名（留空表示无）')).toHaveValue('林奶奶');
+    const dadPause = dad.getByLabel('暂停自动操作（提醒仍会发送）');
+    await expect(dadPause).not.toBeChecked();
+
+    // A half-filled quiet-hours pair is a form problem, shown above Save, and nothing is saved.
+    await mom.getByLabel('Quiet from').fill('');
+    await mom.getByRole('button', { name: 'Save settings' }).click();
+    await expect(family(mom).locator('.a2ui-error')).toContainText('Fill in both quiet-hours times, or leave both empty.');
+
+    await mom.getByLabel('Quiet from').fill('21:30');
+    await mom.getByLabel('Quiet until').fill('06:30');
+    await mom.getByLabel('Pause automatic actions (reminders still fire)').check();
+    await mom.getByRole('radio', { name: /2 Organizes/ }).click();
+    await mom.getByLabel('Backup contact name (empty for none)').fill('Aunt Wei');
+    await mom.getByRole('radio', { name: 'Phone call' }).click();
+    await mom.getByRole('button', { name: 'Save settings' }).click();
+    await expect(family(mom).locator('.hm-notice')).toContainText('Settings saved.');
+    await expect(mom.getByLabel('Quiet from')).toHaveValue('21:30');
+    await expect(mom.getByRole('radio', { name: /2 Organizes/ })).toHaveAttribute('aria-checked', 'true');
+
+    // Dad's open Settings screen follows without a reload.
+    await expect(dadPause).toBeChecked();
+    await expect(dad.getByLabel('备用联系人姓名（留空表示无）')).toHaveValue('Aunt Wei');
+    await expect(dad.getByRole('radio', { name: '电话' })).toHaveAttribute('aria-checked', 'true');
+    // Dad's own quiet hours are his: still the seeded ones.
+    await expect(dad.getByLabel('免打扰开始')).toHaveValue('22:00');
+
+    // Maya: only her quiet hours; the family settings are rows she can't change.
+    await expect(maya.getByLabel('Quiet from')).toHaveValue('22:30');
+    await expect(maya.getByLabel(/Pause automatic actions/)).toHaveCount(0);
+    await expect(family(maya)).toContainText('Only a parent can change these.');
+    await expect(family(maya)).toContainText('Paused. Reminders still fire.');
+    await maya.getByLabel('Quiet from').fill('23:00');
+    await maya.getByRole('button', { name: 'Save settings' }).click();
+    await expect(family(maya).locator('.hm-notice')).toContainText('Settings saved.');
+    await expect(maya.getByLabel('Quiet from')).toHaveValue('23:00');
+
+    for (const page of [mom, dad, maya]) {
+      await noOverflow(page);
+      expect(await seriousIssues(page)).toEqual([]);
+    }
+    await mom.screenshot({ path: test.info().outputPath('settings-mom-en.png'), fullPage: true });
+    await dad.screenshot({ path: test.info().outputPath('settings-dad-zh.png'), fullPage: true });
+  } finally {
+    await Promise.all(contexts.map(c => c.close()));
+  }
+});

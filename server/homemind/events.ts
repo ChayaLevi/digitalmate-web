@@ -31,7 +31,7 @@ export interface EventHub {
   /** A reminder was answered or stopped: close its alerts in these members' windows. */
   publishClosed(recipientIds: readonly string[], reminderId: string): void;
   /** Everyone, whatever they may see. Only for messages that carry no item. */
-  broadcast(message: Extract<StreamMessage, { event: 'demo.reset' | 'clock' }>): void;
+  broadcast(message: Extract<StreamMessage, { event: 'demo.reset' | 'clock' | 'settings.changed' }>): void;
   count(memberId?: string): number;
   closeAll(): void;
 }

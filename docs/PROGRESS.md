@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T4.1 done (reminders and escalation)
-- **Next task:** T4.2 (Settings and Scene 1)
-- **Scenes working end to end:** Scene 1's mechanics work live in two windows: Mom assigns the pickup, Dad gets "Mom assigned you", the demo clock jumps, Dad gets "Please confirm", Mom gets "The pickup is not confirmed yet", the (simulated) backup contact is messaged, and Mom's "I'll take it" closes every alert in both windows. Covered by one e2e test. T4.2 adds the Settings screen and the scripted Scene 1 e2e
-- **Blocked on:** nothing
-- **Last updated:** 2026-11-05, after T4.1
+- **Current task:** T4.2 done (Settings and Scene 1). **End of P4: STOP**, waiting for the human's OK on Scene 1 (the minimum viable demo)
+- **Next task:** T5.1 (LLM client and intents), after the human's OK
+- **Scenes working end to end:** **Scene 1**, as scripted, in two windows: Mom assigns the pickup, it is on Dad's screen at once, he does not confirm, the demo clock jumps, Dad is reminded (alert and row), Mom gets "not confirmed yet" (alert and row), and she takes it from her board, which closes every alert in both windows. Covered by the e2e test "Scene 1: ...". Settings (quiet hours, autonomy, pause, backup contact) are editable and sync live
+- **Blocked on:** the P4 STOP (human's OK)
+- **Last updated:** 2026-11-05, after T4.2
 
 ## Task status
 
@@ -30,7 +30,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T3.2 | Family tab | done | `src/components/FamilyView.tsx`, `src/transport/homemind.ts`, `src/lib/homemindForm.ts`, `edit` and `item` screens. 469 of 469 unit tests, 51 of 51 e2e (after the human's review fixes) |
 | T3.3 | Live sync and alerts | done | `server/homemind/alerts.ts`, `src/components/AlertBanner.tsx`, `src/lib/homemindAlerts.ts`, stream wired into `FamilyView`. 482 unit tests, 53 of 53 e2e (2 new with two or three browser contexts, axe). P3 phase checks pass |
 | T4.1 | Reminders | done | `server/homemind/{reminders,scheduler}.ts`, `POST /demo/clock`, `snooze`, demo clock chip. 519 unit tests (36 new + 1 changed), 1 new e2e |
-| T4.2 | Settings and Scene 1 | not started |  |
+| T4.2 | Settings and Scene 1 | done | `server/homemind/settings.ts`, `PUT /settings`, Settings form, reminder answers on board rows. 561 unit tests (42 new), 2 new e2e (Scene 1, Settings). P4 phase checks: see log |
 | T5.1 | LLM client and intents | not started |  |
 | T5.2 | Chat transport | not started |  |
 | T5.3 | Screenshots and preparations | not started |  |
@@ -51,6 +51,14 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 ## Decisions made during the build
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
+
+- T4.2: **settings logic** is `server/homemind/settings.ts` (pure): `parseSettingsPatch` (refuses unknown fields, bad `HH:MM`, equal from/to, names over 60 characters or with control characters, channels other than `sms`/`call`, and any `simulated` field) and `applySettings`. **Quiet hours are the signed-in member's own** (any member with an account, a teen included). **Autonomy, pause and the backup contact are the family's: parents only** (`403` otherwise, nothing applied). Fields equal to what is stored are no change; a request with no change writes nothing and broadcasts nothing.
+- T4.2: `PUT /api/homemind/settings` body `{quietHours?: {from,to}|null, autonomy?: 1-4, paused?: boolean, backupContact?: {name, channel}|null}`, answer `{ok, changed: SettingKey[], activityId?}`. After a change it saves, broadcasts a new stream message `settings.changed {}` to every stream (open screens re-read; it carries nothing private), and ticks the reminders at once.
+- T4.2: **the backup contact is always stored with `simulated: true`**; the request cannot set it. Renaming drops the seeded `nameZh` (it belongs to the seeded name); changing only the channel keeps it. The form shows the Chinese name in Chinese, and the Save action carries `backupStored`/`backupShown`, so saving the shown name unchanged never renames the contact to its Chinese name.
+- T4.2: a settings change writes one `Activity` with `kind: 'settings'`, `note` = the changed keys, **no Undo** (it is set back the same way). The activity line is "Mom changed the settings". An activity without an item is visible to parents **and to its own actor** (changed in `visibility.ts`, so a teen sees her own quiet-hours change).
+- T4.2: **new quiet hours re-time the member's held alerts**: released on the next tick when the new hours do not cover now, otherwise at the new end. Other members' held alerts are untouched.
+- T4.2: **reminder answers on board rows** ("Reminder responses on cards"): the bridge passes `reminders: pendingRemindersFor(state, member, now)` (active, already sent, reached this member; `escalated`, `snoozed`) with every screen. A row with one gets the meta "reminder sent" / "已提醒" ("reminding again soon" after a snooze) and the alert's answers: the unconfirmed owner keeps "I'm on it" and "Hand off" and gets "Remind me later"; a confirmed owner (heads-up) also gets "Got it"; someone it was escalated to gets "I'll take it" (assigns it to themselves, action id `homemind.take:<id>`) and "Got it", never "Remind me later" (escalation times do not move anyway). `PendingReminder` lives in `types.ts` so the surfaces can import it as a type.
+- T4.2: the Settings screen is a form (Save settings, verb `save-settings`, a host verb). `buildSettingsSave` in `src/lib/homemindForm.ts` sends only the changed fields; problems (`quietBoth`, `quietSame`, `quietTime`, `backupName`) and a 400/403 from the bridge show above the Save bar like the item form. "Homemind helps, but an alert can be missed." sits in bold under Escalation for parents, and under the read-only family rows for a teen. Pause reads "Pause automatic actions (reminders still fire)".
 
 - T4.1: **one reminder per occurrence of a timed item**, kept in line with the board by `syncReminders` on every tick (`server/homemind/reminders.ts`, pure). What it asks: `heads-up` (assigned and confirmed: to the owner, once, no escalation), `confirm` (assigned, not confirmed: to the owner), `open` (to the candidates; if none can see it, to both parents). An item nobody owns or was asked about gets a reminder only if it is **critical** (`open`, to everyone who could own it). All-day items get none (they belong to the summary, T8.2). Planned 26 hours ahead; nothing fires later than 60 minutes after the start.
 - T4.1: **timing.** Regular: one attempt 30 minutes before the start (at once if that has passed); a regular open item also asks both parents 15 minutes before. Critical: first attempt 60 minutes before, 3 attempts 10 minutes apart (closer when there is less time: a quarter of what is left, at least 1 minute), then **one** escalation (to the other parent for `confirm`, to both parents for `open`, so a teen's pickup goes to both), then the backup contact one interval later, if the family set one. So the seeded pickup: -60, -50, -40, escalation -30, backup -20. A clock jump past several steps counts them all and sends **one** reminder (and the escalation, if due), not a burst.
@@ -133,6 +141,10 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 ## Deviations from the plan
 
+- T4.2: types gained `ActivityKind` `'settings'`, the stream message `settings.changed`, and `PendingReminder`. `HomemindScreenData` gained `reminders`, `HomemindViewData` gained `pending`. `PUT /settings` no longer answers 501.
+- T4.2: the Settings form edits the family's **default** autonomy level only. `autonomy.byArea` (a per-area override) is kept as stored but has no form yet: nothing has areas until the rules in T7.
+- T4.2: the backup contact form has a name and a channel only; the contact is always simulated and has no number or address (nothing can be sent).
+
 - T4.1: `Reminder` in `types.ts` gained fields (`occurrenceDate`, `occurrenceStart`, `ask`, `firstAt`, `intervalMinutes`, `maxAttempts`, `escalationsDone`, `escalatedToIds`, `lastSentAt`, `snoozedUntil`, `answeredBy`, `answeredAt`, `summaryAt`), and `fireAt` is now optional (the next attempt). `EscalationStep.afterMinutes` counts from `firstAt`. `HomemindState` gained optional `heldAlerts` and `backupMessages` (no schema version change: older files load). `AlertKind` gained `reminder`, `escalation`, `backup`, `batch`, and `HomemindAlert` optional reminder fields. Nothing stored used the old reminder shape (always empty).
 - T4.1: the plan names the chip only; it also has **+15 min** and **+1 h** buttons (demo only), so the human can try reminders by hand before the T9.1 panel. "Hand off" on a reminder is the existing `handback`.
 
@@ -204,7 +216,8 @@ Things that are simulated or limited, kept current for the presenter.
 - The 接龙 screenshot used in tests is simulated and says so. Extraction was measured only on that one clean image, not on real photos.
 - PPMA's memory and proposals need the live model and network on stage (replay does not work). Without them the board still works, and the memory screen says PPMA is offline.
 - Reminders and escalation are banners inside the open app (Family tab). There are no push notifications, so a phone in a pocket gets nothing.
-- The backup contact (Grandma Lin) is simulated: nothing is sent. The banner says "(Simulated)".
+- The backup contact (Grandma Lin) is simulated: nothing is sent. The banner says "(Simulated)". Settings can rename or remove it, and it stays simulated.
+- Settings are per family on one demo server. The demo sign-in is not authentication, so "parents only" for family settings protects against a teen's window, not against someone picking "Mom" in the picker.
 - The demo clock moves only the app's own time, and only forward. A reset puts it back.
 
 ## Log
@@ -224,6 +237,29 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T4.2 Settings and Scene 1: done (2026-11-05). End of P4 (STOP)
+**Built:**
+- `server/homemind/settings.ts` (pure): `parseSettingsPatch`, `applySettings` (own quiet hours; parents only for autonomy, pause, backup contact; held alerts re-timed; one `settings` activity).
+- `server/homemind/reminders.ts`: `pendingRemindersFor`. `types.ts`: `PendingReminder`, `ActivityKind` `settings`, stream message `settings.changed`. `visibility.ts`: an activity with no item is visible to its actor too. `events.ts`: `broadcast` takes `settings.changed`.
+- `server/homemind.ts`: `PUT /settings` (validate, apply, save, broadcast, tick); every screen gets `reminders`.
+- `src/lib/homemindSurfaces.ts`: the Settings screen as a form (quiet hours; for parents autonomy, pause, backup contact with the Simulated label and the "an alert can be missed" note; read-only rows for a teen), reminder answers and "reminder sent" on board rows, the settings activity line. EN and ZH.
+- `src/lib/homemindForm.ts`: `buildSettingsSave`. `src/transport/homemind.ts`: `saveHomemindSettings`, `save-settings` host verb. `src/transport/homemindEvents.ts` and `src/components/FamilyView.tsx`: `settings.changed` re-reads the screen; Save settings with form errors above Save.
+- Tests: `tests/homemindSettings.test.ts` (37), 4 in `tests/homemindBridge.test.ts` (PUT /settings), 2 in `tests/homemindEvents.test.ts` (broadcast, parser), 2 updated (settings no longer 501; the backup label moved into the form). 2 e2e in `e2e/homemind.spec.ts`: "Scene 1: ..." and "Settings: ...".
+**Decisions:** see "Decisions made during the build" (the T4.2 entries).
+**Deviations:** see "Deviations from the plan" (the T4.2 entries): no per-area autonomy form yet; the backup contact is name and channel only.
+**Test results:**
+- `npm test`: 35 files, **561 passed** (519 before, plus 42). Before the task: 519 of 519.
+- `npx tsc --noEmit`: clean. `npm run build`: OK (5 s).
+- `npm run test:e2e`: **56 of 56** (54 before, plus 2), first full run (5.7 min).
+- **Phase-end checks (P4), flag off** (`HOMEMIND_ENABLED=` empty in the shell): `npm test` **561 of 561**, `npm run test:e2e` **56 of 56** (5.6 min). During that run `GET /api/homemind/health` on the base server (5175) returned `text/html` (the app page), so the Family tab and `/api/homemind/*` are absent there.
+- Screenshots at 390 px (Scene 1: Mom in English with the escalation; Settings: Dad in Chinese) checked by eye: no overflow. Axe passes in all three windows of the Settings test and both of Scene 1.
+**Not done or not verified:** not tried on a real phone or two physical devices. Per-area autonomy has no form. The Settings test checks the top of the form by eye only (the main area scrolls; the full-page screenshot shows the viewport). "Remind me later" on a row is tested in units and is visible in e2e, but not tapped in e2e (the alert's snooze is covered over HTTP in T4.1).
+**Next task should know:** Scene 1 is the minimum viable demo and is covered by the e2e "Scene 1: ...". Pause blocks `mayOpenOnItsOwn` (availability) today; T5.2 and T7 must also check `family.paused` before any automatic write or rule. Chat writes in T5.2 should read `family.autonomy.default` (there is no per-area value yet).
+**How to verify:**
+- Commands: `npm test` ; `npx tsc --noEmit` ; `npx playwright test e2e/homemind.spec.ts -g "Scene 1|Settings:"`
+- Expected output: 561 passed; no tsc output; 2 passed.
+- Manual check: with `HOMEMIND_ENABLED=1`, `HOMEMIND_DEMO=1` and a `HOMEMIND_SECRET` in `.env.local`, run `npm run dev`. Open `http://127.0.0.1:5173/?member=mom` in one browser profile and `?member=dad` in another, Family tab in both. In Mom's window, on **Family**, tap **Assign to Dad** on "Kindergarten pickup": Dad's window shows it at once. Tap **+1 h** in Mom's window until the chip is about 55 minutes before the pickup: Dad's row says "已提醒" with "稍后提醒". Tap **+15 min** twice more: Mom gets "not confirmed yet", and her row has **I'll take it** and **Got it**. Tap **I'll take it** on the row: the alerts close in both windows. Then open **Settings** in both windows, change Mom's pause and backup contact, and tap **Save settings**: Dad's Settings screen updates without a reload.
 
 ### T4.1 Reminders: done (2026-11-05)
 **Built:**

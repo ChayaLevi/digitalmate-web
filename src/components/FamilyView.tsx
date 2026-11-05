@@ -5,8 +5,8 @@ import { A2uiSurfaceStore } from '../protocol/a2ui/store';
 import { useI18n } from '../i18n/I18nContext';
 import { homemindErrorTurn } from '../lib/homemindSurfaces';
 import type { HomemindScreenName } from '../lib/homemindSurfaces';
-import { buildSave, formValues } from '../lib/homemindForm';
-import type { FormProblem } from '../lib/homemindForm';
+import { buildSave, buildSettingsSave, formValues } from '../lib/homemindForm';
+import type { FormProblem, SettingsProblem } from '../lib/homemindForm';
 import { addAlert, applyItemChange, closeReminder } from '../lib/homemindAlerts';
 import type { AlertVerb } from '../lib/homemindAlerts';
 import {
@@ -17,6 +17,7 @@ import {
   jumpHomemindClock,
   readHomemindSession,
   runHomemindAction,
+  saveHomemindSettings,
   sendHomemindWrite,
   undoHomemind,
   writeHomemindSession
@@ -66,7 +67,7 @@ const REFRESH_DELAY_MS = 150;
 export function withFormError(surface: A2uiSurface, title: string, message: string): A2uiSurface {
   const root = surface.components[surface.root];
   const children = root?.children ?? [];
-  const barId = children.find(id => surface.components[id]?.actions?.some(a => a.args?.verb === 'save'));
+  const barId = children.find(id => surface.components[id]?.actions?.some(a => a.args?.verb === 'save' || a.args?.verb === 'save-settings'));
   if (!root || !barId) return surface;
   const at = children.indexOf(barId);
   return {
@@ -253,6 +254,8 @@ export function FamilyView({
             return refreshSoon();
           case 'alert':
             return setAlerts(list => addAlert(list, message.data));
+          case 'settings.changed':
+            return refreshSoon();
           case 'demo.reset':
             setAlerts([]);
             history.current = [];
@@ -394,6 +397,37 @@ export function FamilyView({
     afterWrite(result, tr('Saved.', '已保存。'));
   };
 
+  const settingsProblemText = (problem: SettingsProblem): string => {
+    switch (problem) {
+      case 'quietBoth':
+        return tr('Fill in both quiet-hours times, or leave both empty.', '请填写免打扰的开始和结束时间，或两项都留空。');
+      case 'quietSame':
+        return tr('Quiet hours must start and end at different times.', '免打扰的开始和结束时间不能相同。');
+      case 'quietTime':
+        return tr('Check the time.', '请检查时间。');
+      default:
+        return tr('The backup contact name is too long.', '备用联系人姓名太长。');
+    }
+  };
+
+  const saveSettings = async (args: Record<string, unknown>, token: string) => {
+    if (!surface) return;
+    const { values, defaults } = formValues(surface, form);
+    const plan = buildSettingsSave(args, values, defaults);
+    if (!plan.ok) return setFormError(settingsProblemText(plan.problem));
+    setFormError(null);
+    if (!plan.body) return setNotice({ text: tr('Nothing changed.', '没有修改。'), tone: 'info' });
+    try {
+      await saveHomemindSettings(token, plan.body);
+    } catch (error) {
+      if (error instanceof HomemindError && (error.status === 400 || error.status === 403)) return setFormError(error.message);
+      throw error;
+    }
+    setForm({});
+    refresh();
+    setNotice({ text: tr('Settings saved.', '设置已保存。'), tone: 'info' });
+  };
+
   const onAction = async (action: A2uiAction) => {
     if (!session || busy) return;
     if (action.kind !== 'homemind') return;
@@ -411,6 +445,10 @@ export function FamilyView({
     try {
       if (verb === 'save') {
         await save(args, session.token);
+        return;
+      }
+      if (verb === 'save-settings') {
+        await saveSettings(args, session.token);
         return;
       }
       const outcome = await runHomemindAction(action, session.token);

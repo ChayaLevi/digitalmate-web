@@ -166,8 +166,13 @@ export async function jumpHomemindClock(token: string, minutes: number): Promise
   return call('/api/homemind/demo/clock', { method: 'POST', token, body: JSON.stringify({ minutes }) });
 }
 
+/** Settings (T4.2): only the fields that changed. Quiet hours are the member's own; the rest is parents only. */
+export async function saveHomemindSettings(token: string, body: Record<string, unknown>): Promise<{ ok: true; changed: string[]; activityId?: string }> {
+  return call('/api/homemind/settings', { method: 'PUT', token, body: JSON.stringify(body) });
+}
+
 /** Verbs the host handles itself (navigation and forms). */
-export const HOST_VERBS = ['add', 'edit', 'search', 'back', 'save'] as const;
+export const HOST_VERBS = ['add', 'edit', 'search', 'back', 'save', 'save-settings'] as const;
 
 const ITEM_VERBS = new Set(['claim', 'assign', 'ack', 'handback', 'done', 'approve', 'dismiss', 'cancel', 'open', 'unassign', 'snooze']);
 

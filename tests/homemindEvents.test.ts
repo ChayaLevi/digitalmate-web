@@ -109,6 +109,7 @@ describe('the client reader', () => {
   it('accepts only known messages of the right shape', () => {
     expect(toStreamMessage({ event: 'hello', data: '{"memberId":"mom","now":"2026-11-04T09:00:00Z","offsetMs":0,"timezone":"Asia/Shanghai"}' })).toMatchObject({ event: 'hello' });
     expect(toStreamMessage({ event: 'item.changed', data: '{"itemId":"a","item":null}' })).toEqual({ event: 'item.changed', data: { itemId: 'a', item: null } });
+    expect(toStreamMessage({ event: 'settings.changed', data: '{}' })).toEqual({ event: 'settings.changed', data: {} });
     expect(toStreamMessage({ event: 'item.changed', data: '{"item":null}' })).toBeNull();
     expect(toStreamMessage({ event: 'hello', data: '{"memberId":1}' })).toBeNull();
     expect(toStreamMessage({ event: 'nope', data: '{}' })).toBeNull();
@@ -492,6 +493,15 @@ describe('the stream over HTTP', () => {
     await maya.next();
     expect((await post(momToken, '/demo/reset', {})).status).toBe(200);
     expect(await maya.next(m => m.event === 'demo.reset')).toEqual({ event: 'demo.reset', data: {} });
+  });
+
+  it('a settings change reaches every stream, so open Settings screens re-read (T4.2)', async () => {
+    const momToken = await login('mom');
+    const maya = await listen(await login('maya'));
+    await maya.next();
+    const res = await fetch(`${base}/api/homemind/settings`, { method: 'PUT', headers: { [SESSION_HEADER]: momToken }, body: JSON.stringify({ paused: true }) });
+    expect(res.status).toBe(200);
+    expect(await maya.next(m => m.event === 'settings.changed')).toEqual({ event: 'settings.changed', data: {} });
   });
 
   it('sends a comment line while idle', async () => {

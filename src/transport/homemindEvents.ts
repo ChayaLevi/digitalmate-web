@@ -61,6 +61,8 @@ export function toStreamMessage(frame: { event: string; data: string }): StreamM
     }
     case 'alert.closed':
       return str(record.reminderId, 64) ? { event: 'alert.closed', data: { reminderId: record.reminderId } } : null;
+    case 'settings.changed':
+      return { event: 'settings.changed', data: {} };
     case 'demo.reset':
       return { event: 'demo.reset', data: {} };
     default:

@@ -15,7 +15,7 @@
  * Components that do not render the flag (rules, settings rows) say the word in their text instead.
  */
 import type { A2uiAction, A2uiComponent } from '../types';
-import type { ActionCard, Activity, Family, Item, Lang, Member, Preference, Reminder, Rule, Why } from '../../server/homemind/types';
+import type { ActionCard, Activity, Family, Item, Lang, Member, PendingReminder, Preference, Reminder, Rule, Why } from '../../server/homemind/types';
 
 export type HomemindLang = Lang;
 export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit' | 'item';
@@ -38,6 +38,8 @@ export interface HomemindViewData {
   actionCards: ActionCard[];
   activity: Activity[];
   whys: Why[];
+  /** Reminders that reached this member and wait for an answer (T4.2). Set by `screenTurn` from the input. */
+  pending?: PendingReminder[];
 }
 
 export interface HomemindScreenData {
@@ -54,6 +56,8 @@ export interface HomemindScreenData {
   llm?: 'live' | 'fake';
   /** For the `edit` screen. */
   edit?: HomemindEditTarget;
+  /** Reminders waiting for this member's answer: rows get "Remind me later", "Got it" and so on (T4.2). */
+  reminders?: PendingReminder[];
 }
 
 /** What the bridge sends the browser for every Homemind screen. Same shape as a Fridge2Table turn. */
@@ -135,6 +139,10 @@ const T = {
   ack: { en: "I'm on it", zh: '我来处理' },
   done: { en: 'Done', zh: '完成' },
   handoff: { en: 'Hand off', zh: '交还' },
+  later: { en: 'Remind me later', zh: '稍后提醒' },
+  gotIt: { en: 'Got it', zh: '知道了' },
+  reminded: { en: 'reminder sent', zh: '已提醒' },
+  remindAgain: { en: 'reminding again soon', zh: '稍后再提醒' },
   approve: { en: 'Approve', zh: '确认添加' },
   dismiss: { en: 'Dismiss', zh: '忽略' },
   assignTo: { en: 'Assign to', zh: '分配给' },
@@ -183,6 +191,25 @@ const T = {
   modelLive: { en: 'Live model', zh: '真实模型' },
   zone: { en: 'Time zone', zh: '时区' },
   alertNote: { en: 'Homemind helps, but an alert can be missed.', zh: 'Homemind 会帮忙，但提醒仍可能被错过。' },
+  sFamily: { en: 'Family settings', zh: '家庭设置' },
+  sQuietFrom: { en: 'Quiet from', zh: '免打扰开始' },
+  sQuietTo: { en: 'Quiet until', zh: '免打扰结束' },
+  sQuietHint: { en: 'Only urgent alerts, such as an important pickup, break quiet hours. Other alerts wait until they end. Leave both empty to turn quiet hours off.', zh: '只有紧急提醒（例如重要的接送）会在免打扰时段发出，其他提醒会等到时段结束。两项都留空即可关闭免打扰。' },
+  sPause: { en: 'Pause automatic actions (reminders still fire)', zh: '暂停自动操作（提醒仍会发送）' },
+  sPauseHint: { en: 'The stop button: rules and Homemind’s own changes stop until this is turned off.', zh: '停止按钮：规则和 Homemind 自己的操作会停止，直到关闭此项。' },
+  sLevelHint1: { en: 'Nothing on its own. Only suggestions to approve', zh: '不自行操作，只提出建议供批准' },
+  sLevelHint2: { en: 'Items, lists, personal reminders', zh: '事项、清单、个人提醒' },
+  sLevelHint3: { en: 'Also calendar entries, message drafts, order preparation', zh: '另外还有日历条目、消息草稿、订单准备' },
+  sLevelHint4: { en: 'Also standing rules, against simulated services only', zh: '另外执行长期规则，仅限模拟服务' },
+  sEscalation: { en: 'Escalation', zh: '升级提醒' },
+  sEscalationHint: { en: 'An important item that is still not confirmed goes to the other parent, then to the backup contact.', zh: '重要事项仍未确认时，会提醒另一位家长，然后联系备用联系人。' },
+  sBackupName: { en: 'Backup contact name (empty for none)', zh: '备用联系人姓名（留空表示无）' },
+  sBackupChannel: { en: 'How to reach them', zh: '联系方式' },
+  sSms: { en: 'Text message', zh: '短信' },
+  sCall: { en: 'Phone call', zh: '电话' },
+  sBackupSimulated: { en: 'In this demo nothing is sent to the backup contact. The message would carry no reason and no details.', zh: '本演示不会真正联系备用联系人。消息不包含原因和任何细节。' },
+  sParentsOnly: { en: 'Only a parent can change these.', zh: '只有家长可以修改这些设置。' },
+  sSave: { en: 'Save settings', zh: '保存设置' },
   level1: { en: '1 Suggests', zh: '1 仅建议' },
   level2: { en: '2 Organizes', zh: '2 整理' },
   level3: { en: '3 Advanced', zh: '3 进阶' },
@@ -319,7 +346,29 @@ function canOwn(member: Member, item: Item): boolean {
   return member.hasAccount && (item.visibility !== 'parents' || member.role === 'parent');
 }
 
+const pendingFor = (item: Item, view: HomemindViewData) => (item.status === 'open' ? view.pending?.find(p => p.itemId === item.id) : undefined);
+
+/**
+ * The row's buttons. When a reminder waits for this member, the answers it offers are on the row
+ * too, the same ones as on the alert: "I'll take it" (from someone else), "Got it", "Remind me later".
+ */
 function itemActions(item: Item, view: HomemindViewData, lang: HomemindLang): A2uiAction[] {
+  const base = boardActions(item, view, lang);
+  const pending = pendingFor(item, view);
+  if (!pending) return base;
+  const me = view.memberId;
+  const o = item.ownership;
+  const mine = o.state === 'assigned' && o.ownerId === me;
+  const extra: A2uiAction[] = [];
+  if (o.state === 'assigned' && !mine) extra.push({ ...act('assign', item, hx(lang, 'claim'), 'primary', { memberId: me }), id: `homemind.take:${item.id}` });
+  // "I'm on it" from an owner who has not confirmed already answers it.
+  const unconfirmedOwner = o.state === 'assigned' && mine && !o.confirmed;
+  if (!unconfirmedOwner && (pending.escalated || mine)) extra.push(act('ack', item, hx(lang, 'gotIt'), 'ghost', { reminderId: pending.reminderId }));
+  if (!pending.snoozed && !pending.escalated) extra.push(act('snooze', item, hx(lang, 'later'), 'ghost', { reminderId: pending.reminderId }));
+  return [...base, ...extra];
+}
+
+function boardActions(item: Item, view: HomemindViewData, lang: HomemindLang): A2uiAction[] {
   const me = memberOf(view.family, view.memberId);
   if (!me || item.status === 'done' || item.status === 'cancelled') return [];
   if (item.status === 'proposed') return [act('approve', item, hx(lang, 'approve'), 'primary'), act('dismiss', item, hx(lang, 'dismiss'), 'ghost')];
@@ -357,7 +406,8 @@ function taskRow(item: Item, view: HomemindViewData, lang: HomemindLang, today: 
     item.importance === 'critical' && item.status !== 'done' ? hx(lang, 'critical') : '',
     item.visibility === 'parents' ? hx(lang, 'parentsOnly') : '',
     item.ownership.state === 'assigned' && item.status !== 'done' ? (item.ownership.confirmed ? hx(lang, 'confirmed') : hx(lang, 'notConfirmed')) : '',
-    openNote(item, view, lang)
+    openNote(item, view, lang),
+    pendingFor(item, view) ? hx(lang, pendingFor(item, view)?.snoozed ? 'remindAgain' : 'reminded') : ''
   ]
     .filter(Boolean)
     .join(' · ');
@@ -633,7 +683,8 @@ function activityLine(a: Activity, view: HomemindViewData, lang: HomemindLang): 
     cancel_occurrence: ['skipped one of', '跳过了一次'],
     approve: ['approved', '批准了'],
     dismiss: ['dismissed', '忽略了'],
-    undo: ['undid a change to', '撤销了对以下内容的修改']
+    undo: ['undid a change to', '撤销了对以下内容的修改'],
+    settings: ['changed the settings', '修改了设置']
   };
   const verb = verbs[a.kind ?? 'edit'] ?? verbs.edit;
   return lang === 'zh' ? `${who} ${verb[1]} ${title}`.trim() : `${who} ${verb[0]} ${title}`.trim();
@@ -664,30 +715,77 @@ function activityScreen(input: HomemindScreenData): HomemindTurn {
   return turn('activity', hx(lang, 'activity'), undefined, children, data);
 }
 
+/**
+ * Settings (T4.2), as a form. Every member sets their own quiet hours; a parent also sets the autonomy
+ * level, pause and the backup contact (others see those as rows). Save sends only what changed
+ * (`buildSettingsSave` in src/lib/homemindForm.ts); the bridge decides who may change what.
+ */
 function settingsScreen(input: HomemindScreenData): HomemindTurn {
   const { lang, view } = input;
   const me = memberOf(view.family, view.memberId);
   const fam = view.family;
   const levels = [hx(lang, 'level1'), hx(lang, 'level2'), hx(lang, 'level3'), hx(lang, 'level4')];
-  const q = me?.quietHours;
-  const rows = [
+  const isParent = me?.role === 'parent';
+  const contact = fam.backupContact;
+  const contactName = contact ? (lang === 'zh' && contact.nameZh ? contact.nameZh : contact.name) : '';
+  const about = [
     { label: hx(lang, 'signedIn'), value: nameOf(me, lang), tone: 'muted' },
-    { label: hx(lang, 'autonomy'), value: levels[fam.autonomy.default - 1] ?? String(fam.autonomy.default), tone: 'muted' },
-    { label: hx(lang, 'paused'), value: fam.paused ? hx(lang, 'pausedYes') : hx(lang, 'pausedNo'), tone: fam.paused ? 'accent' : 'muted' },
-    { label: hx(lang, 'quiet'), value: q ? `${q.from}–${q.to}` : hx(lang, 'quietNone'), tone: 'muted' },
-    {
-      label: hx(lang, 'backup'),
-      value: fam.backupContact ? `${lang === 'zh' && fam.backupContact.nameZh ? fam.backupContact.nameZh : fam.backupContact.name}${fam.backupContact.simulated ? ` · ${hx(lang, 'simulated')}` : ''}` : hx(lang, 'backupNone'),
-      tone: 'muted'
-    },
     { label: hx(lang, 'zone'), value: fam.timezone, tone: 'muted' },
     ...(input.llm ? [{ label: hx(lang, 'model'), value: input.llm === 'fake' ? hx(lang, 'modelFake') : hx(lang, 'modelLive'), tone: input.llm === 'fake' ? 'accent' : 'muted' }] : [])
   ];
-  const children: A2uiComponent[] = [
-    { id: 'rows', component: 'InfoRows', title: hx(lang, 'settings'), dataPath: '/rows' },
-    text('note', `${hx(lang, 'alertNote')}\n\n${hx(lang, 'demoSignIn')}`)
-  ];
-  return turn('settings', hx(lang, 'settings'), undefined, children, { rows });
+  const field = (name: string, label: string, value: string, extra: Record<string, unknown> = {}): A2uiComponent => ({ id: `f-${name}`, component: 'TextField', name, label, default: value, ...extra });
+  const children: A2uiComponent[] = [{ id: 'about', component: 'InfoRows', title: hx(lang, 'settings'), dataPath: '/about' }];
+  const data: Record<string, unknown> = { about };
+
+  if (me?.hasAccount) {
+    children.push(text('quiet-title', `**${hx(lang, 'quiet')}**\n\n${hx(lang, 'sQuietHint')}`));
+    children.push(field('quietFrom', hx(lang, 'sQuietFrom'), me.quietHours?.from ?? '', { inputType: 'time' }));
+    children.push(field('quietTo', hx(lang, 'sQuietTo'), me.quietHours?.to ?? '', { inputType: 'time' }));
+  }
+
+  if (isParent) {
+    children.push({
+      id: 'f-autonomy',
+      component: 'ChoiceGroup',
+      name: 'autonomy',
+      title: hx(lang, 'autonomy'),
+      default: String(fam.autonomy.default),
+      options: (['sLevelHint1', 'sLevelHint2', 'sLevelHint3', 'sLevelHint4'] as const).map((hint, i) => ({ value: String(i + 1), label: levels[i], description: hx(lang, hint) }))
+    });
+    children.push(text('pause-hint', hx(lang, 'sPauseHint')));
+    children.push({ id: 'f-paused', component: 'Toggle', name: 'paused', label: hx(lang, 'sPause'), default: fam.paused });
+    children.push(text('esc-title', `**${hx(lang, 'sEscalation')}**\n\n${hx(lang, 'sEscalationHint')}\n\n**${hx(lang, 'alertNote')}**`));
+    children.push(field('backupName', hx(lang, 'sBackupName'), contactName, { maxLength: 60 }));
+    children.push({
+      id: 'f-backupChannel',
+      component: 'ChoiceGroup',
+      name: 'backupChannel',
+      title: hx(lang, 'sBackupChannel'),
+      default: contact?.channel ?? 'sms',
+      options: [
+        { value: 'sms', label: hx(lang, 'sSms') },
+        { value: 'call', label: hx(lang, 'sCall') }
+      ]
+    });
+    children.push(text('backup-sim', `**${hx(lang, 'simulated')}**: ${hx(lang, 'sBackupSimulated')}`));
+  } else {
+    data.family = [
+      { label: hx(lang, 'autonomy'), value: levels[fam.autonomy.default - 1] ?? String(fam.autonomy.default), tone: 'muted' },
+      { label: hx(lang, 'paused'), value: fam.paused ? hx(lang, 'pausedYes') : hx(lang, 'pausedNo'), tone: fam.paused ? 'accent' : 'muted' },
+      { label: hx(lang, 'backup'), value: contact ? `${contactName}${contact.simulated ? ` · ${hx(lang, 'simulated')}` : ''}` : hx(lang, 'backupNone'), tone: 'muted' }
+    ];
+    children.push({ id: 'family', component: 'InfoRows', title: hx(lang, 'sFamily'), dataPath: '/family' });
+    children.push(text('parents-only', `${hx(lang, 'sParentsOnly')}\n\n**${hx(lang, 'alertNote')}**`));
+  }
+
+  if (me?.hasAccount) {
+    // The contact's shown name may be its Chinese name; saving it unchanged must not rename the contact.
+    const args: Record<string, unknown> = { verb: 'save-settings', family: isParent };
+    if (contact) Object.assign(args, { backupStored: contact.name, backupShown: contactName });
+    children.push({ id: 'actions', component: 'ActionBar', actions: [{ id: 'homemind.save-settings', label: hx(lang, 'sSave'), variant: 'primary', kind: 'homemind', args }] });
+  }
+  children.push(text('note', hx(lang, 'demoSignIn')));
+  return turn('settings', hx(lang, 'settings'), undefined, children, data);
 }
 
 /**
@@ -860,7 +958,8 @@ const SCREEN_BUILDERS: Record<HomemindScreenName, (input: HomemindScreenData) =>
 
 /** One screen as a turn. */
 export function screenTurn(screen: HomemindScreenName, input: HomemindScreenData): HomemindTurn {
-  return SCREEN_BUILDERS[screen](input);
+  const view = input.reminders ? { ...input.view, pending: input.reminders } : input.view;
+  return SCREEN_BUILDERS[screen]({ ...input, view });
 }
 
 export function homemindErrorTurn(message: string, lang: HomemindLang): HomemindTurn {

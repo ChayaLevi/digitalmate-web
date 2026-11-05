@@ -147,3 +147,43 @@ export function buildSave(args: Record<string, unknown>, values: FormValues, def
   }
   return { ok: true, request: { method: 'POST', path: '/api/homemind/items', body } };
 }
+
+export type SettingsProblem = 'quietBoth' | 'quietTime' | 'quietSame' | 'backupName';
+
+export type SettingsSaveResult = { ok: true; body: Record<string, unknown> | null } | { ok: false; problem: SettingsProblem };
+
+/**
+ * The `PUT /api/homemind/settings` body for the Settings form (T4.2), with only what changed, or
+ * `body: null` when nothing did. `args` are the Save action's args: `{family, backupStored?, backupShown?}`.
+ * The contact's name may be shown in Chinese (`backupShown`); unchanged, it is sent as stored.
+ */
+export function buildSettingsSave(args: Record<string, unknown>, values: FormValues, defaults: FormValues): SettingsSaveResult {
+  const changed = (name: string) => name in values && values[name] !== defaults[name];
+  const body: Record<string, unknown> = {};
+
+  if (changed('quietFrom') || changed('quietTo')) {
+    const from = text(values.quietFrom);
+    const to = text(values.quietTo);
+    if (!from && !to) body.quietHours = null;
+    else if (!from || !to) return { ok: false, problem: 'quietBoth' };
+    else if (!TIME.test(from) || !TIME.test(to)) return { ok: false, problem: 'quietTime' };
+    else if (from === to) return { ok: false, problem: 'quietSame' };
+    else body.quietHours = { from, to };
+  }
+
+  if (args.family === true) {
+    if (changed('autonomy')) {
+      const level = Number(values.autonomy);
+      if ([1, 2, 3, 4].includes(level)) body.autonomy = level;
+    }
+    if (changed('paused')) body.paused = values.paused === true;
+    if (text(values.backupName) !== text(defaults.backupName) || changed('backupChannel')) {
+      const name = text(values.backupName);
+      const channel = values.backupChannel === 'call' ? 'call' : 'sms';
+      if (!name) body.backupContact = null;
+      else if (name.length > 60) return { ok: false, problem: 'backupName' };
+      else body.backupContact = { name: name === args.backupShown && typeof args.backupStored === 'string' ? args.backupStored : name, channel };
+    }
+  }
+  return { ok: true, body: Object.keys(body).length ? body : null };
+}

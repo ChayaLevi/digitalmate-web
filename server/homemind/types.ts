@@ -242,7 +242,9 @@ export type ActivityKind =
   | 'cancel_occurrence'
   | 'approve'
   | 'dismiss'
-  | 'undo';
+  | 'undo'
+  /** T4.2: settings changed (settings.ts). No item, no Undo. `note` lists the setting keys. */
+  | 'settings';
 
 export interface Activity {
   id: string;
@@ -327,6 +329,8 @@ export type StreamMessage =
   | { event: 'alert.closed'; data: { reminderId: string } }
   /** The demo clock jumped. Carries no item, so it goes to everyone. */
   | { event: 'clock'; data: { now: string; offsetMs: number; timezone: string } }
+  /** Family or member settings changed (T4.2). Carries nothing, so it goes to everyone; screens re-read. */
+  | { event: 'settings.changed'; data: Record<string, never> }
   /** The demo was reset: forget everything shown. */
   | { event: 'demo.reset'; data: Record<string, never> };
 
@@ -384,4 +388,15 @@ export interface HomemindAlert {
   simulated?: boolean;
   /** `batch`: the small updates held together. `itemId` is the first one's. */
   entries?: AlertBatchEntry[];
+}
+
+/** A reminder that reached a member and is still waiting for an answer, for the reminder buttons on board rows (T4.2). */
+export interface PendingReminder {
+  itemId: string;
+  reminderId: string;
+  ask: ReminderAsk;
+  /** The member got it as an escalation or a backup notice, not as one of the first recipients. */
+  escalated: boolean;
+  /** "Remind me later" was tapped and its time has not come yet. */
+  snoozed: boolean;
 }

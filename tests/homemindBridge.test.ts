@@ -369,7 +369,6 @@ describe('routes for later tasks', () => {
       ['POST', '/actions/card-1/cancel', 'T7.1'],
       ['POST', '/preferences', 'T5.4'],
       ['POST', '/rules', 'T7.3'],
-      ['PUT', '/settings', 'T4.2'],
       ['POST', '/demo/post-group-message', 'T7.2'],
       ['GET', '/screen/memory', 'T6.2']
     ]) {
@@ -534,5 +533,51 @@ describe('T3.2: Add and edit through the bridge', () => {
     expect(text).not.toMatch(/counselor/i);
     expect((await maya.get('/screen/edit?id=Bad%20Id')).status).toBe(400);
     expect((await maya.get('/screen/edit?parent=../x')).status).toBe(400);
+  });
+});
+
+describe('PUT /settings (T4.2)', () => {
+  const state = async () => json<HomemindState>(await fetch(`${base}/api/homemind/debug/state`));
+
+  it('saves a parent’s quiet hours and family settings, and logs it', async () => {
+    const mom = as(await login('mom'));
+    const res = await mom.send('PUT', '/settings', { quietHours: { from: '21:00', to: '06:00' }, paused: true, autonomy: 2, backupContact: { name: 'Aunt Wei', channel: 'call' } });
+    expect(res.status).toBe(200);
+    const body = await json(res);
+    expect(body).toMatchObject({ ok: true, changed: ['quietHours', 'autonomy', 'paused', 'backupContact'] });
+    const st = await state();
+    expect(st.family.members.find(m => m.id === 'mom')?.quietHours).toEqual({ from: '21:00', to: '06:00' });
+    expect(st.family).toMatchObject({ paused: true, autonomy: { default: 2 }, backupContact: { name: 'Aunt Wei', channel: 'call', simulated: true } });
+    expect(st.activity.find(a => a.id === body.activityId)).toMatchObject({ kind: 'settings', actor: 'mom' });
+    // The same again is no change.
+    expect(await json(await mom.send('PUT', '/settings', { paused: true }))).toEqual({ ok: true, changed: [] });
+  });
+
+  it('a teen may change her own quiet hours only', async () => {
+    const maya = as(await login('maya'));
+    expect((await maya.send('PUT', '/settings', { quietHours: null })).status).toBe(200);
+    const refused = await maya.send('PUT', '/settings', { paused: true });
+    expect(refused.status).toBe(403);
+    expect((await state()).family.paused).toBe(false);
+    expect((await state()).family.members.find(m => m.id === 'maya')?.quietHours).toBeUndefined();
+  });
+
+  it('refuses bad bodies, other origins and missing sessions', async () => {
+    const mom = as(await login('mom'));
+    expect((await mom.send('PUT', '/settings', { autonomy: 9 })).status).toBe(400);
+    expect((await mom.send('PUT', '/settings', { members: [] })).status).toBe(400);
+    expect((await mom.send('PUT', '/settings', { backupContact: { name: 'X', channel: 'sms', simulated: false } })).status).toBe(400);
+    expect((await mom.send('PUT', '/settings', { paused: true }, { origin: 'https://evil.example' })).status).toBe(403);
+    expect((await as(undefined).send('PUT', '/settings', { paused: true })).status).toBe(401);
+    expect((await mom.send('POST', '/settings', { paused: true })).status).toBe(404);
+    expect((await state()).family.paused).toBe(false);
+  });
+
+  it('the settings screen shows what was saved', async () => {
+    const mom = as(await login('mom'));
+    await mom.send('PUT', '/settings', { quietHours: { from: '23:15', to: '06:00' }, backupContact: null });
+    const screen = await json<{ jsonl: string }>(await mom.get('/screen/settings'));
+    expect(screen.jsonl).toContain('"default":"23:15"');
+    expect(screen.jsonl).toContain('"name":"backupName","label":"Backup contact name (empty for none)","default":""');
   });
 });

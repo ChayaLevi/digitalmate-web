@@ -21,12 +21,15 @@ import type { Conflict } from './homemind/availability';
 import { createDemoClock } from './homemind/clock';
 import type { DemoClock } from './homemind/clock';
 import { applyChange } from './homemind/core';
+import type { CoreEvent } from './homemind/core';
+import { createEventHub } from './homemind/events';
+import type { EventHub } from './homemind/events';
 import type { Change, ChangeError, ItemPatch, NewItem } from './homemind/core';
 import { seedState } from './homemind/seed';
 import { HomemindStore, dataFileFromEnv } from './homemind/store';
 import type { LoadSource } from './homemind/store';
 import { ID_PATTERN } from './homemind/types';
-import type { HomemindState, Item, Lang, Member } from './homemind/types';
+import type { HomemindState, Item, Lang, Member, StreamMessage } from './homemind/types';
 import { redactItem, searchItems, viewFor } from './homemind/visibility';
 import { isSameOrigin } from './orbit';
 import { screenTurn } from '../src/lib/homemindSurfaces';
@@ -35,6 +38,7 @@ export const SESSION_HEADER = 'x-homemind-session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const MIN_SECRET_LENGTH = 16;
 const MAX_BODY = 64 * 1024;
+const HEARTBEAT_MS = 15_000;
 const CONFLICT_HORIZON_MS = 90 * 24 * 60 * 60 * 1000;
 
 const SCREENS = ['my-day', 'family', 'calendar', 'search', 'rules', 'memory', 'activity', 'settings'] as const;
@@ -113,6 +117,10 @@ export function signSession(memberId: string, key: string, nowMs: number = Date.
 
 /** The member id in a valid, unexpired token, else null. */
 export function verifySession(token: string | undefined, key: string, nowMs: number = Date.now()): string | null {
+  return readSession(token, key, nowMs)?.memberId ?? null;
+}
+
+function readSession(token: string | undefined, key: string, nowMs: number): { memberId: string; exp: number } | null {
   if (!token || token.length > 512) return null;
   const [body, signature, extra] = token.split('.');
   if (!body || !signature || extra !== undefined) return null;
@@ -122,7 +130,7 @@ export function verifySession(token: string | undefined, key: string, nowMs: num
   try {
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as { m?: unknown; exp?: unknown };
     if (typeof payload.m !== 'string' || typeof payload.exp !== 'number' || payload.exp < nowMs) return null;
-    return payload.m;
+    return { memberId: payload.m, exp: payload.exp };
   } catch {
     return null;
   }
@@ -136,6 +144,8 @@ interface Runtime {
   clock: DemoClock;
   store: HomemindStore;
   source: LoadSource;
+  /** Open live-update streams, one subscriber each. */
+  hub: EventHub;
 }
 
 interface Holder {
@@ -154,7 +164,7 @@ async function runtime(): Promise<Runtime> {
     const store = new HomemindStore({ file, seed: () => seedState({ now: Date.now() }) });
     const ready = store.load().then(({ state, source, movedTo }) => {
       if (source === 'recovered') console.warn(`[homemind] the state file was unreadable; moved to ${movedTo} and reseeded`);
-      return { file, state, source, store, clock: createDemoClock(Date.now, state.clockOffsetMs) };
+      return { file, state, source, store, hub: createEventHub(), clock: createDemoClock(Date.now, state.clockOffsetMs) };
     });
     holders[HOLDER] = { file, ready };
     ready.catch(() => {
@@ -166,12 +176,23 @@ async function runtime(): Promise<Runtime> {
 
 /** For tests: forget the loaded state so the next request loads `HOMEMIND_DATA_FILE` again. */
 export function resetHomemindRuntime(): void {
+  const holder = (globalThis as GlobalWithHolder)[HOLDER];
   delete (globalThis as GlobalWithHolder)[HOLDER];
+  // Close the streams of the runtime being dropped, so none is left open on a state nobody updates.
+  holder?.ready.then(rt => rt.hub.closeAll(), () => undefined);
 }
 
-async function commit(rt: Runtime, state: HomemindState): Promise<void> {
+let heartbeatMs = HEARTBEAT_MS;
+/** For tests: how often an idle stream gets a comment line. */
+export function setHomemindHeartbeatMs(ms: number | undefined): void {
+  heartbeatMs = ms ?? HEARTBEAT_MS;
+}
+
+/** Saves, then tells the open streams. A change is visible to others only once it is the state. */
+async function commit(rt: Runtime, state: HomemindState, events: readonly CoreEvent[] = []): Promise<void> {
   rt.state = state;
   await rt.store.save(state);
+  rt.hub.publishChanges(state, events);
 }
 
 // --- requests -----------------------------------------------------------------------------------------
@@ -184,6 +205,8 @@ interface Ctx {
   rt: Runtime;
   /** The signed-in member. Set for routes that need a session. */
   member: Member;
+  /** When the session token expires (ms since epoch). Set with `member`. */
+  sessionExpiresAt: number;
   lang: Lang;
 }
 
@@ -231,7 +254,7 @@ async function checkAvailability(ctx: Ctx, eventId: string): Promise<{ conflicts
   }
   const proposal = proposeForConflicts(rt.state, found, member.id, rt.clock);
   if (!proposal.ok) return { conflicts: conflictsVisibleTo(rt.state, member.id, found), opened: [] };
-  await commit(rt, proposal.state);
+  await commit(rt, proposal.state, proposal.events);
   return { conflicts: [], opened: proposal.openedItemIds };
 }
 
@@ -239,7 +262,7 @@ async function runChange(ctx: Ctx, change: Change, afterEventId?: (changedIds: s
   const { rt, member, response } = ctx;
   const result = applyChange(rt.state, change, member.id, rt.clock);
   if (!result.ok) return changeFailed(ctx, result);
-  await commit(rt, result.state);
+  await commit(rt, result.state, result.events);
   const changedIds = result.items.map(i => i.id);
   const eventId = afterEventId?.(changedIds);
   const availability = eventId ? await checkAvailability(ctx, eventId) : { conflicts: [], opened: [] };
@@ -323,6 +346,56 @@ function newItemFrom(ctx: Ctx, body: Record<string, unknown>): NewItem {
   return item;
 }
 
+// --- live updates (SSE) -------------------------------------------------------------------------------
+
+const frame = (message: StreamMessage) => `event: ${message.event}\ndata: ${JSON.stringify(message.data)}\n\n`;
+
+/**
+ * `GET /events`: one SSE stream for the signed-in member. The token travels in the header (the client
+ * reads it with `fetch`, not `EventSource`). A comment line every 15 s keeps proxies from closing it;
+ * it ends when the token expires, so a stale session cannot listen on. Anything missed while the client
+ * was away is covered by `hello`, on which the client re-reads its screen.
+ */
+function openStream(ctx: Ctx): void {
+  const { request, response, member, rt } = ctx;
+  response.statusCode = 200;
+  response.setHeader('content-type', 'text/event-stream; charset=utf-8');
+  response.setHeader('cache-control', 'no-store, no-transform');
+  response.setHeader('x-accel-buffering', 'no');
+  request.socket.setTimeout(0);
+  request.socket.setNoDelay(true);
+  response.flushHeaders();
+
+  let timers: NodeJS.Timeout[] = [];
+  let unsubscribe = () => {};
+  const end = () => {
+    for (const timer of timers) clearTimeout(timer);
+    timers = [];
+    unsubscribe();
+    if (!response.writableEnded) response.end();
+  };
+  const send = (message: StreamMessage) => {
+    if (response.destroyed || response.writableEnded) throw new Error('stream closed');
+    response.write(frame(message));
+  };
+
+  response.write('retry: 3000\n\n');
+  unsubscribe = rt.hub.subscribe(member.id, send, end);
+  send({ event: 'hello', data: { memberId: member.id, now: new Date(rt.clock.now()).toISOString() } });
+
+  const beat = setInterval(() => {
+    if (response.destroyed || response.writableEnded) return end();
+    response.write(': ping\n\n');
+  }, heartbeatMs);
+  beat.unref();
+  timers.push(beat);
+  const expiry = setTimeout(end, Math.max(0, Math.min(ctx.sessionExpiresAt - Date.now(), 2 ** 31 - 1)));
+  expiry.unref();
+  timers.push(expiry);
+  request.on('close', end);
+  response.on('close', end);
+}
+
 // --- handlers -----------------------------------------------------------------------------------------
 
 const MEMBER_VIEW = (m: Member) => ({ id: m.id, name: m.name, nameZh: m.nameZh, role: m.role, hasAccount: m.hasAccount, lang: m.lang });
@@ -395,7 +468,7 @@ const routes: Route[] = [
       json(ctx.response, 200, { ...turn, screen: name, lang: ctx.lang, now, view, ...(results ? { query, results } : {}) });
     }
   },
-  { method: 'GET', pattern: /^\/events$/, auth: true, handler: notBuilt('T2.3') },
+  { method: 'GET', pattern: /^\/events$/, auth: true, handler: openStream },
   {
     method: 'POST',
     pattern: /^\/items$/,
@@ -463,6 +536,7 @@ const routes: Route[] = [
       const state = await ctx.rt.store.reset();
       ctx.rt.state = state;
       ctx.rt.clock.setOffset(state.clockOffsetMs);
+      ctx.rt.hub.broadcast({ event: 'demo.reset', data: {} });
       json(ctx.response, 200, { ok: true });
     }
   },
@@ -521,14 +595,14 @@ async function dispatch(request: IncomingMessage, response: ServerResponse, url:
   const rt = await runtime();
   const base = { request, response, url, params, rt, lang: langOf(url) };
   if (!route.auth) {
-    await route.handler({ ...base, member: undefined as unknown as Member });
+    await route.handler({ ...base, member: undefined as unknown as Member, sessionExpiresAt: 0 });
     return;
   }
   const token = request.headers[SESSION_HEADER];
-  const memberId = key ? verifySession(typeof token === 'string' ? token : undefined, key) : null;
-  const member = memberId ? rt.state.family.members.find(m => m.id === memberId && m.hasAccount) : undefined;
-  if (!member) return fail(response, 401, 'unauthorized', 'Sign in first');
-  await route.handler({ ...base, member });
+  const session = key ? readSession(typeof token === 'string' ? token : undefined, key, Date.now()) : null;
+  const member = session ? rt.state.family.members.find(m => m.id === session.memberId && m.hasAccount) : undefined;
+  if (!member || !session) return fail(response, 401, 'unauthorized', 'Sign in first');
+  await route.handler({ ...base, member, sessionExpiresAt: session.exp });
 }
 
 export function homemindBridgePlugin(): Plugin {

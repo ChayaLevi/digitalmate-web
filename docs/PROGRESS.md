@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T2.2 done (surface builders).
-- **Next task:** T2.3 (live events)
+- **Current task:** T2.3 done (live events). End of P2.
+- **Next task:** T3.1 (new components)
 - **Scenes working end to end:** none (the API for Scene 1's assign and Scene 4's availability works; no screens yet)
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-04, after T2.2
+- **Last updated:** 2026-11-05, after T2.3
 
 ## Task status
 
@@ -25,7 +25,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T1.3 | Visibility and availability | done | `server/homemind/{visibility,availability}.ts`, 43 tests in 2 files. 286 of 286 in all. P1 phase checks pass |
 | T2.1 | Routes and identity | done | `server/homemind.ts`, 26 tests in `tests/homemindBridge.test.ts`. 312 of 312 in all. Routes for later tasks answer 501 |
 | T2.2 | Surface builders | done | `src/lib/homemindSurfaces.ts`, 70 tests in `tests/homemindSurfaces.test.ts` + 1 bridge test. 382 of 382 in all. `/screen/:name` now returns the surface |
-| T2.3 | Live events | not started |  |
+| T2.3 | Live events | done | `server/homemind/events.ts`, `src/transport/homemindEvents.ts`, `GET /events`, 18 tests in `tests/homemindEvents.test.ts`. 400 of 400 in all. P2 phase checks pass |
 | T3.1 | New components | not started |  |
 | T3.2 | Family tab | not started |  |
 | T3.3 | Live sync and alerts | not started |  |
@@ -52,6 +52,10 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
+- T2.3: the stream sends three messages (`StreamMessage` in `types.ts`): `hello` (first frame of every connection), `item.changed` `{itemId, item|null}` (already redacted for that member through `eventFor`), `demo.reset`. There is no `Last-Event-ID` replay: on every `hello` the client re-reads its screen, which covers what it missed. T4.1 adds `alert` to the union.
+- T2.3: `commit(rt, state, events)` in `homemind.ts` saves first, then publishes, so a stream never shows a change that was not stored. Availability proposals (`proposal.events`) are published too. The hub lives in the `Runtime`; `resetHomemindRuntime()` closes its streams.
+- T2.3: a stream ends when its session token expires, sends `: ping` every 15 s, and one member may have 8 streams (the oldest is closed). A failing subscriber is dropped and never blocks the others. Ended streams are cleaned up on `close`.
+- T2.3: the client (`connectHomemindEvents`) uses `fetch` streaming with the token in the `x-homemind-session` header, backs off 1, 2, 4, 8, 15 s (reset on `hello`), stops on `401` (status `signed-out`). Status values: connecting, live, reconnecting, signed-out, closed. T3.3 wires it into `FamilyView`.
 - T2.2: `screenTurn(screen, {lang, now, view, query?, results?, undoable?, ppma?, llm?})` returns `{message, thinking, followUps, jsonl}` (same shape as a Fridge2Table turn). It never reads a clock: "now" is passed in. Surface ids are stable per screen (`homemind-my-day`), so a refresh replaces the surface. The client imports only types from `server/homemind/types`; the builder defines its own `HomemindViewData` (structurally the bridge's `MemberView`).
 - T2.2: action ids are `homemind.<verb>:<id>`, `kind: 'homemind'`, `args: {verb, itemId, version, memberId?}`. Verbs: item verbs (`claim assign ack handback done approve dismiss undo`), plus `add`, `search`, `confirm-card`, `cancel-card`, `why` (args `cardId` / `whyId`). T3.2 maps them to bridge calls. Row actions are offered by role: a parent gets "Assign to X" (not to children, and only to parents for Parents-only items); the server still decides.
 - T2.2: `TaskList` row = `{id,title,meta,ownerLabel,state,tone,simulated?,actions}`. `CalendarBoard` data = `{today, weekStartsOn, weekdays, members[{id,label}], entries[]}`; an entry has the **local** `date`, `time`, `endTime` in the family's zone (no conversion on the client) and weekly items are already expanded (7 days back, 60 ahead, cancelled dates skipped). `Simulated` is both a `simulated: true` field **and** the word in `meta` / text, so it is labeled even on a component that ignores the flag. T3.1 may drop the word from `meta` if its badge renders the flag.
@@ -101,7 +105,7 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 - T2.2: the surfaces name `TaskList` and `CalendarBoard`, which T3.1 builds. Until then the renderer does not know them (the parser accepts any component name).
 
 - T2.1: `GET /screen/:name` returns domain data as JSON `{screen, lang, now, view, query?, results?}` (the member's `viewFor`), not "a turn with JSONL". The JSONL comes from `src/lib/homemindSurfaces.ts`, which is T2.2. T2.2 should switch this route to build the surface (and keep the JSON shape or drop it, since nothing uses it yet).
-- T2.1: whitelisted but not built, each answering `501 {error: 'not_implemented', task}` after the normal origin and session checks: `GET /events` (T2.3), `POST /chat` (T5.2), `POST /actions/:id/confirm|cancel` (T7.1), `POST /preferences` (T5.4), `POST /rules` (T7.3), `PUT /settings` (T4.2), `POST /demo/clock` (T4.1) and `/demo/post-group-message` (T7.2), `POST /items/:id/snooze` (T4.1), `GET /screen/memory` (T6.2). The task text says "all routes"; these have nothing behind them yet and must not fake a result.
+- T2.1: whitelisted but not built, each answering `501 {error: 'not_implemented', task}` after the normal origin and session checks (`GET /events` was built in T2.3): `POST /chat` (T5.2), `POST /actions/:id/confirm|cancel` (T7.1), `POST /preferences` (T5.4), `POST /rules` (T7.3), `PUT /settings` (T4.2), `POST /demo/clock` (T4.1) and `/demo/post-group-message` (T7.2), `POST /items/:id/snooze` (T4.1), `GET /screen/memory` (T6.2). The task text says "all routes"; these have nothing behind them yet and must not fake a result.
 - T2.1: the `health` body is `{enabled, ready, llm, ppma, demo}`. `ppma` is `'off'` for now (T6.1 makes it real) and `llm` is `'live'` or `'fake'` from `HOMEMIND_LLM`, without checking the endpoint (T5.1).
 - T1.3: added `OpenReason` to `types.ts` and an optional `reason` to `Ownership` `open` and to the core's `open` change, validated in `core.ts` (it must name an event that makes that member unavailable). The plan's types do not have it.
 - T1.2: changed T1.1 types, as T1.1 allowed. `UndoPatch` is now `{ items: UndoEntry[] }` (one change can touch several items), with `afterVersion` per item. `Activity` gained `kind`, `itemId`, `memberId`, `note`, `ref`, `undone`. `Ownership` `open` gained optional `handedBackBy` and `note`. Nothing stored used the old shapes (activity was always empty).
@@ -120,6 +124,7 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 | PPMA command times come in UTC (`+00:00`). | T0.3 | Medium, for T6.2 | Convert to the family's time zone. Check the demo machine's zone. |
 | `npx tsc --noEmit` still does not check `server/*.ts` outside `server/homemind/` (for example the future `server/homemind.ts` adapter), nor `services/` or `vite.config.ts`. | T1.1 | Low | Existing setup. The adapter is covered by bridge tests. Widening `include` further needs the human's OK. |
 | The one-off copy of a weekly occurrence (availability split) loses a seeded Chinese title, because `NewItem` has no `titleZh`. Seeded pickups are one-off, so the demo is not affected. A candidate list without the unavailable parent tells a teen that parent can't make it, but not why or where. | T1.3 | Low | Add `titleZh` to `NewItem` if a weekly seeded item needs the split. |
+| One e2e test (`fridge2table.spec.ts:77`, restaurant search) failed once in a 1.3 h run (the file took 44 min, so the machine was probably suspended), and passed alone in 7 s. | T2.3 | Low | Rerun alone before investigating. |
 | `npm test` sometimes fails all 20 files on the first cold run (the summary said "no tests"). The run right after gives the normal result. Seen in T0.2 (Node 20) and T0.3 (Node 22). | T0.2 | Low | Rerun once before investigating. The error was not captured. |
 
 ## What needs the human
@@ -177,6 +182,29 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T2.3 Live events: done (2026-11-05). End of P2
+**Built:**
+- `server/homemind/events.ts`: `createEventHub()` with `subscribe`, `publishChanges(state, events)` (each member gets only what `eventFor` allows), `broadcast`, `count`, `closeAll`, and a cap of 8 streams per member. No HTTP, no timers.
+- `server/homemind.ts`: `GET /events` (SSE: headers, `retry`, `hello`, heartbeat, end at token expiry), `commit` publishes after saving, availability proposals published, `demo/reset` broadcasts `demo.reset`, `setHomemindHeartbeatMs` for tests.
+- `server/homemind/types.ts`: `StreamMessage`.
+- `src/transport/homemindEvents.ts`: `createSseParser`, `toStreamMessage` (validates shape), `connectHomemindEvents` (fetch streaming, header token, backoff).
+- `tests/homemindEvents.test.ts` (18): hub filtering, a Parents-only item never reaching a teen's hub or HTTP stream (also no text of it in the raw bytes), item leaving a view, dead subscriber, cap, parser, validation, backoff, Scene 1 (Mom assigns, Dad's stream gets it), Scene 4 (opened pickup reaches Dad), undo as `item: null`, reset, heartbeat, token expiry, reconnect, client auto-reconnect after the server drops it. `tests/homemindBridge.test.ts`: removed `/events` from the 501 list.
+**Decisions:** see "Decisions made during the build" (T2.3 entries).
+**Deviations:** none from the task.
+**Test results:**
+- `npm test`: 30 files, **400 passed** (was 382 + 18).
+- Mutation checks, each restored and confirmed with `cmp`: no visibility filter (3 tests fail), proposal events not published (1), no token expiry (1).
+- `npx tsc --noEmit`: clean. `npm run build`: OK.
+- **Phase-end checks (P2), flag off** (`HOMEMIND_ENABLED` absent from the shell and `.env.local`): `npm test` 400 of 400, `npm run build` OK, `npm run test:e2e` 39 of 40 on the first run; the one failure (`fridge2table.spec.ts:77`) passed alone, see Open issues. The Family tab and `/api/homemind/*` are absent from the base app (the handler declines without the flag).
+**Not done or not verified:** nothing in the UI reads the stream yet (T3.3). Not tried through Vite's dev server or behind a compressing proxy, only the plain Node server. Two-browser live sync is T3.3's e2e.
+**Next task should know:**
+- T3.1/T3.2: on `hello` and on `item.changed` re-fetch `/screen/:name`. `connectHomemindEvents({token, onMessage, onStatus})` returns a stop function; call it on a member switch or unmount. Open a new stream after switching member.
+- T4.1 adds an `alert` message to `StreamMessage` and publishes it with a hub method for chosen recipients (not built yet).
+**How to verify:**
+- Commands: `npx vitest run tests/homemindEvents.test.ts` · `npm test` · `npx tsc --noEmit`
+- Expected output: `Tests  18 passed (18)`, then `Tests  400 passed (400)`. tsc prints nothing.
+- Manual check: start the bridge with `HOMEMIND_ENABLED=1 HOMEMIND_SECRET=manual-check-secret-123 HOMEMIND_DEMO=1 npx tsx services/bridge/index.ts`. Get a token with `POST /api/homemind/session` `{"memberId":"dad"}`, then `curl -N -H "x-homemind-session: <token>" localhost:4173/api/homemind/events` prints `hello`. In another terminal, assign `pickup-today` as mom and see `item.changed` appear. Stop the server afterwards.
 
 ### T2.2 Surface builders: done (2026-11-04)
 **Built:**

@@ -254,3 +254,15 @@ export interface HomemindState {
   /** When the seed was generated (real time, ISO). */
   seededAt: string;
 }
+
+/**
+ * What goes over `GET /api/homemind/events`, one SSE frame each (`event:` is `event`, `data:` is the
+ * JSON `data`). The client imports this type, so it lives here.
+ */
+export type StreamMessage =
+  /** First frame of every connection. The client refreshes its screen on it, which covers anything missed while it was away. */
+  | { event: 'hello'; data: { memberId: string; now: string } }
+  /** `item` is `null` when the item left this member's view or no longer exists. Already redacted for this member. */
+  | { event: 'item.changed'; data: { itemId: string; item: Item | null } }
+  /** The demo was reset: forget everything shown. */
+  | { event: 'demo.reset'; data: Record<string, never> };

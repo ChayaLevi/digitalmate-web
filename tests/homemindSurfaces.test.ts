@@ -235,6 +235,9 @@ describe('simulated is always labeled', () => {
     const s = seed();
     expect(JSON.stringify(parse(screenTurn('settings', input(s, 'mom', 'en', { llm: 'fake' })).jsonl).data)).toContain('Simulated model');
     expect(JSON.stringify(parse(screenTurn('settings', input(s, 'mom', 'zh', { llm: 'fake' })).jsonl).data)).toContain('模拟模型');
+    // Live mode without a URL or model says so instead of claiming a live model.
+    expect(JSON.stringify(parse(screenTurn('settings', input(s, 'mom', 'en', { llm: 'not_configured' })).jsonl).data)).toContain('Model not set up');
+    expect(JSON.stringify(parse(screenTurn('settings', input(s, 'mom', 'zh', { llm: 'not_configured' })).jsonl).data)).toContain('模型未配置');
     // A parent edits the contact in the form, with the label right under it; others see it as a row.
     const momSettings = screenTurn('settings', input(s, 'mom', 'en')).jsonl;
     expect(momSettings).toContain('**Simulated**: In this demo nothing is sent to the backup contact.');

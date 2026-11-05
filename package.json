@@ -17,7 +17,8 @@
     "bridge:fake": "node scripts/fake-orbit.mjs",
     "check:offline": "node scripts/check-offline.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
-    "fridge:fake": "node scripts/fake-fridge2table.mjs"
+    "fridge:fake": "node scripts/fake-fridge2table.mjs",
+    "llm:fake": "tsx scripts/fake-llm.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.6.0",

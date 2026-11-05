@@ -31,6 +31,7 @@ import type { EventHub } from './homemind/events';
 import type { Change, ChangeError, ItemPatch, NewItem } from './homemind/core';
 import { seedState } from './homemind/seed';
 import { applySettings, parseSettingsPatch } from './homemind/settings';
+import { llmConfigFromEnv, llmStatus } from './homemind/llm';
 import { HomemindStore, dataFileFromEnv } from './homemind/store';
 import type { LoadSource } from './homemind/store';
 import { ID_PATTERN } from './homemind/types';
@@ -482,8 +483,8 @@ const routes: Route[] = [
       json(response, 200, {
         enabled: true,
         ready: secret() !== null,
-        // The model and PPMA are built in later tasks; "off" says so plainly.
-        llm: process.env.HOMEMIND_LLM === 'live' ? 'live' : 'fake',
+        // PPMA is built in a later task; "off" says so plainly.
+        llm: llmStatus(llmConfigFromEnv()),
         ppma: 'off',
         demo: demo()
       })
@@ -537,7 +538,7 @@ const routes: Route[] = [
         results,
         undoable,
         ppma: 'off',
-        llm: process.env.HOMEMIND_LLM === 'live' ? 'live' : 'fake',
+        llm: llmStatus(llmConfigFromEnv()),
         reminders: pendingRemindersFor(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()),
         ...(edit ? { edit } : {})
       });

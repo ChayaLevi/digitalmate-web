@@ -23,7 +23,7 @@ const SESSION_KEY = 'homemind.session';
 export interface HomemindHealth {
   enabled: boolean;
   ready: boolean;
-  llm: 'live' | 'fake';
+  llm: 'live' | 'fake' | 'not_configured';
   ppma: string;
   demo: boolean;
 }

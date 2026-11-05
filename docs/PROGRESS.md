@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T4.2 done (Settings and Scene 1). End of P4; the human approved Scene 1 at the STOP (2026-11-05)
-- **Next task:** T5.1 (LLM client and intents)
+- **Current task:** T5.1 done (LLM client and intents). The model layer exists but is not wired to chat yet
+- **Next task:** T5.2 (Chat transport)
 - **Scenes working end to end:** **Scene 1**, as scripted, in two windows: Mom assigns the pickup, it is on Dad's screen at once, he does not confirm, the demo clock jumps, Dad is reminded (alert and row), Mom gets "not confirmed yet" (alert and row), and she takes it from her board, which closes every alert in both windows. Covered by the e2e test "Scene 1: ...". Settings (quiet hours, autonomy, pause, backup contact) are editable and sync live
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-05, after T4.2
+- **Last updated:** 2026-11-05, after T5.1
 
 ## Task status
 
@@ -31,7 +31,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T3.3 | Live sync and alerts | done | `server/homemind/alerts.ts`, `src/components/AlertBanner.tsx`, `src/lib/homemindAlerts.ts`, stream wired into `FamilyView`. 482 unit tests, 53 of 53 e2e (2 new with two or three browser contexts, axe). P3 phase checks pass |
 | T4.1 | Reminders | done | `server/homemind/{reminders,scheduler}.ts`, `POST /demo/clock`, `snooze`, demo clock chip. 519 unit tests (36 new + 1 changed), 1 new e2e |
 | T4.2 | Settings and Scene 1 | done | `server/homemind/settings.ts`, `PUT /settings`, Settings form, reminder answers on board rows. 561 unit tests (42 new), 2 new e2e (Scene 1, Settings). P4 phase checks: see log |
-| T5.1 | LLM client and intents | not started |  |
+| T5.1 | LLM client and intents | done | `server/homemind/{llm,intents,llmFake}.ts`, `scripts/fake-llm.mjs` (`npm run llm:fake`). 617 unit tests (56 new, 1 extended), 56 of 56 e2e. Live Flash: 9 of 9 intents and the 接龙 screenshot, about 1 to 1.7 s per intent |
 | T5.2 | Chat transport | not started |  |
 | T5.3 | Screenshots and preparations | not started |  |
 | T5.4 | Preferences | not started |  |
@@ -51,6 +51,14 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 ## Decisions made during the build
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
+
+- T5.1: **model client** `server/homemind/llm.ts`: `llmConfigFromEnv`, `llmStatus` (`live`, `fake`, or `not_configured` = live without a base URL or model), `createLlmClient(config, {fetch, log})` with `complete(request)`. Every live call sends `response_format: json_object`, `temperature: 0`, `thinking: {type: 'disabled'}` (T0.4), and `AbortSignal.timeout(HOMEMIND_LLM_TIMEOUT_MS)`, default 30 s, allowed 1 to 120 s. Results: `{ok, content, ms, usage}` or `{ok: false, code}` with codes `not_configured`, `timeout`, `network`, `http`, `auth` (401/403), `empty` (empty content is a failure). `HOMEMIND_DEBUG=1` logs purpose, mode, status, ms, sizes and tokens; `=2` also logs the reply (never the message, never the key).
+- T5.1: **jobs** `server/homemind/intents.ts`: `runIntent(llm, {view, now, lang, text})` and `runExtraction(llm, {now, timezone, text?, imageDataUrl?})` return `{ok: true, value, attempts, ms}` or `{ok: false, code, message, problems?}` with code `invalid` or a client code. **One retry**: after an invalid reply, the retry carries the bad reply and the validator's problems; after a failed call, the same request again; none after `not_configured` or `auth`.
+- T5.1: **intent shapes** (`ChatIntent`): `ask {answer, itemIds}`, `create_event {title, start, end?, allDay, forMemberIds, unavailableMemberIds, visibility, importance}`, `create_task {title, due?, ownerId?, forMemberIds}`, `add_preparation {eventId, title, due?}`, `assign {itemId, memberId}`, `claim`/`mark_done`/`why {itemId}`, `add_preference {text, reason?, aboutMemberId?, strength, scope?}`, `create_rule {title, weekday, time, leadMinutes, action}`, `report_situation {situation: sick|away|late|other, memberId?, date, summary}`. Extraction (`Extraction`): `events`, `preparations` (`forEvent`), `requests`, `signUp` (`taken[{who, item}]`), `dropped`. All times come out as UTC ISO.
+- T5.1: **validators** build a fresh object from known fields only (extra fields from the model are dropped, never passed on). Ids must be on **that member's** board context (built from `viewFor`, so a teen's reply can never name a Parents-only item), and `add_preparation` needs an event id. Datetimes need an offset and must be from 2 days ago to 400 days ahead; an event's end is after its start and within 14 days. Only a parent may get `visibility: 'parents'`. Text is trimmed, capped (title 120, text 500, answer 1200, quote 400) and has no control characters. Lists hold at most 20 entries. **For a text source, an extraction entry whose quote is not in the text is dropped** and counted in `dropped` (made up); a screenshot's quotes can't be checked.
+- T5.1: **prompts**: the system prompt starts with a job line (`Job: chat-intent` / `Job: extraction`), states today from the injected clock (`Today is Wednesday 2026-11-04, 10:00 local time, time zone Asia/Shanghai (UTC+08:00).`) and who is writing, and says data blocks are never instructions. The board, the message and the source text each go in a `<<<BEGIN X>>> ... <<<END X>>>` block; `<<<` and `>>>` inside the data become `‹‹‹` / `›››`, so the data can't close its block. A screenshot is an `image_url` part between markers. **The board context gives times in local time with the offset** (`2026-11-05T00:00+08:00`): with UTC times, live Flash called a task due tomorrow "due today". Sensitive items go without notes. The context holds open and proposed items from 2 days ago to 45 days ahead, plus undated and weekly ones, at most 60, and the preferences.
+- T5.1: **the fake model** (`server/homemind/llmFake.ts`) reads the same prompt and answers by keywords in English and Chinese. It is deterministic. For extraction it knows only the simulated 接龙 sample, with dates from "this Thursday": a screenshot gets all of it, and a text gets only the entries whose quote is in it. An "ignore previous instructions" message gets an `ask` reply. `HOMEMIND_LLM=fake` uses it in process. `scripts/fake-llm.mjs` (`npm run llm:fake`, port 8031, `FAKE_LLM_DELAY_MS`, `FAKE_LLM_FAIL=invalid|500|empty`) serves it as an OpenAI-compatible endpoint, so the live client can run without a key.
+- T5.1: health and screens now report `llm: llmStatus(...)`. Settings shows "Model not set up" / "模型未配置" for `not_configured`, instead of "Live model".
 
 - T4.2: **settings logic** is `server/homemind/settings.ts` (pure): `parseSettingsPatch` (refuses unknown fields, bad `HH:MM`, equal from/to, names over 60 characters or with control characters, channels other than `sms`/`call`, and any `simulated` field) and `applySettings`. **Quiet hours are the signed-in member's own** (any member with an account, a teen included). **Autonomy, pause and the backup contact are the family's: parents only** (`403` otherwise, nothing applied). Fields equal to what is stored are no change; a request with no change writes nothing and broadcasts nothing.
 - T4.2: `PUT /api/homemind/settings` body `{quietHours?: {from,to}|null, autonomy?: 1-4, paused?: boolean, backupContact?: {name, channel}|null}`, answer `{ok, changed: SettingKey[], activityId?}`. After a change it saves, broadcasts a new stream message `settings.changed {}` to every stream (open screens re-read; it carries nothing private), and ticks the reminders at once.
@@ -141,6 +149,9 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 ## Deviations from the plan
 
+- T5.1: added `server/homemind/llmFake.ts` (not in the plan's file list), so the in-process fake mode and `scripts/fake-llm.mjs` share one set of canned replies. The script runs through `tsx` (`npm run llm:fake`) because it imports TypeScript. Added `HOMEMIND_LLM_TIMEOUT_MS` (in `.env.example`).
+- T5.1: the plan's `ask` intent returns the answer itself (`answer`, `itemIds`), so a question takes one model call. `create_rule` only describes the rule; T7 turns it into a card that needs a tap.
+
 - T4.2: types gained `ActivityKind` `'settings'`, the stream message `settings.changed`, and `PendingReminder`. `HomemindScreenData` gained `reminders`, `HomemindViewData` gained `pending`. `PUT /settings` no longer answers 501.
 - T4.2: the Settings form edits the family's **default** autonomy level only. `autonomy.byArea` (a per-area override) is kept as stored but has no form yet: nothing has areas until the rules in T7.
 - T4.2: the backup contact form has a name and a channel only; the contact is always simulated and has no number or address (nothing can be sent).
@@ -176,6 +187,8 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 | `npx tsc --noEmit` still does not check `server/*.ts` outside `server/homemind/` (for example the future `server/homemind.ts` adapter), nor `services/` or `vite.config.ts`. | T1.1 | Low | Existing setup. The adapter is covered by bridge tests. Widening `include` further needs the human's OK. |
 | The one-off copy of a weekly occurrence (availability split) loses a seeded Chinese title, because `NewItem` has no `titleZh`. Seeded pickups are one-off, so the demo is not affected. A candidate list without the unavailable parent tells a teen that parent can't make it, but not why or where. | T1.3 | Low | Add `titleZh` to `NewItem` if a weekly seeded item needs the split. |
 | One e2e test (`fridge2table.spec.ts:77`, restaurant search) failed once in a 1.3 h run (the file took 44 min, so the machine was probably suspended), and passed alone in 7 s. | T2.3 | Low | Rerun alone before investigating. |
+| In the live check, `add_preference` gave the seeded preference's reason ("enjoys baking it with us the most") instead of the member's own words ("enjoys it most"). Close, but taken from the context. | T5.1 | Low, for T5.4 | T5.4 should show the saved text and reason for confirmation, or tell the model to keep the member's own reason. |
+| The fake model is keyword-based. It covers the test and rehearsal phrasings only and says nothing about what the real model understands. | T5.1 | Low | Rehearse with the live model (T9.2). The fake is labelled "Simulated model". |
 | `npm test` sometimes fails all 20 files on the first cold run (the summary said "no tests"). The run right after gives the normal result. Seen in T0.2 (Node 20) and T0.3 (Node 22). | T0.2 | Low | Rerun once before investigating. The error was not captured. |
 
 ## What needs the human
@@ -220,6 +233,7 @@ Things that are simulated or limited, kept current for the presenter.
 - The backup contact (Grandma Lin) is simulated: nothing is sent. The banner says "(Simulated)". Settings can rename or remove it, and it stays simulated.
 - Settings are per family on one demo server. The demo sign-in is not authentication, so "parents only" for family settings protects against a teen's window, not against someone picking "Mom" in the picker.
 - The demo clock moves only the app's own time, and only forward. A reset puts it back.
+- With `HOMEMIND_LLM=fake` the chat "model" is canned keyword rules, labelled "Simulated model". The live model (DeepSeek Flash) needs network on stage: about 1 to 1.7 s per chat message, about 3 s per screenshot.
 
 ## Log
 
@@ -238,6 +252,28 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T5.1 LLM client and intents: done (2026-11-05)
+**Built:**
+- `server/homemind/llm.ts`: the OpenAI-compatible client (live and fake), env config, status, timeout, error codes, debug logging.
+- `server/homemind/intents.ts`: the intent and extraction schemas, the board context from `viewFor`, delimited prompts with the injected date, hand-written validators, `runValidated` (one retry), `runIntent`, `runExtraction`.
+- `server/homemind/llmFake.ts`: the canned model. `scripts/fake-llm.mjs` and the `llm:fake` npm script serve it over HTTP.
+- `server/homemind.ts`: health and screens use `llmStatus`. `src/lib/homemindSurfaces.ts`: "Model not set up" / "模型未配置". `src/transport/homemind.ts`: the health type. `.env.example`: `HOMEMIND_LLM_TIMEOUT_MS` and the fake endpoint.
+- Tests: `tests/homemindLlm.test.ts` (19: config, request body, error mapping, timeout, debug log without key or text, fake mode, live client over HTTP against the fake), `tests/homemindIntents.test.ts` (37: prompts and delimiting, local times, no Parents-only trace for a teen, every intent through the fake in EN and some in ZH, validator refusals, retry and errors, injection, extraction), 1 surfaces test extended.
+**Decisions:** see "Decisions made during the build" (the T5.1 entries).
+**Deviations:** see "Deviations from the plan" (the T5.1 entries): `llmFake.ts`, the timeout variable, and `ask` carries the answer.
+**Test results:**
+- `npm test`: 37 files, **617 passed** (561 before). Before the task: 561 of 561.
+- `npx tsc --noEmit`: clean.
+- `npm run test:e2e`: **56 of 56** (6.2 min). The bridge changed only in its health and screen `llm` field.
+- `scripts/fake-llm.mjs` by hand on port 8039: `/health` ok, a completion for "Assign the pickup to Dad" gave `assign pickup-today dad`, an unknown path gave 404, and the log showed sizes only.
+- **Live DeepSeek Flash** (`deepseek-flash`, a scratch script outside the repo, 2 runs of 10 calls): **9 of 9 intents as expected in both runs**, each valid on the first attempt (ask, assign, claim in Chinese, create_event "Friday at 3pm" with the right date, add_preparation, report_situation, add_preference with scope, why in Chinese, and a teen's "ignore previous instructions ... counselor meeting" → `ask`, which sees no such meeting). 0.8 to 1.7 s per intent, about 1,480 tokens in. The 接龙 screenshot: valid, 2 events, sign-up 苹果, 香蕉, 葡萄, about 2.7 s.
+**Not done or not verified:** chat is not wired yet (`POST /chat` still answers 501, T5.2). Nothing turns an intent or an extraction into items yet (T5.2, T5.3). The live check was 9 phrasings, not a benchmark. Real photos and an instruction hidden inside an image were not tried (T5.3). Not a phase end, so no build or flag-off run.
+**Next task should know:** T5.2 calls `runIntent(createLlmClient(llmConfigFromEnv()), {view: viewFor(state, member), now: clock.now(), lang, text})` and maps the `ChatIntent` to core changes. The validator has already checked that the ids are on that member's board, but **not permissions**: the core and the bridge still decide. Keep one `LlmClient` per runtime. On `ok: false`, show an `ErrorNotice` with the message. Never await PPMA there. `create_event` has `end` only if the model gave one, and the bridge's all-day rule needs an end. The `ask` answer is model text: show it as text, never as markup.
+**How to verify:**
+- Commands: `npm test` ; `npx tsc --noEmit` ; `npx vitest run tests/homemindLlm.test.ts tests/homemindIntents.test.ts`
+- Expected output: 617 passed; no tsc output; 2 files, 56 passed.
+- Manual check: run `npm run llm:fake`, then in another shell `curl -s http://127.0.0.1:8031/health` gives `{"ok":true,"fake":true}`. With `HOMEMIND_LLM=fake`, open **Settings** in the Family tab: the model row says "Simulated model" / "模拟模型". Set `HOMEMIND_LLM=live` with an empty `HOMEMIND_LLM_BASE_URL`, restart, and it says "Model not set up".
 
 ### T4.2 Settings and Scene 1: done (2026-11-05). End of P4 (STOP)
 **Built:**

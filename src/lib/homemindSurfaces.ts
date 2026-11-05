@@ -53,7 +53,8 @@ export interface HomemindScreenData {
   undoable?: string[];
   /** `off`: not configured. `offline`: configured but unreachable. */
   ppma?: 'off' | 'offline' | 'ok';
-  llm?: 'live' | 'fake';
+  /** `not_configured`: live mode without a base URL or model (llm.ts `llmStatus`). */
+  llm?: 'live' | 'fake' | 'not_configured';
   /** For the `edit` screen. */
   edit?: HomemindEditTarget;
   /** Reminders waiting for this member's answer: rows get "Remind me later", "Got it" and so on (T4.2). */
@@ -189,6 +190,7 @@ const T = {
   model: { en: 'Model', zh: '模型' },
   modelFake: { en: 'Simulated model', zh: '模拟模型' },
   modelLive: { en: 'Live model', zh: '真实模型' },
+  modelOff: { en: 'Model not set up', zh: '模型未配置' },
   zone: { en: 'Time zone', zh: '时区' },
   alertNote: { en: 'Homemind helps, but an alert can be missed.', zh: 'Homemind 会帮忙，但提醒仍可能被错过。' },
   sFamily: { en: 'Family settings', zh: '家庭设置' },
@@ -731,7 +733,7 @@ function settingsScreen(input: HomemindScreenData): HomemindTurn {
   const about = [
     { label: hx(lang, 'signedIn'), value: nameOf(me, lang), tone: 'muted' },
     { label: hx(lang, 'zone'), value: fam.timezone, tone: 'muted' },
-    ...(input.llm ? [{ label: hx(lang, 'model'), value: input.llm === 'fake' ? hx(lang, 'modelFake') : hx(lang, 'modelLive'), tone: input.llm === 'fake' ? 'accent' : 'muted' }] : [])
+    ...(input.llm ? [{ label: hx(lang, 'model'), value: input.llm === 'fake' ? hx(lang, 'modelFake') : input.llm === 'live' ? hx(lang, 'modelLive') : hx(lang, 'modelOff'), tone: input.llm === 'live' ? 'muted' : 'accent' }] : [])
   ];
   const field = (name: string, label: string, value: string, extra: Record<string, unknown> = {}): A2uiComponent => ({ id: `f-${name}`, component: 'TextField', name, label, default: value, ...extra });
   const children: A2uiComponent[] = [{ id: 'about', component: 'InfoRows', title: hx(lang, 'settings'), dataPath: '/about' }];

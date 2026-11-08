@@ -51,6 +51,7 @@ const TABS: Array<{ screen: HomemindScreenName; en: string; zh: string }> = [
   { screen: 'calendar', en: 'Calendar', zh: '日历' },
   { screen: 'search', en: 'Search', zh: '搜索' },
   { screen: 'rules', en: 'Rules', zh: '规则' },
+  { screen: 'memory', en: 'Memory', zh: '记忆' },
   { screen: 'activity', en: 'Activity', zh: '动态' },
   { screen: 'settings', en: 'Settings', zh: '设置' }
 ];
@@ -260,6 +261,7 @@ export function FamilyView({
             return setAlerts(list => addAlert(list, message.data));
           case 'settings.changed':
           case 'preferences.changed':
+          case 'memory.changed':
             return refreshSoon();
           case 'ppma.status':
             return setPpma(message.data.status);
@@ -462,7 +464,8 @@ export function FamilyView({
       const outcome = await runHomemindAction(action, session.token);
       if (outcome.kind === 'why') {
         const source = outcome.why.source === 'ppma' ? 'PPMA' : outcome.why.source === 'model' ? tr('the model', '模型') : tr('a Homemind rule', 'Homemind 规则');
-        setNotice({ text: `${outcome.why.summary ?? ''} (${tr('Source', '来源')}: ${source})`, tone: 'info' });
+        const explained = outcome.ppma?.state === 'ready' ? ` ${tr('PPMA explains', 'PPMA 的解释')}: ${outcome.ppma.summary || outcome.ppma.rationale || ''}` : outcome.ppma?.state === 'loading' ? ` ${tr('Asking PPMA for its explanation…', '正在向 PPMA 询问解释…')}` : '';
+        setNotice({ text: `${outcome.why.summary ?? ''} (${tr('Source', '来源')}: ${source})${explained}`, tone: 'info' });
         return;
       }
       const removedHere = verb === 'cancel' && (nav.screen === 'edit' || nav.screen === 'item') && nav.params.id === args.itemId;
@@ -474,6 +477,10 @@ export function FamilyView({
           ? tr('Undone.', '已撤销。')
           : verb === 'save-preference'
             ? tr('Preference saved.', '偏好已保存。')
+          : verb === 'memory-correct'
+            ? tr('Correction sent to PPMA. It shows here until PPMA has applied it.', '更正已发送给 PPMA，在 PPMA 处理完成前会显示在这里。')
+          : verb === 'remove-preference'
+            ? tr('Preference removed. PPMA was told.', '偏好已删除，已通知 PPMA。')
           : verb === 'cancel'
             ? tr('Removed.', '已删除。')
             : verb === 'snooze'

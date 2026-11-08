@@ -384,6 +384,8 @@ export type StreamMessage =
   | { event: 'preferences.changed'; data: Record<string, never> }
   /** The PPMA connection changed (T6.1). Carries no family data, so it goes to everyone. */
   | { event: 'ppma.status'; data: { status: PpmaStatus } }
+  /** What PPMA remembers, or an explanation from it, arrived or changed (T6.2). Carries nothing; screens re-read. */
+  | { event: 'memory.changed'; data: Record<string, never> }
   /** The demo was reset: forget everything shown. */
   | { event: 'demo.reset'; data: Record<string, never> };
 
@@ -459,4 +461,33 @@ export interface PendingReminder {
   escalated: boolean;
   /** "Remind me later" was tapped and its time has not come yet. */
   snoozed: boolean;
+}
+
+/** One thing PPMA remembers (T6.2), as a screen shows it. Text is PPMA's, shown as plain text and marked as PPMA's. */
+export interface PpmaMemoryStatement {
+  id: string;
+  text: string;
+  origin: 'user' | 'app' | 'inferred';
+  confidence: number;
+  /** PPMA says this one can be corrected or forgotten. */
+  editable: boolean;
+  view: string;
+  /** A correction was sent and PPMA has not dropped the statement yet. */
+  correcting?: 'wrong' | 'forget';
+}
+
+/** What the "What we know" screen gets from PPMA. `loading` until the first read ends; never invented. */
+export interface PpmaMemoryData {
+  state: 'loading' | 'ready' | 'error';
+  statements: PpmaMemoryStatement[];
+  /** A short code for the last problem. With `ready`, the list is the last good read. */
+  error?: string;
+}
+
+/** PPMA's own explanation of a decision (T6.2), already trimmed. */
+export interface PpmaExplanationData {
+  state: 'ready' | 'loading' | 'unavailable';
+  summary?: string;
+  rationale?: string;
+  basis?: Array<{ kind: string; ref?: string; note: string }>;
 }

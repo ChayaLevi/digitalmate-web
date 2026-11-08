@@ -179,7 +179,7 @@ export const HOST_VERBS = ['add', 'edit', 'search', 'back', 'save', 'save-settin
 
 const ITEM_VERBS = new Set(['claim', 'assign', 'ack', 'handback', 'done', 'approve', 'dismiss', 'cancel', 'open', 'unassign', 'snooze']);
 
-export type ActionOutcome = { kind: 'mutation'; result: MutationResult; verb: string } | { kind: 'why'; why: { summary?: string; source?: string } };
+export type ActionOutcome = { kind: 'mutation'; result: MutationResult; verb: string } | { kind: 'why'; why: { summary?: string; source?: string }; ppma?: { state: string; summary?: string; rationale?: string } };
 
 /**
  * One card button (`kind: 'homemind'`) as a bridge call. The server decides whether it is allowed:
@@ -214,9 +214,18 @@ export async function runHomemindAction(action: A2uiAction, token: string): Prom
     const result = await call<MutationResult>('/api/homemind/preferences', { method: 'POST', token, body: JSON.stringify(body) });
     return { kind: 'mutation', result, verb };
   }
+  if (verb === 'memory-correct') {
+    // T6.2: "That's wrong" / "Forget" on something PPMA remembers. Parents only; the server checks the id.
+    const result = await call<MutationResult>('/api/homemind/memory/correct', { method: 'POST', token, body: JSON.stringify({ statementId: args.statementId, action: args.action }) });
+    return { kind: 'mutation', result, verb };
+  }
+  if (verb === 'remove-preference') {
+    const result = await call<MutationResult>('/api/homemind/preferences', { method: 'POST', token, body: JSON.stringify({ id: args.preferenceId, remove: true }) });
+    return { kind: 'mutation', result, verb };
+  }
   if (verb === 'why') {
-    const body = await call<{ why: { summary?: string; source?: string } }>(`/api/homemind/why/${id(args.whyId)}`, { token });
-    return { kind: 'why', why: body.why };
+    const body = await call<{ why: { summary?: string; source?: string }; ppma?: { state: string; summary?: string; rationale?: string } }>(`/api/homemind/why/${id(args.whyId)}`, { token });
+    return { kind: 'why', why: body.why, ...(body.ppma ? { ppma: body.ppma } : {}) };
   }
   throw new HomemindError(400, 'unknown_action', `Unknown Homemind action: ${verb || action.id}`);
 }

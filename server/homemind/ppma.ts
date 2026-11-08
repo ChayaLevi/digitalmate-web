@@ -18,7 +18,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { writeJsonAtomic } from './store';
-import type { PpmaStatus } from './types';
+import type { PpmaExplanationData, PpmaMemoryData, PpmaMemoryStatement, PpmaStatus } from './types';
 
 export const PPMA_APP = 'homemind';
 export const PPMA_APP_VERSION = '0.1.0';
@@ -312,6 +312,62 @@ export function sseParser(onFrame: (frame: SseFrame) => void): (chunk: string) =
   };
 }
 
+// --- reading PPMA's memory and explanations (T6.2) -----------------------------------------------------
+
+/** The owner token reads memory; at most one read per this long unless forced. */
+export const PPMA_MEMORY_MIN_INTERVAL_MS = 5000;
+const MEMORY_VIEWS_MAX = 8;
+const MEMORY_STATEMENTS_MAX = 200;
+const EXPLAIN_CACHE_MAX = 100;
+const EXPLAIN_RETRY_MS = 30_000;
+const CORRECTION_KEEP_MS = 5 * 60_000;
+const VIEW_NAME = /^[A-Za-z0-9_.:-]{1,64}$/;
+const STATEMENT_ID = /^[A-Za-z0-9_.:-]{1,80}$/;
+const DECISION_ID = /^[A-Za-z0-9_.:-]{1,80}$/;
+/** The fake agent stores an event type as a statement. That is noise, not memory. */
+const EVENT_TYPE_TEXT = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/;
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
+const clip = (value: unknown, max: number): string => (typeof value === 'string' ? value.replace(CONTROL, '').trim().slice(0, max) : '');
+
+export const isStatementId = (value: unknown): value is string => typeof value === 'string' && STATEMENT_ID.test(value);
+export const isDecisionId = (value: unknown): value is string => typeof value === 'string' && DECISION_ID.test(value);
+
+/** One memory view from PPMA, reduced to what a screen needs. Anything off-shape is dropped, never guessed. */
+export function parseMemoryView(body: unknown, view: string): PpmaMemoryStatement[] {
+  const raw = (body as { statements?: unknown } | undefined)?.statements;
+  if (!Array.isArray(raw)) return [];
+  const out: PpmaMemoryStatement[] = [];
+  for (const entry of raw) {
+    if (out.length >= MEMORY_STATEMENTS_MAX) break;
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    const text = clip(e.text, 500);
+    if (!isStatementId(e.id) || !text || EVENT_TYPE_TEXT.test(text)) continue;
+    const confidence = typeof e.confidence === 'number' && Number.isFinite(e.confidence) ? Math.min(1, Math.max(0, e.confidence)) : 0;
+    out.push({ id: e.id, text, origin: e.origin === 'user' || e.origin === 'app' ? e.origin : 'inferred', confidence, editable: e.editable === true, view });
+  }
+  return out;
+}
+
+/** PPMA's explanation of a decision, trimmed. `null` when it has no usable shape. */
+export function parseExplanation(body: unknown): Omit<PpmaExplanationData, 'state'> | null {
+  if (!body || typeof body !== 'object') return null;
+  const b = body as Record<string, unknown>;
+  const summary = clip(b.summary, 500);
+  const rationale = clip(b.rationale, 1000);
+  const basis = (Array.isArray(b.basis) ? b.basis : [])
+    .slice(0, 10)
+    .map(entry => {
+      const e = (entry ?? {}) as Record<string, unknown>;
+      const ref = clip(e.ref, 80);
+      return { kind: clip(e.kind, 40) || 'basis', ...(ref ? { ref } : {}), note: clip(e.note, 300) };
+    })
+    .filter(entry => entry.note || entry.ref);
+  if (!summary && !rationale && !basis.length) return null;
+  return { ...(summary ? { summary } : {}), ...(rationale ? { rationale } : {}), basis };
+}
+
 // --- the client ---------------------------------------------------------------------------------------
 
 export interface PpmaDeps {
@@ -345,6 +401,22 @@ export interface PpmaClient {
   setCommandHandler(handler: CommandHandler): void;
   /** For tests: resolves when the queue is empty and saved (or after `timeoutMs`). */
   drained(timeoutMs?: number): Promise<boolean>;
+  /**
+   * What PPMA remembers, from the last read. Never waits for PPMA: a first call answers `loading` and starts
+   * the read in the background (see `onMemory`). Statements already corrected are marked `correcting`.
+   */
+  memory(): PpmaMemoryData;
+  /** Starts a background read of the memory views (rate limited unless `force`). Never throws, never waits. */
+  refreshMemory(options?: { force?: boolean }): void;
+  /** PPMA's explanation of one of its decisions, from the cache; `loading` starts the read in the background. */
+  explanation(decisionId: string): PpmaExplanationData;
+  /**
+   * "That's wrong" or "Forget" on one statement: queues a `user.correction` and returns its id (null if PPMA
+   * is off). The statement shows as `correcting` until a later read no longer has it.
+   */
+  correct(correction: { statementId: string; action: 'wrong' | 'forget'; text: string }): string | null;
+  /** Called when the memory or an explanation changed. */
+  onMemory(listener: () => void): () => void;
 }
 
 type Wire = { ok: true; status: number; body: unknown } | { ok: false; code: string; status?: number; body?: unknown };
@@ -621,6 +693,9 @@ export function createPpmaClient(config: PpmaConfig, deps: PpmaDeps = {}): PpmaC
     }
     if (message && message.kind === 'command' && typeof message.id === 'string' && typeof message.type === 'string' && (!message.target || message.target === PPMA_APP)) {
       await answer(message as PpmaCommand);
+    } else if (message && message.type === 'ppma.memory_updated') {
+      // PPMA changed what it remembers. Read again once things settle, but only if someone has looked at the memory.
+      if (memoryAskedAt > 0) laterRefresh(800);
     } else if (message && config.debug) {
       debug(`stream ${message.kind ?? '?'} ${typeof message.type === 'string' ? message.type.slice(0, 80) : '?'} (not a command, ignored)`);
     }
@@ -737,7 +812,108 @@ export function createPpmaClient(config: PpmaConfig, deps: PpmaDeps = {}): PpmaC
     }
   }
 
-  return {
+  // --- memory and explanations: read in the background, answered from a cache ---
+
+  let memoryCache: PpmaMemoryStatement[] | null = null;
+  let memoryError: string | undefined;
+  let memoryBusy: Promise<void> | null = null;
+  let memoryAskedAt = 0;
+  const corrections = new Map<string, { action: 'wrong' | 'forget'; at: number }>();
+  type ExplainEntry = { state: 'ready'; data: Omit<PpmaExplanationData, 'state'> } | { state: 'loading' } | { state: 'unavailable'; at: number };
+  const explains = new Map<string, ExplainEntry>();
+  const memoryListeners = new Set<() => void>();
+  const announce = () => {
+    for (const listener of memoryListeners) {
+      try {
+        listener();
+      } catch {
+        // A listener's failure never stops the client.
+      }
+    }
+  };
+
+  async function fetchMemory(): Promise<void> {
+    const before = JSON.stringify([memoryCache, memoryError]);
+    const space = encodeURIComponent(config.space);
+    const owner = await ownerToken();
+    if (!owner) {
+      memoryError = 'owner_token_missing';
+    } else {
+      const list = await call('GET', `/v0/spaces/${space}/memory/views`, { token: owner, purpose: 'memory views' });
+      if (!list.ok) {
+        memoryError = list.status === 401 || list.status === 403 ? 'owner_token_refused' : list.code;
+      } else {
+        const names = (list.body as { views?: unknown } | undefined)?.views;
+        const views = (Array.isArray(names) ? names : [])
+          .map(v => (v && typeof v === 'object' ? (v as { view?: unknown }).view : undefined))
+          .filter((v): v is string => typeof v === 'string' && VIEW_NAME.test(v))
+          .slice(0, MEMORY_VIEWS_MAX);
+        const statements: PpmaMemoryStatement[] = [];
+        let failed: string | undefined;
+        for (const view of views) {
+          const one = await call('GET', `/v0/spaces/${space}/memory/views/${encodeURIComponent(view)}`, { token: owner, purpose: 'memory view' });
+          if (!one.ok) {
+            failed = one.status === 401 || one.status === 403 ? 'owner_token_refused' : one.code;
+            break;
+          }
+          statements.push(...parseMemoryView(one.body, view));
+        }
+        if (failed) {
+          memoryError = failed;
+        } else {
+          memoryCache = statements;
+          memoryError = undefined;
+          // A correction is done once PPMA no longer has the statement, or after a while.
+          const present = new Set(statements.map(s => s.id));
+          for (const [id, entry] of corrections) if (!present.has(id) || now() - entry.at > CORRECTION_KEEP_MS) corrections.delete(id);
+        }
+      }
+    }
+    // Only a real change is announced, so a screen that re-reads after the news does not start a loop.
+    if (JSON.stringify([memoryCache, memoryError]) !== before) announce();
+  }
+
+  function refreshMemory(options: { force?: boolean } = {}): void {
+    if (!base || stopped || memoryBusy) return;
+    if (!options.force && now() - memoryAskedAt < PPMA_MEMORY_MIN_INTERVAL_MS) return;
+    memoryAskedAt = now();
+    memoryBusy = fetchMemory()
+      .catch(() => {
+        memoryError = 'network';
+      })
+      .finally(() => {
+        memoryBusy = null;
+      });
+  }
+
+  async function fetchExplanation(decisionId: string): Promise<void> {
+    let entry: ExplainEntry = { state: 'unavailable', at: now() };
+    try {
+      const owner = await ownerToken();
+      if (owner) {
+        const res = await call('GET', `/v0/spaces/${encodeURIComponent(config.space)}/decisions/${encodeURIComponent(decisionId)}/explain`, { token: owner, purpose: 'explain' });
+        const data = res.ok ? parseExplanation(res.body) : null;
+        if (data) entry = { state: 'ready', data };
+      }
+    } catch {
+      // Stays unavailable; the next ask after the retry time reads again.
+    }
+    explains.set(decisionId, entry);
+    announce();
+  }
+
+  let laterTimer: ReturnType<typeof setTimeout> | undefined;
+  /** One forced read after `ms`. A newer call replaces a waiting one, so a burst of PPMA updates makes one read. */
+  const laterRefresh = (ms: number) => {
+    if (laterTimer) clearTimeout(laterTimer);
+    laterTimer = setTimeout(() => {
+      laterTimer = undefined;
+      refreshMemory({ force: true });
+    }, ms);
+    (laterTimer as { unref?: () => void }).unref?.();
+  };
+
+  const client: PpmaClient = {
     config,
     start() {
       if (started || !base) return;
@@ -746,6 +922,7 @@ export function createPpmaClient(config: PpmaConfig, deps: PpmaDeps = {}): PpmaC
     },
     async stop() {
       stopped = true;
+      if (laterTimer) clearTimeout(laterTimer);
       streamAbort?.abort();
       kick();
       await Promise.allSettled(loops);
@@ -766,6 +943,40 @@ export function createPpmaClient(config: PpmaConfig, deps: PpmaDeps = {}): PpmaC
       } catch {
         return null;
       }
+    },
+    memory() {
+      const statements = (memoryCache ?? []).map(s => (corrections.has(s.id) ? { ...s, correcting: corrections.get(s.id)?.action } : s));
+      return { state: memoryCache ? 'ready' : memoryError ? 'error' : 'loading', statements, ...(memoryError ? { error: memoryError } : {}) };
+    },
+    refreshMemory,
+    explanation(decisionId) {
+      if (!base || !isDecisionId(decisionId)) return { state: 'unavailable' };
+      const known = explains.get(decisionId);
+      if (known?.state === 'ready') return { state: 'ready', ...known.data };
+      if (known?.state === 'loading') return { state: 'loading' };
+      if (known && now() - known.at < EXPLAIN_RETRY_MS) return { state: 'unavailable' };
+      if (stopped) return { state: 'unavailable' };
+      if (explains.size >= EXPLAIN_CACHE_MAX) explains.delete(explains.keys().next().value as string);
+      explains.set(decisionId, { state: 'loading' });
+      void fetchExplanation(decisionId);
+      return { state: 'loading' };
+    },
+    correct({ statementId, action, text }) {
+      if (!base || stopped || !isStatementId(statementId)) return null;
+      const id = client.emit('user.correction', { text: clip(text, 500) || 'correction', statement_id: statementId, action });
+      if (!id) return null;
+      corrections.set(statementId, { action, at: now() });
+      announce();
+      // PPMA says `ppma.memory_updated` on the stream when it has applied it; this read is the fallback for a
+      // PPMA that does not (or a stream that is down). A real model may take much longer, so look once more later.
+      laterRefresh(1500);
+      const later = setTimeout(() => refreshMemory({ force: true }), 25_000);
+      (later as { unref?: () => void }).unref?.();
+      return id;
+    },
+    onMemory(listener) {
+      memoryListeners.add(listener);
+      return () => memoryListeners.delete(listener);
     },
     onStatus(listener) {
       listeners.add(listener);
@@ -788,4 +999,5 @@ export function createPpmaClient(config: PpmaConfig, deps: PpmaDeps = {}): PpmaC
       return false;
     }
   };
+  return client;
 }

@@ -40,7 +40,7 @@ import { planChat } from './homemind/chat';
 import { applyPreferenceRequest, blockedChange, parsePreferenceBody, preferencesForItem } from './homemind/preferences';
 import type { BlockedChoice, PreferenceRequest, PreferenceResult } from './homemind/preferences';
 import { HomemindStore, dataFileFromEnv } from './homemind/store';
-import { createPpmaClient, fileSyncStore, ppmaConfigFromEnv, ppmaSyncFileFor } from './homemind/ppma';
+import { createPpmaClient, fileSyncStore, isStatementId, ppmaConfigFromEnv, ppmaSyncFileFor } from './homemind/ppma';
 import type { PpmaClient } from './homemind/ppma';
 import { handlePpmaCommand, preferenceReport, reminderReport, reportsForChange } from './homemind/ppmaMap';
 import type { PpmaReport } from './homemind/ppmaMap';
@@ -233,10 +233,14 @@ function startPpma(rt: Runtime): void {
   const client = createPpmaClient(config, { sync: fileSyncStore(ppmaSyncFileFor(rt.file)) });
   client.setCommandHandler(async command => {
     const handled = handlePpmaCommand(rt.state, command, rt.clock.now());
-    if (handled.state) await commit(rt, handled.state);
+    // A proposal is a change like any other: saved, shown to every stream, reminders ticked. No actor:
+    // it is PPMA's, so nobody gets an alert "from" a parent, and PPMA's report names no member.
+    if (handled.state) await commit(rt, handled.state, handled.events ?? []);
     return handled.outcome;
   });
   client.onStatus(status => rt.hub.broadcast({ event: 'ppma.status', data: { status } }));
+  // The memory or an explanation arrived or changed: open screens read again (the news carries nothing).
+  client.onMemory(() => rt.hub.broadcast({ event: 'memory.changed', data: {} }));
   rt.ppma = client;
   client.start();
 }
@@ -657,7 +661,8 @@ async function chatHandler(ctx: Ctx): Promise<void> {
     case 'answer':
       return answer({ kind: 'answer', answer: plan.answer, itemIds: plan.itemIds }, { intent });
     case 'why':
-      return answer({ kind: 'why', explanation: plan.explanation }, { intent });
+      // A stored Why from PPMA carries its decision id: PPMA's own explanation comes from the cache (never waited for).
+      return answer({ kind: 'why', explanation: plan.explanation, ...(plan.explanation.why?.source === 'ppma' && plan.explanation.why.decisionId && rt.ppma ? { ppma: rt.ppma.explanation(plan.explanation.why.decisionId) } : {}) }, { intent });
     case 'suggest':
       return answer({ kind: 'suggest', intent: plan.intent, itemId: plan.itemId, verb: plan.verb, ...(plan.memberId ? { memberId: plan.memberId } : {}), reason: plan.reason }, { intent });
     case 'later':
@@ -783,7 +788,6 @@ const routes: Route[] = [
     handler: ctx => {
       const name = ctx.params[0] as Screen;
       if (!SCREENS.includes(name)) return fail(ctx.response, 404, 'not_found', 'No such screen');
-      if (name === 'memory') return notBuilt('T6.2')(ctx);
       const view = viewFor(ctx.rt.state, ctx.member.id);
       if (!view) return fail(ctx.response, 404, 'not_found', 'No such member');
       const query = (ctx.url.searchParams.get('q') ?? '').slice(0, 100);
@@ -794,6 +798,15 @@ const routes: Route[] = [
       // The item screen lists the preferences that apply to that item, from the member's own view.
       const shown = name === 'item' && edit?.itemId ? view.items.find(i => i.id === edit.itemId) : undefined;
       const itemPreferences = shown ? preferencesForItem(view, shown) : [];
+      // PPMA's explanation of an item it suggested: from the cache, never waited for (it is read in the background).
+      const shownWhy = shown ? view.whys.find(w => w.source === 'ppma' && w.decisionId && w.basis.some(b => b.ref === shown.id)) : undefined;
+      const itemPpma = shownWhy?.decisionId ? ctx.rt.ppma?.explanation(shownWhy.decisionId) : undefined;
+      // "What we know": PPMA's memory from the cache. Asking starts a background read; `memory.changed` brings the answer.
+      let ppmaMemory;
+      if (name === 'memory' && ctx.rt.ppma) {
+        ctx.rt.ppma.refreshMemory();
+        ppmaMemory = ctx.rt.ppma.memory();
+      }
       const isParent = ctx.member.role === 'parent';
       // A view carries no Undo patches, so the server says which changes this member may undo.
       const undoable = ctx.rt.state.activity.filter(a => a.undo && !a.undone && (isParent || a.actor === ctx.member.id)).map(a => a.id);
@@ -808,7 +821,9 @@ const routes: Route[] = [
         llm: llmStatus(llmConfigFromEnv()),
         reminders: pendingRemindersFor(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()),
         ...(edit ? { edit } : {}),
-        ...(name === 'item' && itemPreferences.length ? { itemPreferences } : {})
+        ...(name === 'item' && itemPreferences.length ? { itemPreferences } : {}),
+        ...(itemPpma ? { itemPpma } : {}),
+        ...(ppmaMemory ? { ppmaMemory } : {})
       });
       // The surface is what screens render. `view` stays for the client's forms (ids, versions).
       json(ctx.response, 200, { ...turn, screen: name, lang: ctx.lang, now, view, ppma: ppmaStatusOf(ctx.rt), ...(results ? { query, results } : {}) });
@@ -870,7 +885,29 @@ const routes: Route[] = [
       // From the member's own view, so a "Why?" about a Parents-only item is a plain 404 for a teen.
       const why = viewFor(ctx.rt.state, ctx.member.id)?.whys.find(w => w.id === ctx.params[0]);
       if (!why) return fail(ctx.response, 404, 'not_found', 'No such explanation');
-      json(ctx.response, 200, { why });
+      // A PPMA decision's own explanation comes from the cache; the first ask starts the read and answers `loading`.
+      const ppma = why.source === 'ppma' && why.decisionId ? ctx.rt.ppma?.explanation(why.decisionId) : undefined;
+      json(ctx.response, 200, { why, ...(ppma ? { ppma } : {}) });
+    }
+  },
+  {
+    method: 'POST',
+    pattern: /^\/memory\/correct$/,
+    auth: true,
+    // "That's wrong" / "Forget" on one thing PPMA remembers. Parents only. Queued like every report: PPMA being down never blocks it.
+    handler: async ctx => {
+      const body = pick(await readBody(ctx.request), ['statementId', 'action'], 'correction');
+      if (!isStatementId(body.statementId)) throw new HttpError(400, 'invalid', 'statementId must be an id PPMA gave');
+      if (body.action !== 'wrong' && body.action !== 'forget') throw new HttpError(400, 'invalid', 'action is wrong or forget');
+      if (ctx.member.role !== 'parent') return fail(ctx.response, 403, 'forbidden', 'only a parent can correct what PPMA remembers');
+      if (!ctx.rt.ppma) return fail(ctx.response, 409, 'ppma_off', 'PPMA is not connected');
+      // Only a statement PPMA itself showed us, and one it says can be changed: never an id made up by a client.
+      const statement = ctx.rt.ppma.memory().statements.find(s => s.id === body.statementId);
+      if (!statement || !statement.editable) return fail(ctx.response, 404, 'not_found', 'No such editable statement');
+      if (statement.correcting) return fail(ctx.response, 409, 'conflict', 'A correction for this is already on its way');
+      const id = ctx.rt.ppma.correct({ statementId: statement.id, action: body.action, text: statement.text });
+      if (!id) return fail(ctx.response, 409, 'ppma_off', 'PPMA is not connected');
+      json(ctx.response, 200, { ok: true, queued: true, correctionId: id, ppma: ppmaStatusOf(ctx.rt) });
     }
   },
   { method: 'POST', pattern: /^\/chat$/, auth: true, handler: chatHandler },

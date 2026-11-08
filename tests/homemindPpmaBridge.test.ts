@@ -79,7 +79,7 @@ afterEach(async () => {
   await new Promise(r => setTimeout(r, 50));
   await fake?.close();
   fake = undefined;
-  await rm(dir, { recursive: true, force: true });
+  await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 afterAll(() => {
@@ -143,7 +143,7 @@ describe('PPMA through the bridge (fake PPMA)', () => {
     expect(report.payload).toMatchObject({ change: 'added', about_member_id: 'maya', reason: 'she says noodles upset her stomach', strength: 'soft', actor_id: 'mom' });
   });
 
-  it('answers get_board from PPMA with the family-wide board and a proposal with a plain rejection', async () => {
+  it('answers get_board from PPMA with the family-wide board and a proposal with a proposed item', async () => {
     await withFake();
     await until(async () => (await health()).ppma === 'ok');
     const board = fake!.issueCommand('homemind.get_board', {});
@@ -157,11 +157,11 @@ describe('PPMA through the bridge (fake PPMA)', () => {
     expect(JSON.stringify(boardOutcome.payload.result)).toContain('pickup-today');
     expect(JSON.stringify(boardOutcome.payload.result)).not.toContain('counselor');
     const proposalOutcome = outcomes.find(o => o.causation_id === proposal.message.id)!;
-    expect(proposalOutcome.payload).toMatchObject({ status: 'rejected', path: 'auto' });
-    // Nothing was added to the board.
+    expect(proposalOutcome.payload).toMatchObject({ status: 'executed', path: 'auto' });
+    // It is on the board, waiting for a parent, from PPMA: nothing is assigned, bought or sent.
     const mom = await login('mom');
     const view = (await (await get(mom, '/screen/family')).json()) as { view: { items: Item[] } };
-    expect(view.view.items.some(i => i.title === 'Buy cut fruit')).toBe(false);
+    expect(view.view.items.find(i => i.title === 'Buy cut fruit')).toMatchObject({ status: 'proposed', source: { kind: 'ppma' }, ownership: { state: 'none' } });
   });
 
   it('keeps the PPMA queue and position beside the state file, and a demo reset leaves them', async () => {
@@ -218,4 +218,134 @@ describe('PPMA down', () => {
     controller.abort();
     expect(text).toMatch(/"ppma":"offline"/);
   });
+});
+
+const text = async (token: string, path: string) => (await get(token, path)).text();
+
+describe('proposals, memory and "Why?" (T6.2, fake PPMA)', () => {
+  it('shows a proposal to the family as proposed, and explains it with PPMA\'s own words once they arrive', async () => {
+    await withFake();
+    await until(async () => (await health()).ppma === 'ok');
+    const command = fake!.issueCommand('homemind.propose_item', { title: 'Bring cut fruit' }, { rationale: 'The kindergarten group asked for fruit' });
+    const outcome = await until(() => received().find(m => m.type === 'command.outcome' && m.causation_id === command.message.id));
+    expect(outcome.payload).toMatchObject({ status: 'executed' });
+    const itemId = (outcome.payload.result as { item_id: string }).item_id;
+    // Everyone in the family sees it as proposed; a teen too (it is family-wide).
+    for (const member of ['mom', 'dad', 'maya']) {
+      const body = (await (await get(await login(member), '/screen/family')).json()) as { view: { items: Item[] } };
+      expect(body.view.items.find(i => i.id === itemId)).toMatchObject({ status: 'proposed', source: { kind: 'ppma' } });
+    }
+    const mom = await login('mom');
+    // "Why?": the stored reason at once; PPMA's own explanation comes from its cache, never waited for.
+    const whyRes = await get(mom, `/why/why-${itemId}`);
+    expect(whyRes.status).toBe(200);
+    const first = (await whyRes.json()) as { why: { source: string; summary: string; decisionId?: string }; ppma?: { state: string } };
+    expect(first.why).toMatchObject({ source: 'ppma', summary: 'The kindergarten group asked for fruit' });
+    expect(first.why.decisionId).toBeTruthy();
+    expect(['loading', 'ready']).toContain(first.ppma?.state);
+    const ready = await until(async () => {
+      const body = (await (await get(mom, `/why/why-${itemId}`)).json()) as { ppma?: { state: string; summary?: string } };
+      return body.ppma?.state === 'ready' ? body.ppma : null;
+    });
+    expect(ready.summary).toContain('Fake PPMA');
+    const page = await until(async () => {
+      const t = await text(mom, `/screen/item?id=${itemId}`);
+      return t.includes('Fake PPMA') ? t : null;
+    });
+    expect(page).toContain('Why is this suggested?');
+    expect(page).toContain('The kindergarten group asked for fruit');
+  }, 25_000);
+
+  it('answers a proposal a hard preference rules out with a rejection, and adds nothing', async () => {
+    await withFake();
+    await until(async () => (await health()).ppma === 'ok');
+    const command = fake!.issueCommand('homemind.propose_preparation', { event_id: 'family-dinner', title: 'Bring peanut cookies' });
+    const outcome = await until(() => received().find(m => m.type === 'command.outcome' && m.causation_id === command.message.id));
+    expect(outcome.payload).toMatchObject({ status: 'rejected' });
+    expect(String(outcome.payload.detail)).toContain('hard preference');
+    const mom = await login('mom');
+    const body = (await (await get(mom, '/screen/family')).json()) as { view: { items: Item[] } };
+    expect(body.view.items.some(i => i.title === 'Bring peanut cookies')).toBe(false);
+  }, 25_000);
+
+  it('reads what PPMA remembers in the background, hides event-type noise, and never fabricates when PPMA is off', async () => {
+    const off = await text(await login('mom'), '/screen/memory');
+    expect(off).not.toContain('Noa enjoys cake most');
+    expect(off).toContain('PPMA memory is not connected');
+    await withFake();
+    resetHomemindRuntime();
+    fake!.setMemory([
+      { id: 'st-1', text: 'Noa enjoys cake most', origin: 'user' },
+      { id: 'st-2', text: 'homemind.item_changed', origin: 'inferred' },
+      { id: 'st-3', text: 'Thursday is swimming day', origin: 'inferred', editable: false }
+    ]);
+    await until(async () => (await health()).ppma === 'ok');
+    const mom = await login('mom');
+    // The first look never waits: it may say loading. The answer arrives as a read of the cache.
+    const t0 = Date.now();
+    await get(mom, '/screen/memory');
+    expect(Date.now() - t0).toBeLessThan(1500);
+    const page = await until(async () => {
+      const t = await text(mom, '/screen/memory');
+      return t.includes('Noa enjoys cake most') ? t : null;
+    });
+    expect(page).toContain('Thursday is swimming day');
+    expect(page).not.toContain('homemind.item_changed');
+    expect(page).toContain("PPMA’s own words");
+    // Mom (a parent) gets the buttons for the one that can be changed; a teen gets none and is told why.
+    expect(page).toContain('memory-correct');
+    expect(page.match(/"statementId":"st-3"/)).toBeNull();
+    const teen = await until(async () => {
+      const t = await text(await login('maya'), '/screen/memory');
+      return t.includes('Noa enjoys cake most') ? t : null;
+    });
+    expect(teen).not.toContain('memory-correct');
+    expect(teen).toContain('Only a parent can correct');
+  }, 25_000);
+
+  it('sends a correction as user.correction, shows it as on its way, and the statement goes when PPMA applies it', async () => {
+    await withFake();
+    fake!.setMemory([{ id: 'st-1', text: 'Noa enjoys cake most', origin: 'user' }, { id: 'st-3', text: 'Thursday is swimming day', origin: 'inferred', editable: false }]);
+    await until(async () => (await health()).ppma === 'ok');
+    const mom = await login('mom');
+    await until(async () => (await text(mom, '/screen/memory')).includes('Noa enjoys cake most'));
+    // Only a parent, only a real action, only an id PPMA showed us and says can be changed.
+    expect((await send(await login('maya'), 'POST', '/memory/correct', { statementId: 'st-1', action: 'wrong' })).status).toBe(403);
+    expect((await send(mom, 'POST', '/memory/correct', { statementId: 'st-1', action: 'delete' })).status).toBe(400);
+    expect((await send(mom, 'POST', '/memory/correct', { statementId: 'bad id!', action: 'wrong' })).status).toBe(400);
+    expect((await send(mom, 'POST', '/memory/correct', { statementId: 'st-1', action: 'wrong', text: 'x' })).status).toBe(400);
+    expect((await send(mom, 'POST', '/memory/correct', { statementId: 'nope', action: 'wrong' })).status).toBe(404);
+    expect((await send(mom, 'POST', '/memory/correct', { statementId: 'st-3', action: 'forget' })).status).toBe(404);
+    expect(received().some(m => m.type === 'user.correction')).toBe(false);
+
+    const res = await send(mom, 'POST', '/memory/correct', { statementId: 'st-1', action: 'wrong' });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { queued: boolean }).queued).toBe(true);
+    const correction = await until(() => received().find(m => m.type === 'user.correction'));
+    expect(correction.payload).toMatchObject({ statement_id: 'st-1', action: 'wrong', text: 'Noa enjoys cake most' });
+    // A second tap while it is on its way is refused.
+    const again = await send(mom, 'POST', '/memory/correct', { statementId: 'st-1', action: 'forget' });
+    expect([409, 404]).toContain(again.status);
+    // Once PPMA has applied it, a later read no longer has the statement.
+    await until(async () => !(await text(mom, '/screen/memory')).includes('Noa enjoys cake most'), 9000);
+  }, 25_000);
+
+  it('a correction waits in the queue while PPMA is down, and nothing is lost', async () => {
+    await withFake();
+    fake!.setMemory([{ id: 'st-1', text: 'Noa enjoys cake most', origin: 'user' }]);
+    await until(async () => (await health()).ppma === 'ok');
+    const mom = await login('mom');
+    await until(async () => (await text(mom, '/screen/memory')).includes('Noa enjoys cake most'));
+    fake!.setDown(true);
+    const res = await send(mom, 'POST', '/memory/correct', { statementId: 'st-1', action: 'forget' });
+    expect(res.status).toBe(200);
+    expect(received().some(m => m.type === 'user.correction')).toBe(false);
+    fake!.setDown(false);
+    await until(() => received().find(m => m.type === 'user.correction'), 9000);
+  }, 25_000);
+
+  it('refuses a correction when PPMA is not connected', async () => {
+    const res = await send(await login('mom'), 'POST', '/memory/correct', { statementId: 'st-1', action: 'wrong' });
+    expect(res.status).toBe(409);
+  }, 25_000);
 });

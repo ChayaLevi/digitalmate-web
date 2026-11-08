@@ -5,12 +5,16 @@
  * preparations under them) are never sent in this version; an item that becomes Parents-only is
  * reported as `hidden` with nothing about it but its id. A sensitive item goes without title or notes.
  *
- * Commands: `homemind.get_board` reads the family-wide board. The proposal tools are T6.2; until then
- * they are answered `rejected` with a plain reason, so every command still gets its one outcome.
+ * Commands: `homemind.get_board` reads the family-wide board. The proposal tools (T6.2) only ever create
+ * a `proposed` item, with a `Why` that says it came from PPMA; a parent approves or dismisses it. Nothing
+ * a command does sends, buys or orders. Every command still gets exactly one outcome.
  */
-import type { CoreEvent } from './core';
+import { applyChange } from './core';
+import type { CoreEvent, NewItem } from './core';
 import type { CommandOutcome, PpmaCommand } from './ppma';
-import type { HomemindState, Item, Preference } from './types';
+import { isDecisionId } from './ppma';
+import { applicablePreferences, blockedChange, itemContext } from './preferences';
+import type { HomemindState, Item, Preference, Why } from './types';
 import { isFamilyWide } from './visibility';
 
 export interface PpmaReport {
@@ -145,17 +149,118 @@ export function boardForPpma(state: HomemindState, nowMs: number): Record<string
 
 const PROPOSAL_TOOLS = new Set(['homemind.propose_item', 'homemind.propose_preparation', 'homemind.add_to_shopping']);
 
+// --- proposals from PPMA (T6.2) -----------------------------------------------------------------------
+
+/** How much PPMA may put on the board at once, and how far its dates may reach. */
+export const PROPOSAL_LIMITS = { waiting: 20, title: 120, notes: 500, pastMs: 2 * DAY, aheadMs: 400 * DAY, eventMinutes: 60 } as const;
+
+const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const ISO_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
+const text = (value: unknown, max: number): string => (typeof value === 'string' ? value.replace(CONTROL, '').trim().slice(0, max) : '');
+const titleKey = (title: string) => title.toLowerCase().replace(/[\s\p{P}]+/gu, '');
+
+type Parsed = { ok: true; item: NewItem } | { ok: false; detail: string };
+const refuse = (detail: string): Parsed => ({ ok: false, detail });
+
+/** A date-time with an offset, from 2 days back to 400 days ahead. `undefined` when absent; `null` when bad. */
+function dateArg(value: unknown, nowMs: number): string | undefined | null {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string' || !ISO_WITH_OFFSET.test(value)) return null;
+  const t = Date.parse(value);
+  if (!Number.isFinite(t) || t < nowMs - PROPOSAL_LIMITS.pastMs || t > nowMs + PROPOSAL_LIMITS.aheadMs) return null;
+  return new Date(t).toISOString();
+}
+
+/** What a proposal tool asks for, checked by hand. Unknown arguments are ignored, never passed on. */
+function parseProposal(state: HomemindState, tool: string, args: Record<string, unknown>, nowMs: number): Parsed {
+  const title = text(args.title, PROPOSAL_LIMITS.title);
+  if (!title) return refuse('title is required');
+  const source = { kind: 'ppma' as const, label: 'PPMA' };
+  if (tool === 'homemind.add_to_shopping') {
+    return { ok: true, item: { type: 'task', title, notes: 'Shopping suggestion from PPMA. Nothing is bought.', source } };
+  }
+  if (tool === 'homemind.propose_preparation') {
+    const eventId = typeof args.event_id === 'string' ? args.event_id : '';
+    const event = ID_PATTERN.test(eventId) ? state.items.find(i => i.id === eventId) : undefined;
+    // PPMA only knows the family-wide board, so a Parents-only event answers like a missing one.
+    if (!event || event.type !== 'event' || (event.status !== 'open' && event.status !== 'proposed') || !isFamilyWide(state, event)) return refuse('No such event on the family board');
+    const due = dateArg(args.due, nowMs);
+    if (due === null) return refuse('due must be a date-time with an offset, within the next 400 days');
+    return { ok: true, item: { type: 'preparation', title, parentEventId: event.id, ...(due ? { start: due } : {}), source } };
+  }
+  const start = dateArg(args.start, nowMs);
+  if (start === null) return refuse('start must be a date-time with an offset, within the next 400 days');
+  const notes = text(args.notes, PROPOSAL_LIMITS.notes);
+  const common = { title, ...(notes ? { notes } : {}), source };
+  if (!start) return { ok: true, item: { type: 'task', ...common } };
+  return { ok: true, item: { type: 'event', ...common, start, end: new Date(Date.parse(start) + PROPOSAL_LIMITS.eventMinutes * 60_000).toISOString() } };
+}
+
+/** The same thing already waiting or on the board: same words, and the same time or the same event. */
+function alreadyThere(state: HomemindState, item: NewItem): boolean {
+  const key = titleKey(item.title);
+  return state.items.some(
+    i => (i.status === 'open' || i.status === 'proposed') && titleKey(i.title) === key && i.type === item.type && i.start === item.start && i.parentEventId === item.parentEventId
+  );
+}
+
+const rejected = (detail: string): { outcome: CommandOutcome } => ({ outcome: { status: 'rejected', path: 'auto', detail } });
+
 /**
- * What a PPMA command does to Homemind. Returns the outcome and, when the board changed, the new state.
- * `nowMs` is the board's (demo) time.
+ * One proposal command as a `proposed` item. The technical actor is the first parent (the core needs a member),
+ * but the item's source is PPMA and its `Why` says so. Refused, with a plain reason, when Homemind is paused, too
+ * many suggestions wait, the arguments are bad, it is already there, or a hard preference rules it out.
  */
-export function handlePpmaCommand(state: HomemindState, command: PpmaCommand, nowMs: number): { outcome: CommandOutcome; state?: HomemindState } {
+function proposeFromPpma(state: HomemindState, command: PpmaCommand, nowMs: number): { outcome: CommandOutcome; state?: HomemindState; events?: CoreEvent[] } {
+  if (state.family.paused) return rejected('Homemind is paused, so it takes no suggestions');
+  const args = command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload) ? command.payload : {};
+  const parsed = parseProposal(state, command.type, args, nowMs);
+  if (!parsed.ok) return rejected(parsed.detail);
+  if (state.items.filter(i => i.status === 'proposed' && i.source.kind === 'ppma').length >= PROPOSAL_LIMITS.waiting) return rejected('Too many suggestions are waiting for a parent');
+  if (alreadyThere(state, parsed.item)) return rejected('Already on the board');
+  const actor = state.family.members.find(m => m.role === 'parent' && m.hasAccount);
+  if (!actor) return { outcome: { status: 'failed', path: 'auto', detail: 'Homemind has no parent to ask' } };
+
+  const change = { kind: 'create', item: { ...parsed.item, proposed: true } } as const;
+  const blocked = blockedChange(state, change);
+  if (blocked.length) return rejected(`Blocked by a family hard preference (${blocked[0].term})`);
+  const result = applyChange(state, change, actor.id, { now: () => nowMs });
+  if (!result.ok) return rejected(`Homemind could not add it: ${result.message}`.slice(0, 200));
+
+  const created = result.items[0];
+  const rationale = text(command.rationale, 500);
+  const considered = applicablePreferences(result.state.preferences, itemContext(result.state.items, result.state.family.members, created)).slice(0, 5);
+  const why: Why = {
+    id: `why-${created.id}`,
+    summary: rationale || 'PPMA suggested this from what it knows about the family.',
+    basis: [
+      ...(rationale ? [{ kind: 'ppma_rationale', ref: created.id, note: rationale }] : []),
+      ...(typeof command.confidence === 'number' && Number.isFinite(command.confidence) ? [{ kind: 'confidence', ref: created.id, note: Math.min(1, Math.max(0, command.confidence)).toFixed(2) }] : []),
+      // The saved preferences that applied when it was proposed, so a corrected preference shows in the next one.
+      ...considered.map(p => ({ kind: 'preference', note: `${p.text} (${p.strength === 'hard' ? 'hard' : 'soft'})`.slice(0, 300) }))
+    ],
+    source: 'ppma',
+    ...(isDecisionId(command.decision_id) ? { decisionId: command.decision_id } : {})
+  };
+  const whys = [...result.state.whys.filter(w => w.id !== why.id), why];
+  return {
+    outcome: { status: 'executed', path: 'auto', result: { item_id: created.id, status: 'proposed', awaits: 'a parent to approve or dismiss' } },
+    state: { ...result.state, whys },
+    events: result.events
+  };
+}
+
+/**
+ * What a PPMA command does to Homemind. Returns the outcome and, when the board changed, the new state with the
+ * core events to publish. `nowMs` is the board's (demo) time.
+ */
+export function handlePpmaCommand(state: HomemindState, command: PpmaCommand, nowMs: number): { outcome: CommandOutcome; state?: HomemindState; events?: CoreEvent[] } {
   if (command.type === 'homemind.get_board') {
     return { outcome: { status: 'executed', path: 'auto', result: boardForPpma(state, nowMs) } };
   }
-  if (PROPOSAL_TOOLS.has(command.type)) {
-    return { outcome: { status: 'rejected', path: 'auto', detail: 'Homemind does not take proposals from PPMA yet' } };
-  }
+  if (PROPOSAL_TOOLS.has(command.type)) return proposeFromPpma(state, command, nowMs);
   if (command.type.startsWith('ui.')) {
     return { outcome: { status: 'rejected', path: 'auto', detail: 'Homemind does not show PPMA notifications in this version' } };
   }

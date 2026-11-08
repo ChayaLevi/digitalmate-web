@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { fixedClock } from '../server/homemind/clock';
 import { applyChange } from '../server/homemind/core';
 import type { Change, ChangeSuccess } from '../server/homemind/core';
-import { boardForPpma, handlePpmaCommand, preferenceReport, reminderReport, reportsForChange } from '../server/homemind/ppmaMap';
+import { PROPOSAL_LIMITS, boardForPpma, handlePpmaCommand, preferenceReport, reminderReport, reportsForChange } from '../server/homemind/ppmaMap';
 import type { PpmaCommand } from '../server/homemind/ppma';
 import { seedState } from '../server/homemind/seed';
 import type { HomemindState } from '../server/homemind/types';
@@ -146,13 +146,151 @@ describe('commands', () => {
     expect(boardForPpma(state, NOW)).toEqual(result);
   });
 
-  it('answers proposals, ui and policy commands with a plain rejection until T6.2, changing nothing', () => {
+  it('answers ui and policy commands and unknown ones with a plain rejection, changing nothing', () => {
     const state = fresh();
-    for (const type of ['homemind.propose_item', 'homemind.propose_preparation', 'homemind.add_to_shopping', 'ui.notify', 'policy.set_threshold', 'other.thing']) {
+    for (const type of ['ui.notify', 'ui.ask', 'policy.set_threshold', 'other.thing']) {
       const handled = handlePpmaCommand(state, command(type, { title: 'x' }), NOW);
       expect(handled.outcome.status).toBe('rejected');
       expect(handled.outcome.detail).toBeTruthy();
       expect(handled.state).toBeUndefined();
     }
+  });
+});
+
+describe('proposals from PPMA (T6.2)', () => {
+  const START = '2026-11-06T09:00:00+08:00';
+  const propose = (state: HomemindState, type: string, payload: Record<string, unknown>, extra: Partial<PpmaCommand> = {}) => handlePpmaCommand(state, { ...command(type, payload), ...extra }, NOW);
+  const proposedItems = (state: HomemindState) => state.items.filter(i => i.source.kind === 'ppma');
+
+  it('proposes a task without a time and an event with one, both waiting for a parent', () => {
+    const state = fresh();
+    const task = propose(state, 'homemind.propose_item', { title: 'Check the swim bag', notes: 'Goggles?' });
+    expect(task.outcome).toMatchObject({ status: 'executed', path: 'auto' });
+    const created = task.state!.items.find(i => i.title === 'Check the swim bag')!;
+    expect(created).toMatchObject({ type: 'task', status: 'proposed', notes: 'Goggles?', source: { kind: 'ppma', label: 'PPMA' }, ownership: { state: 'none' } });
+    expect(task.events!.map(e => e.itemId)).toContain(created.id);
+    expect(task.outcome.result).toMatchObject({ item_id: created.id, status: 'proposed' });
+
+    const event = propose(task.state!, 'homemind.propose_item', { title: 'Kindergarten party', start: START });
+    const party = event.state!.items.find(i => i.title === 'Kindergarten party')!;
+    expect(party).toMatchObject({ type: 'event', status: 'proposed', start: '2026-11-06T01:00:00.000Z', end: '2026-11-06T02:00:00.000Z' });
+  });
+
+  it('puts a preparation under a family-wide event, and a shopping suggestion is a task that buys nothing', () => {
+    const state = fresh();
+    const prep = propose(state, 'homemind.propose_preparation', { event_id: 'family-dinner', title: 'Bring a dessert', due: START });
+    expect(prep.outcome.status).toBe('executed');
+    expect(prep.state!.items.find(i => i.title === 'Bring a dessert')).toMatchObject({ type: 'preparation', parentEventId: 'family-dinner', status: 'proposed', start: '2026-11-06T01:00:00.000Z' });
+    const shop = propose(state, 'homemind.add_to_shopping', { title: 'Cut fruit' });
+    const task = shop.state!.items.find(i => i.title === 'Cut fruit')!;
+    expect(task).toMatchObject({ type: 'task', status: 'proposed' });
+    expect(task.notes).toContain('Nothing is bought');
+  });
+
+  it('writes a Why that says PPMA, with its reason, confidence and decision id, and never an actor in the report', () => {
+    const state = fresh();
+    const done = propose(state, 'homemind.propose_item', { title: 'Plan the party' }, { rationale: 'The group asked for fruit', confidence: 0.7, decision_id: 'dec-1' });
+    const created = done.state!.items.find(i => i.title === 'Plan the party')!;
+    const why = done.state!.whys.find(w => w.basis.some(b => b.ref === created.id))!;
+    expect(why).toMatchObject({ id: `why-${created.id}`, source: 'ppma', summary: 'The group asked for fruit', decisionId: 'dec-1' });
+    expect(why.basis).toContainEqual({ kind: 'confidence', ref: created.id, note: '0.70' });
+    // The report to PPMA about the new item names no member as the actor.
+    const reports = reportsForChange(state, done.state!, done.events!, undefined);
+    expect(reports[0].payload).toMatchObject({ item_id: created.id, source: 'ppma', change: 'created' });
+    expect(reports[0].payload.actor_id).toBeUndefined();
+  });
+
+  it('keeps a decision id only when it is well formed, and falls back to a plain reason', () => {
+    const state = fresh();
+    const done = propose(state, 'homemind.propose_item', { title: 'Odd one' }, { decision_id: 'bad id with spaces', rationale: '' });
+    const created = done.state!.items.find(i => i.title === 'Odd one')!;
+    const why = done.state!.whys.find(w => w.basis.some(b => b.ref === created.id) || w.id === `why-${created.id}`)!;
+    expect(why.decisionId).toBeUndefined();
+    expect(why.summary).toContain('PPMA suggested');
+  });
+
+  it('refuses with a plain reason and changes nothing', () => {
+    const state = fresh();
+    const refused = (type: string, payload: Record<string, unknown>, s = state) => {
+      const handled = propose(s, type, payload);
+      expect(handled.outcome.status, JSON.stringify(payload)).toBe('rejected');
+      expect(handled.outcome.detail).toBeTruthy();
+      expect(handled.state).toBeUndefined();
+      return handled.outcome.detail as string;
+    };
+    refused('homemind.propose_item', {});
+    refused('homemind.propose_item', { title: '   ' });
+    refused('homemind.propose_item', { title: 'x', start: 'tomorrow' });
+    refused('homemind.propose_item', { title: 'x', start: '2026-11-06T09:00:00' });
+    refused('homemind.propose_item', { title: 'x', start: '2031-11-06T09:00:00+08:00' });
+    refused('homemind.propose_item', { title: 'x', start: '2020-11-06T09:00:00+08:00' });
+    refused('homemind.propose_preparation', { title: 'x', event_id: 'no-such-event' });
+    refused('homemind.propose_preparation', { title: 'x', event_id: 'pickup-today/../x' });
+    refused('homemind.propose_preparation', { title: 'x', event_id: 'library-books' });
+    // A Parents-only event answers like a missing one: PPMA never learns it exists.
+    expect(refused('homemind.propose_preparation', { title: 'Bring tea', event_id: 'counselor-meeting' })).toBe('No such event on the family board');
+    refused('homemind.add_to_shopping', { title: 5 });
+  });
+
+  it('refuses while paused, and when the same thing is already there', () => {
+    const state = fresh();
+    expect(propose({ ...state, family: { ...state.family, paused: true } }, 'homemind.propose_item', { title: 'Anything' }).outcome).toMatchObject({ status: 'rejected' });
+    const first = propose(state, 'homemind.propose_item', { title: 'Check the swim bag' });
+    const again = propose(first.state!, 'homemind.propose_item', { title: 'check the swim bag!' });
+    expect(again.outcome).toMatchObject({ status: 'rejected', detail: 'Already on the board' });
+    // The same words at another time are a different thing.
+    expect(propose(first.state!, 'homemind.propose_item', { title: 'Check the swim bag', start: START }).outcome.status).toBe('executed');
+  });
+
+  it('stops at the number of suggestions waiting for a parent', () => {
+    let state = fresh();
+    for (let n = 0; n < PROPOSAL_LIMITS.waiting; n++) {
+      const handled = propose(state, 'homemind.propose_item', { title: `Idea ${n}` });
+      expect(handled.outcome.status).toBe('executed');
+      state = handled.state!;
+    }
+    expect(propose(state, 'homemind.propose_item', { title: 'One more' }).outcome).toMatchObject({ status: 'rejected', detail: 'Too many suggestions are waiting for a parent' });
+    // A parent approving one makes room.
+    const first = proposedItems(state)[0];
+    state = apply(state, { kind: 'approve', itemId: first.id, version: first.version }).state;
+    expect(propose(state, 'homemind.propose_item', { title: 'One more' }).outcome.status).toBe('executed');
+  });
+
+  it('never proposes what a hard preference rules out, and says which word', () => {
+    const state = fresh();
+    const blocked = propose(state, 'homemind.propose_preparation', { event_id: 'family-dinner', title: 'Bring peanut cookies' });
+    expect(blocked.outcome.status).toBe('rejected');
+    expect(blocked.outcome.detail).toContain('hard preference');
+    expect(blocked.outcome.detail).toContain('peanut');
+    expect(blocked.state).toBeUndefined();
+    // Without the preference the same suggestion goes through: the saved preference decided, not a guess.
+    const without = { ...state, preferences: state.preferences.filter(p => p.id !== 'pref-noa-peanuts') };
+    expect(propose(without, 'homemind.propose_preparation', { event_id: 'family-dinner', title: 'Bring peanut cookies' }).outcome.status).toBe('executed');
+  });
+
+  it('lists the saved preferences that applied, so a removed preference is gone from the next suggestion', () => {
+    let state = fresh();
+    const party = propose(state, 'homemind.propose_item', { title: 'Kindergarten party', start: START });
+    state = party.state!;
+    const partyId = state.items.find(i => i.title === 'Kindergarten party')!.id;
+    const considered = (s: HomemindState, title: string) => {
+      const created = s.items.find(i => i.title === title)!;
+      return s.whys.find(w => w.id === `why-${created.id}`)!.basis.filter(b => b.kind === 'preference').map(b => b.note);
+    };
+    const first = propose(state, 'homemind.propose_preparation', { event_id: partyId, title: 'Bake a cake' }, { rationale: 'She enjoys it' });
+    expect(first.outcome.status).toBe('executed');
+    expect(considered(first.state!, 'Bake a cake').join(' ')).toContain('bake a cake');
+    // The correction: the family removes the preference. The next suggestion no longer lists it.
+    const corrected = { ...first.state!, preferences: first.state!.preferences.filter(p => p.id !== 'pref-noa-cake') };
+    const next = propose(corrected, 'homemind.propose_preparation', { event_id: partyId, title: 'Bring plates' });
+    expect(next.outcome.status).toBe('executed');
+    expect(considered(next.state!, 'Bring plates').join(' ')).not.toContain('bake a cake');
+  });
+
+  it('ignores arguments it does not know and cannot be made to set an owner, a person or a visibility', () => {
+    const state = fresh();
+    const handled = propose(state, 'homemind.propose_item', { title: 'Sneaky', owner_id: 'dad', for_member_ids: ['noa'], visibility: 'parents', sensitive: true, status: 'open', source: { kind: 'manual' } });
+    const created = handled.state!.items.find(i => i.title === 'Sneaky')!;
+    expect(created).toMatchObject({ status: 'proposed', visibility: 'family', sensitive: false, ownership: { state: 'none' }, forMemberIds: [], source: { kind: 'ppma' } });
   });
 });

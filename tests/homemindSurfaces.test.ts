@@ -270,6 +270,108 @@ describe('memory', () => {
     expect(screenTurn('memory', input(s, 'mom', 'zh', { ppma: 'offline' })).jsonl).toContain('PPMA 离线');
     expect(screenTurn('memory', input(s, 'mom', 'en', { ppma: 'ok' })).jsonl).not.toContain('ErrorNotice');
   });
+
+  const statements = [
+    { id: 'st-1', text: 'Noa enjoys cake most', origin: 'user' as const, confidence: 0.9, editable: true, view: 'about_me' },
+    { id: 'st-2', text: 'Thursday is swimming day', origin: 'inferred' as const, confidence: 0.5, editable: false, view: 'about_me' },
+    { id: 'st-3', text: 'Maya likes quiet mornings', origin: 'app' as const, confidence: 0.6, editable: true, view: 'about_me', correcting: 'wrong' as const }
+  ];
+  const ppmaRows = (jsonl: string) => (parse(jsonl).data.ppma ?? []) as Array<{ id: string; title: string; meta: string; ownerLabel: string; actions: Array<{ label: string; args: Record<string, unknown> }> }>;
+
+  it("shows what PPMA remembers as PPMA's words, with That's wrong and Forget for a parent on what can be changed", () => {
+    const s = seed();
+    const turn = screenTurn('memory', input(s, 'mom', 'en', { ppma: 'ok', ppmaMemory: { state: 'ready', statements } }));
+    const rows = ppmaRows(turn.jsonl);
+    expect(rows.map(r => r.title)).toEqual(['Noa enjoys cake most', 'Thursday is swimming day', 'Maya likes quiet mornings']);
+    expect(rows[0].ownerLabel).toBe('You told PPMA');
+    expect(rows[0].actions.map(a => a.label)).toEqual(['That’s wrong', 'Forget']);
+    expect(rows[0].actions[0].args).toEqual({ verb: 'memory-correct', statementId: 'st-1', action: 'wrong' });
+    // Not editable: no buttons. Already corrected: no buttons, and it says the correction is on its way.
+    expect(rows[1].actions).toEqual([]);
+    expect(rows[2].actions).toEqual([]);
+    expect(rows[2].meta).toContain('Correction sent');
+    expect(turn.jsonl).toContain('PPMA’s own words');
+  });
+
+  it('gives a teen the list without buttons, and says only a parent can correct it', () => {
+    const s = seed();
+    const turn = screenTurn('memory', input(s, 'maya', 'en', { ppma: 'ok', ppmaMemory: { state: 'ready', statements } }));
+    expect(ppmaRows(turn.jsonl).every(r => r.actions.length === 0)).toBe(true);
+    expect(turn.jsonl).toContain('Only a parent can correct');
+  });
+
+  it('says loading, failed or empty instead of inventing anything, and shows nothing of PPMA when it is off or offline', () => {
+    const s = seed();
+    expect(screenTurn('memory', input(s, 'mom', 'en', { ppma: 'ok', ppmaMemory: { state: 'loading', statements: [] } })).jsonl).toContain('Reading from PPMA');
+    expect(screenTurn('memory', input(s, 'mom', 'en', { ppma: 'ok' })).jsonl).toContain('Reading from PPMA');
+    expect(screenTurn('memory', input(s, 'mom', 'en', { ppma: 'ok', ppmaMemory: { state: 'error', statements: [], error: 'network' } })).jsonl).toContain('Could not read PPMA');
+    expect(screenTurn('memory', input(s, 'mom', 'en', { ppma: 'ok', ppmaMemory: { state: 'ready', statements: [] } })).jsonl).toContain('has not remembered anything');
+    // The last read is kept when a refresh fails, and the screen says so.
+    const stale = screenTurn('memory', input(s, 'mom', 'en', { ppma: 'ok', ppmaMemory: { state: 'ready', statements, error: 'timeout' } })).jsonl;
+    expect(stale).toContain('Could not read PPMA');
+    expect(stale).toContain('Noa enjoys cake most');
+    for (const ppma of ['off', 'offline'] as const) {
+      expect(screenTurn('memory', input(s, 'mom', 'en', { ppma, ppmaMemory: { state: 'ready', statements } })).jsonl).not.toContain('Noa enjoys cake most');
+    }
+  });
+
+  it('lets a parent remove any saved preference and anyone else only a soft one, and speaks Chinese', () => {
+    const s = seed();
+    const prefRows = (member: string) => (parse(screenTurn('memory', input(s, member, 'en', { ppma: 'off' })).jsonl).data.prefs ?? []) as Array<{ id: string; actions: Array<{ args: Record<string, unknown> }> }>;
+    const mom = prefRows('mom');
+    expect(mom.length).toBeGreaterThan(1);
+    expect(mom.every(r => r.actions.length === 1 && r.actions[0].args.verb === 'remove-preference')).toBe(true);
+    const maya = prefRows('maya');
+    expect(maya.find(r => r.id === 'pref-pref-noa-cake')?.actions).toHaveLength(1);
+    expect(maya.find(r => r.id === 'pref-pref-noa-peanuts')?.actions).toHaveLength(0);
+    const zh = screenTurn('memory', input(s, 'mom', 'zh', { ppma: 'ok', ppmaMemory: { state: 'ready', statements } })).jsonl;
+    expect(zh).toContain('这是错的');
+    expect(zh).toContain('忘掉');
+    expect(zh).toContain('PPMA 记住的内容');
+  });
+});
+
+describe('the Why of a PPMA suggestion (T6.2)', () => {
+  function withPpmaItem() {
+    const s = seed();
+    const item = { ...s.items.find(i => i.id === 'library-books')!, id: 'ppma-1', title: 'Bring cut fruit', status: 'proposed' as const, source: { kind: 'ppma' as const, label: 'PPMA' } };
+    const why = {
+      id: 'why-ppma-1',
+      summary: 'The group asked for fruit',
+      basis: [
+        { kind: 'ppma_rationale', ref: 'ppma-1', note: 'The group asked for fruit' },
+        { kind: 'preference', note: 'No peanuts (hard)' }
+      ],
+      source: 'ppma' as const,
+      decisionId: 'dec-1'
+    };
+    return { ...s, items: [...s.items, item], whys: [...s.whys, why] };
+  }
+  const rows = (jsonl: string) => (parse(jsonl).data.why ?? []) as Array<{ label: string; value: string }>;
+
+  it("shows PPMA's reason, what Homemind weighed and PPMA's own explanation, loading then ready", () => {
+    const s = withPpmaItem();
+    const itemScreen = (extra: Partial<HomemindScreenData>) => screenTurn('item', input(s, 'mom', 'en', { edit: { itemId: 'ppma-1' }, ...extra })).jsonl;
+    const loading = rows(itemScreen({ itemPpma: { state: 'loading' } }));
+    expect(loading.find(r => r.label === 'PPMA’s reason')?.value).toBe('The group asked for fruit');
+    expect(loading.find(r => r.label === 'Saved preferences considered')?.value).toContain('No peanuts');
+    expect(loading.find(r => r.label === 'PPMA explains')?.value).toContain('Asking PPMA');
+    expect(rows(itemScreen({ itemPpma: { state: 'ready', summary: 'PPMA saw the group message' } })).find(r => r.label === 'PPMA explains')?.value).toBe('PPMA saw the group message');
+    expect(rows(itemScreen({ itemPpma: { state: 'unavailable' } })).find(r => r.label === 'PPMA explains')?.value).toContain('no explanation');
+    expect(rows(itemScreen({})).find(r => r.label === 'Source')?.value).toBe('PPMA');
+  });
+
+  it('does not claim a PPMA explanation when there is no decision record', () => {
+    const s = withPpmaItem();
+    s.whys = s.whys.map(w => (w.id === 'why-ppma-1' ? { ...w, decisionId: undefined } : w));
+    const shown = rows(screenTurn('item', input(s, 'mom', 'en', { edit: { itemId: 'ppma-1' } })).jsonl);
+    expect(shown.find(r => r.label === 'PPMA explains')?.value).toContain('no decision record');
+  });
+
+  it('shows nothing extra for an item that did not come from PPMA', () => {
+    const s = seed();
+    expect(screenTurn('item', input(s, 'mom', 'en', { edit: { itemId: 'library-books' } })).jsonl).not.toContain('Why is this suggested?');
+  });
 });
 
 describe('activity and undo', () => {

@@ -67,6 +67,8 @@ export function toStreamMessage(frame: { event: string; data: string }): StreamM
       return { event: 'settings.changed', data: {} };
     case 'preferences.changed':
       return { event: 'preferences.changed', data: {} };
+    case 'memory.changed':
+      return { event: 'memory.changed', data: {} };
     case 'ppma.status': {
       const status = toPpmaStatus(record.status);
       return status ? { event: 'ppma.status', data: { status } } : null;

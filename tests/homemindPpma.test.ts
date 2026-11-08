@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createPpmaClient, memorySyncStore, normalizeOutcome, ppmaConfigFromEnv, ppmaSyncFileFor, sseParser, ulid, ULID_PATTERN, HOMEMIND_MANIFEST } from '../server/homemind/ppma';
+import { createPpmaClient, memorySyncStore, normalizeOutcome, parseExplanation, parseMemoryView, ppmaConfigFromEnv, ppmaSyncFileFor, sseParser, ulid, ULID_PATTERN, HOMEMIND_MANIFEST } from '../server/homemind/ppma';
 import type { PpmaClient, PpmaConfig, PpmaMessage, PpmaStatus } from '../server/homemind/ppma';
 import { createFakePpma } from '../scripts/fake-ppma.mjs';
 
@@ -323,5 +323,168 @@ describe('commands', () => {
     fake.setDown(false);
     await until(() => outcomes(fake).length === 1);
     expect(outcomes(fake)[0].payload).toMatchObject({ status: 'rejected', detail: 'no' });
+  });
+});
+
+describe('reading PPMA memory and explanations (T6.2)', () => {
+  const statement = (id: string, text: string, extra: Record<string, unknown> = {}) => ({ id, text, confidence: 0.8, origin: 'user', editable: true, updated_at: 'x', challenged_by: [], ...extra });
+
+  it('parses a memory view by hand: drops what is off-shape, event-type noise and control characters', () => {
+    const body = {
+      statements: [
+        statement('st-1', 'Noa enjoys cake\u0007 most'),
+        statement('st-2', 'homemind.item_changed'),
+        statement('bad id', 'Spaces in the id'),
+        statement('st-3', '   '),
+        statement('st-4', 'Odd origin', { origin: 'martian', confidence: 7, editable: 'yes' }),
+        'not an object',
+        null
+      ]
+    };
+    expect(parseMemoryView(body, 'about_me')).toEqual([
+      { id: 'st-1', text: 'Noa enjoys cake most', origin: 'user', confidence: 0.8, editable: true, view: 'about_me' },
+      { id: 'st-4', text: 'Odd origin', origin: 'inferred', confidence: 1, editable: false, view: 'about_me' }
+    ]);
+    expect(parseMemoryView({ statements: 'nope' }, 'v')).toEqual([]);
+    expect(parseMemoryView(undefined, 'v')).toEqual([]);
+    expect(parseMemoryView({ statements: Array.from({ length: 300 }, (_, n) => statement(`s${n}`, `fact ${n}`)) }, 'v')).toHaveLength(200);
+  });
+
+  it('parses an explanation, trims it, and gives null when there is nothing usable', () => {
+    expect(parseExplanation({ summary: ' Because ', rationale: 'R', basis: [{ kind: 'k', ref: 'r', note: 'n' }, { kind: 'empty' }, 'junk'] })).toEqual({ summary: 'Because', rationale: 'R', basis: [{ kind: 'k', ref: 'r', note: 'n' }] });
+    expect(parseExplanation({})).toBeNull();
+    expect(parseExplanation(null)).toBeNull();
+    expect(parseExplanation('text')).toBeNull();
+  });
+
+  it('answers loading at once, reads in the background, tells listeners once, and then answers from the cache', async () => {
+    fake.setMemory([{ id: 'st-1', text: 'Noa enjoys cake most' }, { id: 'st-2', text: 'homemind.item_changed' }]);
+    const c = client(fake.url);
+    c.start();
+    let announced = 0;
+    c.onMemory(() => announced++);
+    expect(c.memory()).toEqual({ state: 'loading', statements: [] });
+    c.refreshMemory();
+    const ready = await until(() => (c.memory().state === 'ready' ? c.memory() : null));
+    expect(ready.statements.map(s => s.text)).toEqual(['Noa enjoys cake most']);
+    expect(announced).toBe(1);
+    // Nothing changed: a forced read finds the same thing and does not announce again, so a screen cannot loop.
+    c.refreshMemory({ force: true });
+    await new Promise(r => setTimeout(r, 200));
+    expect(announced).toBe(1);
+    // A new fact is announced.
+    fake.setMemory([{ id: 'st-1', text: 'Noa enjoys cake most' }, { id: 'st-9', text: 'Maya plays piano' }]);
+    c.refreshMemory({ force: true });
+    await until(() => c.memory().statements.length === 2);
+    expect(announced).toBe(2);
+  });
+
+  it('reads again by itself when PPMA says its memory was updated, but only once someone has looked at it', async () => {
+    fake.setMemory([{ id: 'st-1', text: 'One' }]);
+    const c = client(fake.url);
+    c.start();
+    await until(() => c.status() === 'ok');
+    // Nobody has asked for the memory yet: PPMA's news causes no read.
+    fake.setMemory([{ id: 'st-1', text: 'One' }, { id: 'st-2', text: 'Two' }]);
+    await new Promise(r => setTimeout(r, 1300));
+    expect(c.memory().state).toBe('loading');
+    c.refreshMemory();
+    await until(() => c.memory().statements.length === 2);
+    // Now it follows PPMA without being asked: a burst of updates, and the screen hears about the last state.
+    fake.setMemory([{ id: 'st-1', text: 'One' }]);
+    fake.setMemory([{ id: 'st-1', text: 'One' }, { id: 'st-3', text: 'Three' }]);
+    await until(() => c.memory().statements.some(st => st.id === 'st-3'), 4000);
+  });
+
+  it('limits how often it reads unless forced', async () => {
+    fake.setMemory([{ id: 'st-1', text: 'One' }]);
+    const c = client(fake.url);
+    c.start();
+    c.refreshMemory();
+    await until(() => c.memory().state === 'ready');
+    fake.setMemory([{ id: 'st-1', text: 'One' }, { id: 'st-2', text: 'Two' }]);
+    c.refreshMemory();
+    await new Promise(r => setTimeout(r, 150));
+    expect(c.memory().statements).toHaveLength(1);
+    c.refreshMemory({ force: true });
+    await until(() => c.memory().statements.length === 2);
+  });
+
+  it('says error, never invents memory, and keeps the last good read when a refresh fails', async () => {
+    const noToken = client(fake.url, {}, { ownerToken: undefined });
+    noToken.start();
+    noToken.refreshMemory();
+    await until(() => noToken.memory().state === 'error');
+    expect(noToken.memory()).toEqual({ state: 'error', statements: [], error: 'owner_token_missing' });
+
+    fake.setMemory([{ id: 'st-1', text: 'Keep me' }]);
+    const c = client(fake.url);
+    c.start();
+    c.refreshMemory();
+    await until(() => c.memory().state === 'ready');
+    fake.setDown(true);
+    c.refreshMemory({ force: true });
+    const stale = await until(() => (c.memory().error ? c.memory() : null));
+    expect(stale.state).toBe('ready');
+    expect(stale.statements.map(s => s.text)).toEqual(['Keep me']);
+    fake.setDown(false);
+    c.refreshMemory({ force: true });
+    await until(() => !c.memory().error);
+  });
+
+  it('is quiet when PPMA is off', async () => {
+    const off = createPpmaClient(ppmaConfigFromEnv({}));
+    off.refreshMemory({ force: true });
+    expect(off.memory()).toEqual({ state: 'loading', statements: [] });
+    expect(off.explanation('dec-1')).toEqual({ state: 'unavailable' });
+    expect(off.correct({ statementId: 'st-1', action: 'wrong', text: 'x' })).toBeNull();
+  });
+
+  it('sends a correction as user.correction, marks the statement while it is on its way, and drops the mark once PPMA applied it', async () => {
+    fake.setMemory([{ id: 'st-1', text: 'Noa enjoys cake most' }, { id: 'st-2', text: 'Maya plays piano' }]);
+    const c = client(fake.url);
+    c.start();
+    c.refreshMemory();
+    await until(() => c.memory().statements.length === 2);
+    const id = c.correct({ statementId: 'st-1', action: 'forget', text: 'Noa enjoys cake most' });
+    expect(id).toMatch(ULID_PATTERN);
+    expect(c.memory().statements.find(s => s.id === 'st-1')?.correcting).toBe('forget');
+    expect(c.memory().statements.find(s => s.id === 'st-2')?.correcting).toBeUndefined();
+    const sent = await until(() => fake.received().find(m => m.type === 'user.correction'));
+    expect(sent.payload).toEqual({ text: 'Noa enjoys cake most', statement_id: 'st-1', action: 'forget' });
+    expect(sent.id).toBe(id);
+    // The client looks again by itself, and the statement is gone once PPMA has applied the correction.
+    await until(() => c.memory().statements.length === 1, 5000);
+    expect(c.memory().statements[0].id).toBe('st-2');
+  });
+
+  it('refuses an id that is not a statement id, without sending anything', async () => {
+    const c = client(fake.url);
+    c.start();
+    expect(c.correct({ statementId: '../x', action: 'wrong', text: 'x' })).toBeNull();
+    expect(c.correct({ statementId: '', action: 'wrong', text: 'x' })).toBeNull();
+    await new Promise(r => setTimeout(r, 100));
+    expect(fake.received().some(m => m.type === 'user.correction')).toBe(false);
+  });
+
+  it('answers an explanation from the cache: loading first, ready after, unavailable for a decision PPMA does not know', async () => {
+    const issued = fake.issueCommand('homemind.get_board', {}, { rationale: 'Because the group asked' });
+    const decisionId = issued.message.decision_id as string;
+    const c = client(fake.url);
+    c.start();
+    let announced = 0;
+    c.onMemory(() => announced++);
+    expect(c.explanation(decisionId)).toEqual({ state: 'loading' });
+    const ready = await until(() => {
+      const e = c.explanation(decisionId);
+      return e.state === 'ready' ? e : null;
+    });
+    expect(ready.summary).toContain('Because the group asked');
+    expect(ready.basis?.length).toBeGreaterThan(0);
+    expect(announced).toBe(1);
+    expect(c.explanation('no-such-decision')).toEqual({ state: 'loading' });
+    await until(() => c.explanation('no-such-decision').state === 'unavailable');
+    // A decision id that is not an id is never asked for.
+    expect(c.explanation('../../etc')).toEqual({ state: 'unavailable' });
   });
 });

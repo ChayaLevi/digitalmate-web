@@ -370,8 +370,7 @@ describe('routes for later tasks', () => {
       ['POST', '/actions/card-1/confirm', 'T7.1'],
       ['POST', '/actions/card-1/cancel', 'T7.1'],
       ['POST', '/rules', 'T7.3'],
-      ['POST', '/demo/post-group-message', 'T7.2'],
-      ['GET', '/screen/memory', 'T6.2']
+      ['POST', '/demo/post-group-message', 'T7.2']
     ]) {
       const res = await mom.send(method, path, method === 'GET' ? undefined : {});
       expect(res.status, `${method} ${path}`).toBe(501);

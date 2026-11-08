@@ -11,7 +11,11 @@
  *   POST /v0/apps/homemind/token         owner token: mints an app token (the old one stays valid)
  *   POST /v0/spaces/{space}/messages     app token: MessageBatch -> 202 {accepted, duplicates} or 422
  *   GET  /v0/spaces/{space}/stream       app token: SSE of PPMA-originated messages, Last-Event-ID resume
+ *   GET  /v0/spaces/{space}/memory/views[/{view}]   owner token only (T6.2): what the fake "remembers"
+ *   GET  /v0/spaces/{space}/decisions/{id}/explain  owner token only: for decisions the fake issued as commands
+ *   A `user.correction` event (wrong | forget | replace + statement_id) changes that memory statement.
  * Test controls (not part of PPMA):
+ *   POST /_fake/memory {statements: [{id, text, confidence?, origin?, editable?}]}   set what it remembers
  *   GET  /_fake/messages                 every message Homemind sent, in order
  *   POST /_fake/command {type, payload, expiresInMs?, id?}   issue a command on the stream
  *   POST /_fake/forget-tokens            like a restarted fake PPMA: app tokens stop working
@@ -56,6 +60,11 @@ export function createFakePpma(options = {}) {
     seq: 0,
     seen: new Set(),
     down: false,
+    /** What the fake "remembers": statements of the one view `about_me`. */
+    memory: [],
+    memoryVersion: 1,
+    /** Decisions behind the commands it issued, for `explain`. */
+    decisions: new Map(),
     streams: new Set(),
     streamConnects: 0,
     lastEventIds: []
@@ -111,6 +120,20 @@ export function createFakePpma(options = {}) {
     return null;
   }
 
+  function applyCorrection(payload) {
+    const id = payload?.statement_id;
+    if (typeof id !== 'string') return;
+    const at = state.memory.findIndex(x => x.id === id);
+    if (at < 0) return;
+    if (payload.action === 'replace' && typeof payload.text === 'string') {
+      state.memory[at] = { ...state.memory[at], text: payload.text, origin: 'user', confidence: 1, updated_at: new Date().toISOString() };
+    } else if (payload.action === 'wrong' || payload.action === 'forget') {
+      state.memory.splice(at, 1);
+    }
+    state.memoryVersion++;
+    api.announceMemory();
+  }
+
   function stream(req, res, space, url) {
     if (url.searchParams.get('app') !== app) return error(res, 422, 'validation_error', 'app is required');
     const last = req.headers['last-event-id'];
@@ -144,6 +167,11 @@ export function createFakePpma(options = {}) {
       if (path === '/_fake/command' && req.method === 'POST') {
         const b = await body(req);
         return json(res, 200, { seq: api.issueCommand(b.type, b.payload ?? {}, b).seq, id: state.ledger.at(-1).message.id });
+      }
+      if (path === '/_fake/memory' && req.method === 'POST') {
+        const b = await body(req);
+        api.setMemory(Array.isArray(b.statements) ? b.statements : []);
+        return json(res, 200, { ok: true, count: state.memory.length });
       }
       if (path === '/_fake/forget-tokens' && req.method === 'POST') {
         api.forgetTokens();
@@ -184,6 +212,25 @@ export function createFakePpma(options = {}) {
         state.tokensMinted++;
         return json(res, 200, { app, token, issued_at: new Date().toISOString(), previous_valid_until: null });
       }
+      // Owner-only reads (the app token gets 403, as in PPMA).
+      const ownerRead = /^\/v0\/spaces\/([^/]+)\/(memory\/views(?:\/([^/]+))?|decisions\/([^/]+)\/explain)$/.exec(path);
+      if (ownerRead && req.method === 'GET') {
+        if (!isOwner(req)) return error(res, isApp(req) ? 403 : 401, isApp(req) ? 'forbidden' : 'unauthorized', "this route is the owner's");
+        if (ownerRead[4]) {
+          const decision = state.decisions.get(decodeURIComponent(ownerRead[4]));
+          if (!decision) return error(res, 404, 'not_found', 'no such decision');
+          return json(res, 200, {
+            decision_id: decodeURIComponent(ownerRead[4]),
+            rationale: decision.rationale,
+            basis: [{ kind: 'fake', ref: decision.type, note: 'The fake PPMA issued this command in a test.' }],
+            summary: `Fake PPMA: ${decision.rationale}`,
+            steps: [{ kind: 'command', ref: decision.type, summary: 'Issued by a test control' }]
+          });
+        }
+        if (!ownerRead[3]) return json(res, 200, { views: [{ view: 'about_me', version: state.memoryVersion, title: 'About me' }] });
+        if (decodeURIComponent(ownerRead[3]) !== 'about_me') return error(res, 404, 'not_found', 'no such view');
+        return json(res, 200, { view: 'about_me', version: state.memoryVersion, statements: state.memory, updated_at: new Date().toISOString() });
+      }
       const spaceMatch = /^\/v0\/spaces\/([^/]+)\/(messages|stream)$/.exec(path);
       if (spaceMatch) {
         const space = decodeURIComponent(spaceMatch[1]);
@@ -211,6 +258,7 @@ export function createFakePpma(options = {}) {
               state.seen.add(m.id);
               accepted.push(m.id);
               append(m);
+              if (m.type === 'user.correction') applyCorrection(m.payload);
             }
           }
           return json(res, 202, { accepted, duplicates });
@@ -241,8 +289,29 @@ export function createFakePpma(options = {}) {
     },
     /** Messages Homemind sent, in order. */
     received: () => state.ledger.filter(e => e.message.source?.app === app).map(e => e.message),
+    /** Sets what the fake "remembers" (view `about_me`). */
+    setMemory(statements) {
+      state.memory = statements.map((x, n) => ({
+        id: x.id ?? `st-${n + 1}`,
+        text: x.text,
+        confidence: x.confidence ?? 0.8,
+        origin: x.origin ?? 'inferred',
+        editable: x.editable ?? true,
+        updated_at: new Date().toISOString(),
+        challenged_by: []
+      }));
+      state.memoryVersion++;
+      api.announceMemory();
+    },
+    /** Like PPMA: tells the stream the memory changed. */
+    announceMemory() {
+      const now = Date.now();
+      append({ id: ulid(now), kind: 'event', type: 'ppma.memory_updated', space: 'me', source: { app: 'ppma', app_version: 'fake' }, occurred_at: new Date(now).toISOString(), payload: { view: 'about_me' } });
+    },
     issueCommand(type, payload = {}, opts = {}) {
       const now = Date.now();
+      const decisionId = opts.decision_id ?? ulid(now);
+      state.decisions.set(decisionId, { type, rationale: opts.rationale ?? 'fake PPMA test command' });
       return append({
         id: opts.id ?? ulid(now),
         kind: 'command',
@@ -253,9 +322,9 @@ export function createFakePpma(options = {}) {
         occurred_at: new Date(now).toISOString(),
         payload,
         resources: [],
-        confidence: 0.5,
+        confidence: opts.confidence ?? 0.5,
         rationale: opts.rationale ?? 'fake PPMA test command',
-        decision_id: ulid(now),
+        decision_id: decisionId,
         expires_at: new Date(now + (opts.expiresInMs ?? 10 * 60_000)).toISOString()
       });
     },

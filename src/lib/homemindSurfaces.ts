@@ -15,7 +15,7 @@
  * Components that do not render the flag (rules, settings rows) say the word in their text instead.
  */
 import type { A2uiAction, A2uiComponent } from '../types';
-import type { ActionCard, Activity, ExtractedEntry, Family, Item, ItemExplanation, Lang, Member, PendingReminder, Preference, Reminder, Rule, SignUpInfo, SkippedExtraction, Why } from '../../server/homemind/types';
+import type { ActionCard, Activity, ExtractedEntry, Family, Item, ItemExplanation, Lang, Member, PendingReminder, PpmaExplanationData, PpmaMemoryData, Preference, Reminder, Rule, SignUpInfo, SkippedExtraction, Why } from '../../server/homemind/types';
 
 export type HomemindLang = Lang;
 export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit' | 'item';
@@ -61,6 +61,10 @@ export interface HomemindScreenData {
   itemPreferences?: Preference[];
   /** Reminders waiting for this member's answer: rows get "Remind me later", "Got it" and so on (T4.2). */
   reminders?: PendingReminder[];
+  /** For the `memory` screen (T6.2): what PPMA remembers, read in the background and cached. */
+  ppmaMemory?: PpmaMemoryData;
+  /** For the `item` screen (T6.2): PPMA's explanation of the decision behind the item's `Why`, if it has one. */
+  itemPpma?: PpmaExplanationData;
 }
 
 /** What the bridge sends the browser for every Homemind screen. Same shape as a Fridge2Table turn. */
@@ -81,7 +85,8 @@ export interface TaskRow {
   title: string;
   meta: string;
   ownerLabel: string;
-  state: TaskState;
+  /** Empty: no state label (rows that are not board items, such as what PPMA remembers). */
+  state: TaskState | '';
   tone: TaskTone;
   simulated?: boolean;
   actions: A2uiAction[];
@@ -672,17 +677,117 @@ function prefInfoRows(p: PrefFields, view: HomemindViewData, lang: HomemindLang)
   ];
 }
 
+const M = {
+  ppmaTitle: { en: 'What PPMA remembers', zh: 'PPMA 记住的内容' },
+  ppmaNote: {
+    en: 'These are PPMA’s own words, not Homemind’s. Only what the whole family may see is shared with it.',
+    zh: '以下是 PPMA 自己的表述，不是 Homemind 的。只有全家人都能看到的内容才会分享给它。'
+  },
+  loading: { en: 'Reading from PPMA…', zh: '正在从 PPMA 读取…' },
+  readFailed: { en: 'Could not read PPMA’s memory right now. What is shown is the last read, if there was one.', zh: '暂时无法读取 PPMA 的记忆。显示的是上次读取的内容（如有）。' },
+  empty: { en: 'PPMA has not remembered anything about the family yet.', zh: 'PPMA 还没有记住任何关于这个家庭的内容。' },
+  originUser: { en: 'You told PPMA', zh: '你告诉 PPMA 的' },
+  originApp: { en: 'From an app', zh: '来自应用' },
+  originInferred: { en: 'PPMA’s guess', zh: 'PPMA 的推断' },
+  confidence: { en: (n: number) => `Confidence ${n}%`, zh: (n: number) => `把握度 ${n}%` },
+  wrong: { en: 'That’s wrong', zh: '这是错的' },
+  forget: { en: 'Forget', zh: '忘掉' },
+  sent: { en: 'Correction sent. Waiting for PPMA to apply it.', zh: '已发送更正，等待 PPMA 处理。' },
+  parentsCorrect: { en: 'Only a parent can correct what PPMA remembers.', zh: '只有家长可以更正 PPMA 的记忆。' },
+  saved: { en: 'Saved by Homemind', zh: 'Homemind 保存的偏好' },
+  savedNote: {
+    en: 'These are on Homemind’s own board and decide what it suggests. Removing one also tells PPMA.',
+    zh: '这些保存在 Homemind 自己的看板上，决定它的建议。删除一条也会通知 PPMA。'
+  },
+  remove: { en: 'Remove', zh: '删除' },
+  whyPpmaTitle: { en: 'Why is this suggested?', zh: '为什么会有这个建议？' },
+  ppmaReason: { en: 'PPMA’s reason', zh: 'PPMA 的理由' },
+  considered: { en: 'Saved preferences considered', zh: '参考的已保存偏好' },
+  ppmaExplains: { en: 'PPMA explains', zh: 'PPMA 的解释' },
+  explainLoading: { en: 'Asking PPMA for its explanation…', zh: '正在向 PPMA 询问解释…' },
+  explainNone: { en: 'PPMA has no explanation to show for this. Only Homemind’s own record is shown.', zh: 'PPMA 没有可显示的解释，这里只显示 Homemind 自己的记录。' },
+  noDecision: { en: 'PPMA gave no decision record, so there is nothing more from PPMA.', zh: 'PPMA 没有提供决策记录，因此没有更多来自 PPMA 的内容。' }
+} as const;
+
+type Row = { label: string; value: string; tone: string };
+
+/** The rows that explain a suggestion that came from PPMA: its reason, what Homemind weighed, and PPMA's own explanation. */
+function ppmaWhyRows(why: Why, ppma: PpmaExplanationData | undefined, lang: HomemindLang): Row[] {
+  const rows: Row[] = [{ label: M.ppmaReason[lang], value: why.summary, tone: 'muted' }];
+  const considered = why.basis.filter(b => b.kind === 'preference').map(b => b.note);
+  if (considered.length) rows.push({ label: M.considered[lang], value: considered.join(lang === 'zh' ? '；' : '; '), tone: 'muted' });
+  if (!why.decisionId) rows.push({ label: M.ppmaExplains[lang], value: M.noDecision[lang], tone: 'muted' });
+  else if (ppma?.state === 'ready') rows.push({ label: M.ppmaExplains[lang], value: ppma.summary || ppma.rationale || '—', tone: 'accent' });
+  else if (ppma?.state === 'loading') rows.push({ label: M.ppmaExplains[lang], value: M.explainLoading[lang], tone: 'muted' });
+  else rows.push({ label: M.ppmaExplains[lang], value: M.explainNone[lang], tone: 'muted' });
+  return rows;
+}
+
+function ppmaMemoryRows(mem: PpmaMemoryData, canCorrect: boolean, lang: HomemindLang): TaskRow[] {
+  return mem.statements.map(st => {
+    const origin = st.origin === 'user' ? M.originUser : st.origin === 'app' ? M.originApp : M.originInferred;
+    const actions: A2uiAction[] =
+      canCorrect && st.editable && !st.correcting
+        ? (['wrong', 'forget'] as const).map(action => ({
+            id: `homemind.memory-correct:${st.id}:${action}`,
+            label: M[action][lang],
+            variant: action === 'wrong' ? ('secondary' as const) : ('ghost' as const),
+            kind: 'homemind' as const,
+            args: { verb: 'memory-correct', statementId: st.id, action }
+          }))
+        : [];
+    return {
+      id: `ppma-${st.id}`,
+      title: st.text,
+      meta: [st.correcting ? M.sent[lang] : '', M.confidence[lang](Math.round(st.confidence * 100))].filter(Boolean).join(' · '),
+      ownerLabel: origin[lang],
+      state: '',
+      tone: st.correcting ? 'muted' : 'accent',
+      actions
+    };
+  });
+}
+
 function memoryScreen(input: HomemindScreenData): HomemindTurn {
   const { lang, view } = input;
   const children: A2uiComponent[] = [];
   const data: Record<string, unknown> = {};
-  // Never invent memory: PPMA's own entries are not here, and the screen says so.
-  if (input.ppma !== 'ok') children.push({ id: 'ppma', component: 'ErrorNotice', title: input.ppma === 'offline' ? 'PPMA offline' : 'PPMA', body: hx(lang, input.ppma === 'offline' ? 'ppmaOffline' : 'ppmaOff') });
-  const prefs = view.preferences.map(p => prefListRow(p, view, lang));
-  if (prefs.length) {
-    children.push({ id: 'prefs', component: 'List', title: hx(lang, 'memory'), dataPath: '/prefs' });
-    data.prefs = prefs;
-  } else children.push(text('empty', hx(lang, 'nothingHere')));
+  const isParent = memberOf(view.family, view.memberId)?.role === 'parent';
+  // Never invent memory: PPMA's own entries appear only when PPMA is connected and has answered.
+  if (input.ppma !== 'ok') {
+    children.push({ id: 'ppma', component: 'ErrorNotice', title: input.ppma === 'offline' ? 'PPMA offline' : 'PPMA', body: hx(lang, input.ppma === 'offline' ? 'ppmaOffline' : 'ppmaOff') });
+  } else {
+    const mem = input.ppmaMemory;
+    if (!mem || (mem.state === 'loading' && !mem.statements.length)) children.push(text('ppma-loading', `**${M.ppmaTitle[lang]}**\n\n${M.loading[lang]}`));
+    else {
+      if (mem.state === 'error' || mem.error) children.push({ id: 'ppma-error', component: 'ErrorNotice', title: 'PPMA', body: M.readFailed[lang] });
+      if (mem.statements.length) {
+        children.push(text('ppma-note', M.ppmaNote[lang]));
+        children.push(taskList('ppma-list', M.ppmaTitle[lang], '/ppma'));
+        data.ppma = ppmaMemoryRows(mem, isParent, lang);
+        if (!isParent) children.push(text('ppma-parents', M.parentsCorrect[lang]));
+      } else if (mem.state === 'ready') children.push(text('ppma-empty', `**${M.ppmaTitle[lang]}**\n\n${M.empty[lang]}`));
+    }
+  }
+  if (view.preferences.length) {
+    children.push(text('prefs-note', M.savedNote[lang]));
+    children.push(taskList('prefs', M.saved[lang], '/prefs'));
+    data.prefs = view.preferences.map(p => {
+      const row = prefListRow(p, view, lang);
+      const canRemove = isParent || p.strength === 'soft';
+      return {
+        id: `pref-${p.id}`,
+        title: row.title,
+        meta: [row.subtitle, row.meta].filter(Boolean).join(' · '),
+        ownerLabel: '',
+        state: '',
+        tone: p.strength === 'hard' ? 'accent' : 'muted',
+        actions: canRemove
+          ? [{ id: `homemind.remove-preference:${p.id}`, label: M.remove[lang], variant: 'ghost', kind: 'homemind', args: { verb: 'remove-preference', preferenceId: p.id } } as A2uiAction]
+          : []
+      } satisfies TaskRow;
+    });
+  } else if (!children.some(c => c.component === 'Text' || c.component === 'TaskList')) children.push(text('empty', hx(lang, 'nothingHere')));
   return turn('memory', hx(lang, 'memory'), undefined, children, data);
 }
 
@@ -975,6 +1080,11 @@ function itemScreen(input: HomemindScreenData): HomemindTurn {
     children.splice(2, 0, { id: 'prefs', component: 'List', title: C.prefApply[lang], dataPath: '/prefs' });
     data.prefs = input.itemPreferences.map(p => prefListRow(p, view, lang));
   }
+  const why = view.whys.find(w => w.basis.some(b => b.ref === item.id));
+  if (why?.source === 'ppma') {
+    children.splice(2, 0, { id: 'why', component: 'InfoRows', title: M.whyPpmaTitle[lang], dataPath: '/why' });
+    data.why = [...ppmaWhyRows(why, input.itemPpma, lang), { label: C.whySource[lang], value: C.srcPpma[lang], tone: 'muted' }];
+  }
   if (item.type === 'event') preparationsBlock(item, view, lang, today, children, data);
   return turn('item', titleOf(item, lang), undefined, children, data);
 }
@@ -996,7 +1106,7 @@ export type ChatOutcome =
       conflicts: number;
     }
   | { kind: 'suggest'; intent: 'assign' | 'claim' | 'mark_done'; itemId: string; verb: 'assign' | 'claim' | 'done'; memberId?: string; reason: 'level1' | 'paused' }
-  | { kind: 'why'; explanation: ItemExplanation }
+  | { kind: 'why'; explanation: ItemExplanation; ppma?: PpmaExplanationData }
   /** T5.4: a preference saved (`added`, `corrected`) or already saved as said (`unchanged`). */
   | { kind: 'preference'; action: 'added' | 'corrected' | 'unchanged'; preference: Preference; activityId?: string }
   /** T5.4: level 1 or paused: nothing saved, a Save button instead. */
@@ -1111,13 +1221,14 @@ const SOURCE_KIND: Record<string, [string, string]> = {
  */
 export const plainChatText = (value: string): string => value.replace(/\]\s*\(/g, '] (');
 
-function whyRows(e: ItemExplanation, view: HomemindViewData, lang: HomemindLang): Array<{ label: string; value: string; tone: string }> {
+function whyRows(e: ItemExplanation, view: HomemindViewData, lang: HomemindLang, ppma?: PpmaExplanationData): Array<{ label: string; value: string; tone: string }> {
   const item = view.items.find(i => i.id === e.itemId);
   const zone = view.family.timezone;
   const rows: Array<{ label: string; value: string; tone: string }> = [];
   if (e.why) {
     const src = e.why.source === 'ppma' ? C.srcPpma : e.why.source === 'model' ? C.srcModel : C.srcRule;
     rows.push({ label: C.whyRecord[lang], value: e.why.summary, tone: 'muted' }, { label: C.whySource[lang], value: src[lang], tone: 'muted' });
+    if (e.why.source === 'ppma') rows.push(...ppmaWhyRows(e.why, ppma, lang).slice(1));
   }
   const created = e.createdAt ? dateParts(e.createdAt, zone) : null;
   rows.push({ label: C.whyAdded[lang], value: `${nameOf(memberOf(view.family, e.createdBy), lang) || e.createdBy}${created ? ` · ${created.date.slice(5)} ${created.time}` : ''}`, tone: 'muted' });
@@ -1221,7 +1332,7 @@ export function chatTurn(input: ChatTurnData): HomemindTurn {
         data.rows = rows;
       }
       children.push({ id: 'why', component: 'InfoRows', title: C.whyTitle[lang], dataPath: '/why' });
-      data.why = whyRows(e, view, lang);
+      data.why = whyRows(e, view, lang, outcome.ppma);
       if (!e.why) children.push(text('why-note', C.whyOwn[lang]));
       title = titleById(e.itemId) || C.whyTitle[lang];
       break;

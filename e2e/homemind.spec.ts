@@ -193,7 +193,7 @@ for (const lang of ['en', 'zh'] as const) {
   test(`every Family screen at 390 px in ${lang}: no overflow, no serious axe issues`, async ({ page }) => {
     await openFamily(page, lang, 'mom');
     await expect(family(page)).toHaveAttribute('data-member', 'mom');
-    const names = lang === 'zh' ? ['我的一天', '家庭', '日历', '搜索', '规则', '动态', '设置', '+ 添加'] : ['My day', 'Family', 'Calendar', 'Search', 'Rules', 'Activity', 'Settings', '+ Add'];
+    const names = lang === 'zh' ? ['我的一天', '家庭', '日历', '搜索', '规则', '记忆', '动态', '设置', '+ 添加'] : ['My day', 'Family', 'Calendar', 'Search', 'Rules', 'Memory', 'Activity', 'Settings', '+ Add'];
     const nav = family(page).getByRole('navigation', { name: lang === 'zh' ? '家庭页面' : 'Family screens' });
     for (const name of names) {
       await nav.getByRole('button', { name, exact: true }).click();
@@ -698,6 +698,38 @@ test('PPMA offline (T6.1): the chip in Chinese', async ({ page }) => {
   await openFamily(page, 'zh', 'dad');
   await expect(family(page)).toHaveAttribute('data-member', 'dad');
   await expect(family(page).locator('[data-ppma="offline"]')).toHaveText('PPMA 离线');
+  await noOverflow(page);
+  expect(await seriousIssues(page)).toEqual([]);
+});
+
+// T6.2: PPMA is unreachable on the e2e server, so the memory screen must not invent anything.
+test('Memory (T6.2): with PPMA offline it says so, shows only what Homemind saved, and a preference can be removed', async ({ page }) => {
+  await openFamily(page, 'en', 'mom');
+  await expect(family(page)).toHaveAttribute('data-member', 'mom');
+  const nav = family(page).getByRole('navigation', { name: 'Family screens' });
+  await nav.getByRole('button', { name: 'Memory', exact: true }).click();
+  const surface = page.locator('.a2ui-surface');
+  await expect(surface).toContainText('PPMA offline');
+  await expect(surface).toContainText('Only what Homemind itself saved is shown');
+  await expect(surface).not.toContainText('What PPMA remembers');
+  await expect(surface).toContainText('For kindergarten parties, bake a cake');
+  await expect(surface).toContainText('No peanuts');
+  await noOverflow(page);
+  expect(await seriousIssues(page)).toEqual([]);
+  // A parent removes the soft preference; it is gone from the screen, and the other stays.
+  await surface.getByRole('button', { name: /^Remove: For kindergarten parties, bake a cake/ }).click();
+  await expect(surface).not.toContainText('For kindergarten parties, bake a cake');
+  await expect(surface).toContainText('No peanuts');
+  await expect(family(page)).toContainText('Preference removed');
+});
+
+test('Memory (T6.2): a teen cannot remove a hard preference, and the screen reads in Chinese', async ({ page }) => {
+  await openFamily(page, 'zh', 'maya');
+  await expect(family(page)).toHaveAttribute('data-member', 'maya');
+  await family(page).getByRole('navigation', { name: '家庭页面' }).getByRole('button', { name: '记忆', exact: true }).click();
+  const surface = page.locator('.a2ui-surface');
+  await expect(surface).toContainText('PPMA 离线');
+  await expect(surface.getByRole('button', { name: /^删除: / })).toHaveCount(1);
   await noOverflow(page);
   expect(await seriousIssues(page)).toEqual([]);
 });

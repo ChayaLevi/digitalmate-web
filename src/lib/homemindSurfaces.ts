@@ -15,10 +15,10 @@
  * Components that do not render the flag (rules, settings rows) say the word in their text instead.
  */
 import type { A2uiAction, A2uiComponent } from '../types';
-import type { ActionCard, Activity, ExtractedEntry, Family, Item, ItemExplanation, Lang, Member, PendingReminder, PpmaExplanationData, PpmaMemoryData, Preference, Reminder, Rule, SignUpInfo, SkippedExtraction, Why } from '../../server/homemind/types';
+import type { ActionCard, Activity, ExtractedEntry, Family, Item, ItemExplanation, Lang, Member, PendingReminder, PpmaExplanationData, PpmaMemoryData, Preference, Reminder, Rule, ServicesView, SignUpInfo, SkippedExtraction, Why } from '../../server/homemind/types';
 
 export type HomemindLang = Lang;
-export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit' | 'item';
+export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit' | 'item' | 'services';
 
 /** What the Add and edit screen opens: an existing item, a new preparation under an event, or a new item.
  * The `item` screen (the short summary after a save) uses `itemId` only. */
@@ -65,6 +65,10 @@ export interface HomemindScreenData {
   ppmaMemory?: PpmaMemoryData;
   /** For the `item` screen (T6.2): PPMA's explanation of the decision behind the item's `Why`, if it has one. */
   itemPpma?: PpmaExplanationData;
+  /** For the `services` screen (T7.2): the simulated services, the inbox already limited to this member's own. */
+  services?: ServicesView;
+  /** `HOMEMIND_DEMO=1`: the screen may offer demo controls (post the next group message). */
+  demo?: boolean;
 }
 
 /** What the bridge sends the browser for every Homemind screen. Same shape as a Fridge2Table turn. */
@@ -1438,6 +1442,139 @@ export function chatTurn(input: ChatTurnData): HomemindTurn {
   return { message, thinking: [], followUps: [], jsonl: surfaceJsonl(kind, title, undefined, components, data, outcome.kind === 'failed' ? 'error' : 'ready') };
 }
 
+// --- simulated services (T7.2) ---------------------------------------------------------------------
+
+const S = {
+  services: { en: 'Services', zh: '服务' },
+  servicesNote: {
+    en: 'These services are **simulated** for the demo. Nothing is sent, bought or ordered for real. Anything that would act still needs a parent to tap its own card.',
+    zh: '这些服务均为**模拟**，仅用于演示。不会真的发送、购买或下单。任何操作仍需家长在对应卡片上亲自点按。'
+  },
+  group: { en: 'Kindergarten group', zh: '幼儿园群' },
+  groupEmpty: { en: 'No messages yet.', zh: '还没有消息。' },
+  postNext: { en: 'Post next group message (demo)', zh: '发送下一条群消息（演示）' },
+  fromFamily: { en: 'posted by Homemind', zh: '由 Homemind 发送' },
+  claim: { en: 'claim', zh: '认领' },
+  correction: { en: 'correction', zh: '更正' },
+  pizzaOpen: { en: 'Open now', zh: '营业中' },
+  pizzaClosed: { en: 'Closed now', zh: '现在休息' },
+  hours: { en: 'Hours', zh: '营业时间' },
+  serves: { en: 'serves', zh: '份量：' },
+  people: { en: '', zh: '人' },
+  lastOrder: { en: 'Last order (simulated)', zh: '最近订单（模拟）' },
+  deliveryAt: { en: 'delivery', zh: '送达' },
+  sitters: { en: "Babysitters, in the family's order", zh: '保姆（按家庭排序）' },
+  freeToday: { en: 'Free today', zh: '今天有空' },
+  notToday: { en: 'Not free today', zh: '今天没空' },
+  inbox: { en: 'Inbox (approved senders only)', zh: '收件箱（仅白名单发件人）' },
+  inboxEmpty: { en: 'No messages from approved senders in your mailbox.', zh: '你的邮箱里没有白名单发件人的邮件。' },
+  weather: { en: 'Weather', zh: '天气' },
+  todayW: { en: 'Today', zh: '今天' },
+  tomorrowW: { en: 'Tomorrow', zh: '明天' },
+  rain: { en: 'rain', zh: '降雨概率' }
+} as const;
+const sx = (lang: HomemindLang, key: keyof typeof S): string => S[key][lang];
+
+/**
+ * The simulated services, one card each: the kindergarten group (with the demo control), the pizza shop,
+ * babysitters, the member's own inbox and the weather. Every row carries `simulated: true`, so each card
+ * shows the "Simulated / 模拟" badge, and an empty card says the word in its text.
+ */
+function servicesScreen(input: HomemindScreenData): HomemindTurn {
+  const { lang, view } = input;
+  const zone = view.family.timezone;
+  const today = dateParts(input.now, zone)?.date ?? '';
+  const sim = hx(lang, 'simulated');
+  const children: A2uiComponent[] = [text('note', sx(lang, 'servicesNote'))];
+  const data: Record<string, unknown> = {};
+  const services = input.services;
+  if (!services) {
+    children.push(text('empty', hx(lang, 'nothingHere')));
+    return turn('services', sx(lang, 'services'), sim, children, data);
+  }
+  const timeOf = (iso: string) => {
+    const parts = dateParts(iso, zone);
+    if (!parts) return '';
+    return parts.date === today ? parts.time : `${parts.date.slice(5).replace('-', '/')} ${parts.time}`;
+  };
+  const list = (id: string, title: string, rows: Array<{ title: string; subtitle: string; meta: string }>) => {
+    children.push({ id, component: 'List', title, dataPath: `/${id}` });
+    data[id] = rows.map(row => ({ ...row, simulated: true }));
+  };
+
+  const group = services.group;
+  const groupTitle = `${sx(lang, 'group')} · ${lang === 'zh' ? group.nameZh : group.name}`;
+  if (group.messages.length) {
+    list(
+      'group',
+      groupTitle,
+      group.messages.map(m => ({
+        title: lang === 'zh' ? m.authorZh ?? m.author : m.author,
+        subtitle: m.text,
+        meta: [timeOf(m.at), m.from === 'family' ? sx(lang, 'fromFamily') : '', m.replyKind ? sx(lang, m.replyKind) : ''].filter(Boolean).join(' · ')
+      }))
+    );
+  } else children.push(text('group-empty', `**${groupTitle}** · ${sim}\n\n${sx(lang, 'groupEmpty')}`));
+  if (input.demo && group.remaining > 0) {
+    children.push({
+      id: 'group-demo',
+      component: 'ActionBar',
+      actions: [{ id: 'homemind.post-group-message', label: `${sx(lang, 'postNext')} (${group.remaining})`, variant: 'secondary', kind: 'homemind', args: { verb: 'post-group-message' } }]
+    });
+  }
+
+  const pizza = services.pizza;
+  const status = pizza.open ? sx(lang, 'pizzaOpen') : sx(lang, 'pizzaClosed');
+  list(
+    'pizza',
+    `${lang === 'zh' ? pizza.nameZh : pizza.name} · ${status} · ${sx(lang, 'hours')} ${pizza.opensAt}–${pizza.closesAt}`,
+    pizza.menu.map(d => ({
+      title: lang === 'zh' ? d.nameZh : d.name,
+      subtitle: lang === 'zh' ? `${sx(lang, 'serves')}${d.serves}${sx(lang, 'people')}` : `${sx(lang, 'serves')} ${d.serves}`,
+      meta: `${d.price} ${pizza.currency}`
+    }))
+  );
+  if (pizza.lastOrder) {
+    const o = pizza.lastOrder;
+    list('pizza-order', sx(lang, 'lastOrder'), [
+      { title: o.id, subtitle: o.deliverAt ? `${sx(lang, 'deliveryAt')} ${timeOf(o.deliverAt)}` : '', meta: `${o.total} ${o.currency}` }
+    ]);
+  }
+
+  list(
+    'sitters',
+    sx(lang, 'sitters'),
+    services.babysitters.sitters.map(s => ({
+      title: `${s.rank}. ${lang === 'zh' ? s.nameZh : s.name}`,
+      subtitle: lang === 'zh' ? s.noteZh : s.note,
+      meta: s.available ? `${sx(lang, 'freeToday')} ${s.from}–${s.to}` : sx(lang, 'notToday')
+    }))
+  );
+
+  if (services.inbox.messages.length) {
+    list(
+      'inbox',
+      sx(lang, 'inbox'),
+      services.inbox.messages.map(m => ({
+        title: lang === 'zh' ? m.subjectZh : m.subject,
+        subtitle: `${lang === 'zh' ? m.fromNameZh : m.fromName} · ${lang === 'zh' ? m.bodyZh : m.body}`,
+        meta: timeOf(m.at)
+      }))
+    );
+  } else children.push(text('inbox-empty', `**${sx(lang, 'inbox')}** · ${sim}\n\n${sx(lang, 'inboxEmpty')}`));
+
+  list(
+    'weather',
+    sx(lang, 'weather'),
+    services.weather.days.map((d, i) => ({
+      title: i === 0 ? sx(lang, 'todayW') : i === 1 ? sx(lang, 'tomorrowW') : d.date.slice(5).replace('-', '/'),
+      subtitle: `${lang === 'zh' ? d.summaryZh : d.summary} · ${sx(lang, 'rain')} ${d.rainChance}%`,
+      meta: `${d.low}–${d.high} °C`
+    }))
+  );
+  return turn('services', sx(lang, 'services'), sim, children, data);
+}
+
 // --- public API -------------------------------------------------------------------------------------
 
 const SCREEN_BUILDERS: Record<HomemindScreenName, (input: HomemindScreenData) => HomemindTurn> = {
@@ -1450,7 +1587,8 @@ const SCREEN_BUILDERS: Record<HomemindScreenName, (input: HomemindScreenData) =>
   activity: activityScreen,
   settings: settingsScreen,
   edit: editScreen,
-  item: itemScreen
+  item: itemScreen,
+  services: servicesScreen
 };
 
 /** One screen as a turn. */

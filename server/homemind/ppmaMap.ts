@@ -14,7 +14,7 @@ import type { CoreEvent, NewItem } from './core';
 import type { CommandOutcome, PpmaCommand } from './ppma';
 import { isDecisionId } from './ppma';
 import { applicablePreferences, blockedChange, itemContext } from './preferences';
-import type { HomemindState, Item, Preference, Why } from './types';
+import type { GroupMessage, HomemindState, Item, Preference, Why } from './types';
 import { isFamilyWide } from './visibility';
 
 export interface PpmaReport {
@@ -112,6 +112,28 @@ export function preferenceReport(state: HomemindState, change: 'added' | 'correc
       scope: preference?.scope,
       actor_id: actorId,
       actor_name: nameOf(state, actorId)
+    })
+  };
+}
+
+/**
+ * `homemind.message_received` for a message that arrived in the simulated kindergarten group (T7.2).
+ * The group is the whole family's (no "Parents only"), and the message is marked simulated.
+ */
+export function groupMessageReport(message: GroupMessage, group: { id: string; name: string }): PpmaReport {
+  return {
+    type: 'homemind.message_received',
+    payload: clean({
+      source: 'group',
+      group_id: group.id,
+      group_name: group.name,
+      message_id: message.id,
+      version: message.version,
+      author: message.authorZh ?? message.author,
+      from: message.from,
+      text: cap(message.text),
+      at: message.at,
+      simulated: true
     })
   };
 }

@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T7.1 done (action guard). `server/homemind/actions.ts`: adapters declare `real` or `simulated`; a rule or chat only **prepares** a card; `executeAction` runs it only on a parent's tap carrying a signed, single-use confirmation token bound to that card, that parent and the payload hash, or at autonomy level 4 for a simulated adapter that allows it (never a real one). Untapped cards expire visibly on the scheduler tick. `POST /actions/:id/confirm|cancel` are real; a parent's screen JSON carries `confirmations` (one token per pending card). **No adapters are registered yet** (T7.2 adds the simulated services) and **no card UI yet** (T7.3, T7.4), so nothing in the browser shows this yet. Before that, T6.2 ended P6 (PPMA proposals, Memory tab, PPMA "Why?"; the Scene 5 correction is preference-driven, see Open issues)
-- **Next task:** T7.2 (Fake services)
+- **Current task:** T7.2 done (fake services). `server/homemind/fakes.ts`: the simulated kindergarten group (a Chinese 接龙 fixture with no printed dates, posted one message at a time by the demo control `POST /demo/post-group-message`), pizza shop (menu, prices, hours, orders), ranked babysitters (canned availability, drafted message), a sample inbox (approved senders, own mailbox only) and a 3-day forecast. Three **simulated adapters are now registered** behind the T7.1 guard: `group-reply` (may run alone at level 4), `pizza` and `babysitter` (always a tap). A new **Services** tab shows every service, each card labelled Simulated / 模拟. **No action-card UI yet** (T7.3, T7.4): nothing prepares a card in the app so far, and the card's confirm button does not yet send its token. Before that, T7.1 built the action guard
+- **Next task:** T7.3 (Pizza rule and wedding)
 - **Scenes working end to end:** **Scene 1**, as scripted, in two windows: Mom assigns the pickup, it is on Dad's screen at once, he does not confirm, the demo clock jumps, Dad is reminded (alert and row), Mom gets "not confirmed yet" (alert and row), and she takes it from her board, which closes every alert in both windows. Covered by the e2e test "Scene 1: ...". Settings (quiet hours, autonomy, pause, backup contact) are editable and sync live
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-08, after T7.1
+- **Last updated:** 2026-11-08, after T7.2
 
 ## Task status
 
@@ -38,7 +38,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T6.1 | PPMA client | done | `server/homemind/{ppma,ppmaMap}.ts`, `scripts/fake-ppma.mjs`, the PPMA offline chip. 740 unit tests (42 new), 62 of 62 e2e (2 new). Checked against real `ppma serve --profile fake --auth strict`: manifest, token, stream and all 4 report types accepted |
 | T6.2 | Proposals, memory and "Why?" | done | `ppmaMap.ts` proposals, `ppma.ts` memory/explain/correct, Memory tab, `POST /memory/correct`. 773 passed, 1 skipped (774; 740 before, 33 new). Checked against real `ppma serve --profile fake`: memory read, correction accepted and applied. Scene 5 change is preference-driven (fallback). P6 phase checks pass |
 | T7.1 | Action guard | done | `server/homemind/actions.ts`, confirm and cancel routes, `confirmations` on a parent's screen, expiry on the tick. 798 passed, 1 skipped (799; 773 before, 25 new). Every refusal the task names is tested. No adapters registered yet (T7.2) |
-| T7.2 | Fake services | not started |  |
+| T7.2 | Fake services | done | `server/homemind/fakes.ts`, 3 simulated adapters registered, `POST /demo/post-group-message`, Services tab. 825 passed, 1 skipped (826; 799 before, 27 new). 65 of 65 e2e (1 new, Services added to the 390 px axe loop) |
 | T7.3 | Pizza rule and wedding | not started |  |
 | T7.4 | Group claim | not started |  |
 | T7.5 | Source changes mark dependent work as stale | not started | optional, cut first |
@@ -52,6 +52,13 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 ## Decisions made during the build
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
+
+- T7.2: **where the services live.** `server/homemind/fakes.ts` (pure fixtures and functions, plus the adapters). What they remember is `state.services` (`ServicesState`: group messages and how many fixture messages were posted, pizza orders, babysitter messages), seeded empty by `seedState` and so emptied by a demo reset. An older file without it reads as the seed (`servicesOf`). The pizza menu, babysitters, inbox and weather are fixed fixtures with dates from the demo clock.
+- T7.2: **the adapters** (`createSimulatedAdapters({get, set, now})`, bound per runtime in the bridge as `rt.adapters`): `group-reply` (area `group`, **`autoAllowed: true`**, payload `{groupId: 'kg-sunflower', text, kind: 'claim' | 'correction', replyTo?, asMemberId}`; posts as "Noa's mom" / "诺娅妈妈", only as a parent with an account, only in reply to a message that is in the group), `pizza` (area `food`, always a tap, payload `{vendor: 'sim-pizza', items: [{id, qty}], total, currency: 'CNY', deliverAt?}`; **the total must equal the menu price**, else the card is refused; running fails "The pizza shop is closed (simulated)" outside 11:00–21:30 or on a Monday), `babysitter` (area `childcare`, always a tap, payload `{sitterId, date, from, to, text}`; the simulated sitter answers `yes` or `no` from the canned weekday availability). Every adapter also accepts `title` and `summary` (what the card shows) and refuses any other unknown field. An adapter replaces `rt.state` without saving; `executeAction` saves right after it (with the card's outcome), and `actions.changed` re-reads every screen.
+- T7.2: **the seeded Friday pizza rule** now carries the shop's ids and price: `{vendor: 'sim-pizza', items: [{id: 'margherita-l', qty: 2}], total: 178, currency: 'CNY'}` (the old `name` form would be refused). T7.3 can change the size from it (`quotePizza` prices any order).
+- T7.2: **the group fixture** (`GROUP_FIXTURE`, 3 messages, ids `grp-msg-1..3`, version 1): Teacher Wang's party for "本周四下午3点" asking for food for 8 children, Lele's mom's 接龙 list (香蕉 and 葡萄 taken; **苹果 and 蛋糕 still free**, for Scene 2), and a non-urgent note ("下周一前请把秋游回执交回班里，不着急") for Scene 5. **No printed dates**, so it never goes stale. Replies get ids `grp-reply-<n>`. Messages have `id` and `version` already (T7.5 can grow `version`).
+- T7.2: **`POST /demo/post-group-message {}`** (demo only, signed in, any member): posts the next fixture message at the demo clock's now, saves, broadcasts the new stream message **`services.changed`** (no data; screens re-read) and queues **`homemind.message_received`** to PPMA (`groupMessageReport` in `ppmaMap.ts`; the group is family-wide). Answer `{ok, message, remaining}`; `409 no_more_messages` after the last one.
+- T7.2: **the Services tab** (`services` / `服务`, after Memory): a note that everything there is simulated, then one card per service as a `List` whose every row carries `simulated: true` (the badge shows on each row); an empty group or mailbox is a text that says "Simulated" / "模拟". The demo button "Post next group message (demo) (n)" shows only with `HOMEMIND_DEMO=1` and while messages are left. The **inbox is the signed-in member's own mailbox**, approved senders only (Mom: class photo, library; Dad: class photo, swim club; Maya: none). Everyone with an account sees the tab.
 
 - T7.1: **adapters** (`ActionAdapter` in `actions.ts`): `id`, `mode: 'real' | 'simulated'`, `area` (for `autonomy.byArea`), `autoAllowed?` (simulated only; ignored for real), `validate(payload)` and `execute(payload, signal)`. The bridge keeps a registry (`adapters` in `server/homemind.ts`), **empty for now**; T7.2 registers the simulated services there. `setHomemindAdaptersForTests` swaps it in tests.
 - T7.1: **preparing a card** (`prepareCard`): `mode` and `area` are copied from the adapter, never from the caller, and `payloadHash` is sha256 of the canonical JSON (keys sorted). The adapter's `validate` must pass, the expiry must be in the future, at most 200 cards. Nothing runs. T7.3/T7.4 call this (then `commitCards`-style save and the `actions.changed` broadcast).
@@ -200,6 +207,8 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 ## Deviations from the plan
 
+- T7.2: a new screen `services` (Family sub-navigation "Services" / "服务"), which the plan's screen list does not name: the plan's "chat-style list" for the group and the "visible label on every card" need a place in the app. Types gained `ServicesState`, `ServicesView`, `GroupMessage`, `PizzaOrder`, `BabysitterMessage`, `HomemindState.services` and the stream message `services.changed`. The seeded pizza rule's payload changed to menu ids and a total. `POST /demo/post-group-message` no longer answers 501. Weather is built (the plan says "only if a scene needs it"); it is a fixture with no logic.
+
 - T7.1: `ActionCard` gained `executing` (a run in progress) and optional `area`, `title`, `titleZh`, `createdAt`, `ruleId`, `usedTokenIds`, `executedBy`, `finishedAt`, `result`, `error`. `ActivityKind` gained `'action'`, `StreamMessage` gained `actions.changed`. Screen JSON gained `confirmations` for parents. The plan's "tokens" are delivered through the screen JSON, not through a separate route (the plan's route list has none). `POST /actions/:id/confirm|cancel` no longer answer 501. No adapter is registered yet: T7.2 owns the simulated services.
 
 - T6.2: `types.ts` gained `PpmaMemoryStatement`, `PpmaMemoryData`, `PpmaExplanationData` and the stream message `memory.changed`; `TaskRow.state` may be `''` (rows that are not board items); `ChatOutcome` `why` gained an optional `ppma`. `GET /screen/memory` is real (it was 501). Memory-screen preferences moved from a `List` to a `TaskList` so they can carry Remove. The fake `scripts/fake-ppma.mjs` now also serves memory views and explanations (owner token only), applies `user.correction`, and sends `ppma.memory_updated`. The plan's `user.correction` also covers "replace"; only `wrong` and `forget` have buttons.
@@ -239,6 +248,9 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 | Issue | Found in | Severity | Plan |
 | --- | --- | --- | --- |
+| **The action card's confirm button sends no token** (`runHomemindAction` posts `{}` to `/actions/:id/confirm`), so a tap in the browser gets `400 no_token`. The token is in the screen JSON (`confirmations[cardId]`). | T7.2 (from T7.1) | **High, for T7.3** | T7.3: pass `confirmations` from the screen to the button (for example put the token in the action args when building, or look it up in `FamilyView` before calling). |
+| The simulated pizza shop's hours use the demo clock: it is closed on Mondays and from 21:30 to 11:00, so an order run then fails "closed (simulated)". | T7.2 | Medium, for T7.3 and T9.2 | Intended ("stops on a closed vendor"). Rehearse Scene 4 between 11:00 and 21:30 on a day other than Monday, or move the demo clock. |
+| Babysitter availability is a fixed weekday table (Zhang Mon–Thu evenings, Chen Fri–Sun evenings, Li daytime), not a conversation. | T7.2 | Low, to say out loud | Fine for the demo; the card and the Services tab say Simulated. |
 | A card left `executing` (the bridge stopped while an adapter ran) stays so after a restart: it can't run again or expire. With in-process simulated adapters this needs a crash in a sub-second window. | T7.1 | Low | Reset the demo, or add a "mark failed on load" step if it ever happens. |
 | Action cards are visible to every member (`viewFor` passes them all). The tokens go to parents only, and only parents can confirm or cancel, but a teen can see a card's payload. No card holds Parents-only content yet. | T7.1 | Low, for T7.3/T8.1 | If a card can quote a Parents-only item (babysitter, teacher message), add a card visibility and filter it in `viewFor`. |
 | `npm ci` reports 5 vulnerabilities (4 moderate, 1 high) in existing dependencies (6 on Node 20). | T0.1 | Low | Existing before this work. Not touched (no dependency changes without asking). |
@@ -306,7 +318,7 @@ Measured on 2026-11-03 on `feat/fridge2table`, before any Homemind work: `npm te
 Things that are simulated or limited, kept current for the presenter.
 
 - The demo is the web version, not a native HarmonyOS app.
-- The group, vendor, babysitter, inbox and weather are simulated and labeled.
+- The group, vendor, babysitter, inbox and weather are simulated and labeled. They are on the **Services** tab, with a "Simulated / 模拟" badge on every row. The kindergarten group gets its messages from a demo button ("Post next group message"), not from WeChat. The pizza shop, the babysitters' answers and the inbox are fixed sample data; nothing is ordered, sent or read from a real mailbox.
 - Real WeChat group access is not available. The realistic product route is sharing and screenshots.
 - The 接龙 screenshot used in tests is simulated and says so. Extraction was measured only on that one clean image, not on real photos.
 - PPMA's memory and proposals need the live model and network on stage (replay does not work). Without them the board still works, and the Family tab shows "PPMA offline". What Homemind reports waits in a queue and is sent when PPMA is back. Parents-only items are never sent to PPMA.
@@ -343,6 +355,26 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T7.2 Fake services: done (2026-11-08)
+**Built:**
+- `server/homemind/fakes.ts` (new): the kindergarten group (`GROUP_FIXTURE`, `postNextGroupMessage`, `groupAuthorFor`), the pizza shop (`PIZZA_VENDOR`, `pizzaOpenAt`, `quotePizza`), babysitters (`BABYSITTERS`, `sitterAvailable`, `draftBabysitterMessage`), the inbox (`APPROVED_SENDERS`, `inboxFor`), weather (`weatherFor`), `servicesViewFor`, and `createSimulatedAdapters` (`group-reply`, `pizza`, `babysitter`).
+- `types.ts`: `ServicesState`, `ServicesView`, `GroupMessage`, `PizzaOrder`, `BabysitterMessage`, `HomemindState.services`, stream message `services.changed`. `seed.ts`: empty services; the Friday rule's payload uses the menu. `ppmaMap.ts`: `groupMessageReport` (`homemind.message_received`, now sent for group messages).
+- `server/homemind.ts`: the adapters registered per runtime, `POST /demo/post-group-message` (was 501), the `services` screen. `events.ts`, `src/transport/homemindEvents.ts`, `FamilyView.tsx`: `services.changed` re-reads the screen; the Services tab; `src/transport/homemind.ts`: the `post-group-message` verb. `src/lib/homemindSurfaces.ts`: `servicesScreen`.
+- Tests: `tests/homemindFakes.test.ts` (new, 19), `tests/homemindFakesBridge.test.ts` (new, 4), `tests/homemindSurfaces.test.ts` (+4), `tests/homemindBridge.test.ts` (the 501 list), `e2e/homemind.spec.ts` (Services added to the 390 px loop in both languages; a new two-window Services test).
+**Decisions:** see "Decisions made during the build" (T7.2).
+**Deviations:** see "Deviations from the plan" (T7.2).
+**Test results:**
+- At the start: `npm test` failed 1 test on the first cold run, then 798 passed, 1 skipped on the rerun (the known cold-run pattern).
+- `npm test`: **825 passed, 1 skipped (826; 27 new)**. The first full run after the change failed 2 timing tests under load (`homemindEvents` "ends when the session token expires", `homemindPpma` "refuses an id that is not a statement id", 10 s timeout); both files passed alone (59 of 59) and the next full run was all green.
+- `npx tsc --noEmit`: clean. A temporary tsconfig that also includes `server/homemind.ts` and the new tests: clean (apart from the known `server/orbit.ts` errors).
+- `npm run test:e2e`: **65 of 65** (7.2 min). The Services screen at 390 px in EN and ZH: no overflow, no serious axe issues; a screenshot was checked by eye.
+**Not done or not verified:** no action-card UI yet, and the card's confirm button sends no token (Open issues, for T7.3). Nothing in the app prepares a pizza, sitter or group card yet (T7.3, T7.4). The phase is not over, so `npm run build` and the flag-off check were not run.
+**Next task should know:** T7.3 prepares the pizza card with `prepareCard(state, {adapter: 'pizza', payload: {vendor: 'sim-pizza', items, total: quotePizza(items).total, currency: 'CNY', title, summary}, ...}, adaptersOf(rt), now)`, checks `pizzaOpenAt` and the rule's `maxPrice` against `quotePizza` before preparing, then saves and broadcasts `actions.changed`. The babysitter draft is `draftBabysitterMessage(sitterId, date, from, to, lang)`; pick the first sitter by `rank` for whom `sitterAvailable` is true. T7.4 posts with `group-reply` (`kind: 'claim'`, then `'correction'`), `replyTo` the 接龙 message `grp-msg-2`, `asMemberId` a parent; apples and cake are free in the fixture.
+**How to verify:**
+- Commands: `npm test` ; `npx tsc --noEmit` ; `npx vitest run tests/homemindFakes.test.ts tests/homemindFakesBridge.test.ts` ; `npx playwright test e2e/homemind.spec.ts -g "Services"`
+- Expected output: 825 passed, 1 skipped; no tsc output; 2 files, 23 tests pass; 1 passed.
+- Manual check: `npm run dev`, open `http://127.0.0.1:5173/?member=mom`, Family tab → **Services**. Every row of the pizza, babysitter, inbox and weather cards has a "Simulated" badge, and the group says "Simulated · No messages yet". Tap "Post next group message (demo) (3)": Teacher Wang's Chinese message appears. In a second browser profile as Dad (`?member=dad`, Chinese), the same message appears without a reload, and Dad's inbox has no library mail.
 
 ### T7.1 Action guard: done (2026-11-08)
 **Built:**

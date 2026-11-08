@@ -11,6 +11,7 @@
  * Pure: no I/O.
  */
 import { addDays, localParts, toIso, zonedToUtc } from './clock';
+import { seedServices } from './fakes';
 import { STATE_SCHEMA_VERSION } from './types';
 import type { Family, HomemindState, Item, Preference, Rule } from './types';
 
@@ -200,7 +201,8 @@ function seedRules(): Rule[] {
       trigger: { kind: 'weekly', weekday: 5, time: '18:30', leadMinutes: 30 },
       actionTemplate: {
         adapter: 'pizza',
-        payload: { vendor: 'Simulated pizza shop', items: [{ name: 'Large margherita', qty: 2 }] }
+        // The simulated shop's menu ids and price (fakes.ts): 2 x 89 CNY.
+        payload: { vendor: 'sim-pizza', items: [{ id: 'margherita-l', qty: 2 }], total: 178, currency: 'CNY' }
       },
       limits: { maxPrice: 250, currency: 'CNY' },
       area: 'food',
@@ -222,6 +224,7 @@ export function seedState(options: SeedOptions): HomemindState {
     actionCards: [],
     activity: [],
     whys: [],
+    services: seedServices(),
     clockOffsetMs: 0,
     seededAt: toIso(options.realNow ?? options.now)
   };

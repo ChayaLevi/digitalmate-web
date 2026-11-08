@@ -223,6 +223,11 @@ export async function runHomemindAction(action: A2uiAction, token: string): Prom
     const result = await call<MutationResult>('/api/homemind/preferences', { method: 'POST', token, body: JSON.stringify({ id: args.preferenceId, remove: true }) });
     return { kind: 'mutation', result, verb };
   }
+  if (verb === 'post-group-message') {
+    // Demo only (`HOMEMIND_DEMO=1`): the next sample message arrives in the simulated kindergarten group.
+    const result = await call<MutationResult>('/api/homemind/demo/post-group-message', { method: 'POST', token, body: '{}' });
+    return { kind: 'mutation', result, verb };
+  }
   if (verb === 'why') {
     const body = await call<{ why: { summary?: string; source?: string }; ppma?: { state: string; summary?: string; rationale?: string } }>(`/api/homemind/why/${id(args.whyId)}`, { token });
     return { kind: 'why', why: body.why, ...(body.ppma ? { ppma: body.ppma } : {}) };

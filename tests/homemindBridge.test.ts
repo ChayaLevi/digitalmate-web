@@ -367,8 +367,7 @@ describe('routes for later tasks', () => {
   it('are whitelisted behind the same checks and answer 501', async () => {
     const mom = as(await login('mom'));
     for (const [method, path, task] of [
-      ['POST', '/rules', 'T7.3'],
-      ['POST', '/demo/post-group-message', 'T7.2']
+      ['POST', '/rules', 'T7.3']
     ]) {
       const res = await mom.send(method, path, method === 'GET' ? undefined : {});
       expect(res.status, `${method} ${path}`).toBe(501);

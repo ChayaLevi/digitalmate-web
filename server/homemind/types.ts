@@ -365,6 +365,98 @@ export interface HomemindState {
   heldAlerts?: HeldAlert[];
   /** Messages to the backup contact. Simulated in the demo: nothing leaves the machine. */
   backupMessages?: BackupMessage[];
+  /** T7.2: the simulated services' own state (fakes.ts). Absent in older files: fakes.ts fills in the seed. */
+  services?: ServicesState;
+}
+
+// --- simulated services (T7.2, fakes.ts) ---------------------------------------------------------------
+
+/** One message in the simulated kindergarten group. `version` grows when the sender edits it (T7.5). */
+export interface GroupMessage {
+  id: string;
+  version: number;
+  at: string;
+  author: string;
+  authorZh?: string;
+  /** `teacher` and `parent` are other people in the group; `family` is a reply this family posted. */
+  from: 'teacher' | 'parent' | 'family';
+  text: string;
+  /** A reply's kind: a sign-up claim, or a correction of an earlier claim. */
+  replyKind?: 'claim' | 'correction';
+  replyTo?: string;
+  /** Always true: there is no real group behind it. */
+  simulated: true;
+}
+
+export interface PizzaOrder {
+  id: string;
+  at: string;
+  lines: Array<{ itemId: string; qty: number; price: number }>;
+  total: number;
+  currency: string;
+  deliverAt?: string;
+  simulated: true;
+}
+
+export interface BabysitterMessage {
+  id: string;
+  at: string;
+  sitterId: string;
+  date: string;
+  from: string;
+  to: string;
+  text: string;
+  /** The canned answer the simulated sitter gives. */
+  reply: 'yes' | 'no';
+  simulated: true;
+}
+
+/** What the simulated services remember. Reset with the demo. */
+export interface ServicesState {
+  group: { id: string; messages: GroupMessage[]; /** How many fixture messages were posted. */ posted: number };
+  pizzaOrders: PizzaOrder[];
+  babysitterMessages: BabysitterMessage[];
+}
+
+/** A simulated service's card as a screen shows it. Every one carries `simulated: true`. */
+export interface ServicesView {
+  group: {
+    id: string;
+    name: string;
+    nameZh: string;
+    messages: GroupMessage[];
+    /** Fixture messages not posted yet (the demo control). */
+    remaining: number;
+    simulated: true;
+  };
+  pizza: {
+    name: string;
+    nameZh: string;
+    open: boolean;
+    /** Local `HH:MM`. */
+    opensAt: string;
+    closesAt: string;
+    currency: string;
+    menu: Array<{ id: string; name: string; nameZh: string; price: number; serves: number }>;
+    lastOrder?: PizzaOrder;
+    simulated: true;
+  };
+  babysitters: {
+    /** Local `YYYY-MM-DD` the availability is for (today). */
+    date: string;
+    sitters: Array<{ id: string; name: string; nameZh: string; rank: number; note: string; noteZh: string; available: boolean; from?: string; to?: string }>;
+    simulated: true;
+  };
+  /** Only the signed-in member's own mailbox. */
+  inbox: {
+    approvedSenders: Array<{ address: string; name: string; nameZh: string }>;
+    messages: Array<{ id: string; at: string; from: string; fromName: string; fromNameZh: string; subject: string; subjectZh: string; body: string; bodyZh: string }>;
+    simulated: true;
+  };
+  weather: {
+    days: Array<{ date: string; summary: string; summaryZh: string; low: number; high: number; rainChance: number }>;
+    simulated: true;
+  };
 }
 
 export interface HeldAlert {
@@ -410,6 +502,8 @@ export type StreamMessage =
   | { event: 'memory.changed'; data: Record<string, never> }
   /** An action card was prepared, executed, failed, cancelled or expired (T7.1). Carries nothing; screens re-read. */
   | { event: 'actions.changed'; data: Record<string, never> }
+  /** A simulated service changed: a group message was posted (T7.2). Carries nothing; screens re-read. */
+  | { event: 'services.changed'; data: Record<string, never> }
   /** The demo was reset: forget everything shown. */
   | { event: 'demo.reset'; data: Record<string, never> };
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fixedClock } from '../server/homemind/clock';
 import { applyChange } from '../server/homemind/core';
+import { postNextGroupMessage, servicesViewFor } from '../server/homemind/fakes';
 import type { Change } from '../server/homemind/core';
 import { seedState } from '../server/homemind/seed';
 import type { HomemindState } from '../server/homemind/types';
@@ -429,5 +430,63 @@ describe('settings', () => {
     const text = JSON.stringify(parse(screenTurn('settings', input(seed(), 'dad', 'en')).jsonl).components);
     expect(text).toContain('an alert can be missed');
     expect(text).toContain('Demo sign-in');
+  });
+});
+
+describe('services screen (T7.2)', () => {
+  const at18 = Date.UTC(2026, 10, 4, 10, 0); // Wednesday 18:00 in Shanghai: the shop is open
+  const servicesInput = (state: HomemindState, member: string, lang: HomemindLang, demo: boolean) =>
+    input(state, member, lang, { now: new Date(at18).toISOString(), services: servicesViewFor(state, member, at18), demo });
+  const lists = (surface: A2uiSurface) => Object.values(surface.components).filter(c => c.component === 'List');
+
+  it('parses in both languages, and every card is labelled simulated', () => {
+    const posted = postNextGroupMessage(seed(), at18);
+    if (!posted.ok) throw new Error('fixture');
+    for (const lang of ['en', 'zh'] as const) {
+      const surface = parse(screenTurn('services', servicesInput(posted.state, 'mom', lang, true)).jsonl);
+      const cards = lists(surface);
+      expect(cards.map(c => c.id).sort()).toEqual(['group', 'inbox', 'pizza', 'sitters', 'weather']);
+      for (const card of cards) {
+        const rows = dataAt(surface, card.dataPath) as Array<Record<string, unknown>>;
+        expect(rows.length, card.id).toBeGreaterThan(0);
+        expect(rows.every(r => r.simulated === true), card.id).toBe(true);
+      }
+      const all = JSON.stringify(surface);
+      expect(all).toContain(lang === 'zh' ? '模拟' : 'Simulated');
+      expect(all).toContain('各位家长好');
+      expect(all).toContain(lang === 'zh' ? '营业中' : 'Open now');
+    }
+  });
+
+  it('an empty group and an empty mailbox still say simulated in their text', () => {
+    const surface = parse(screenTurn('services', servicesInput(seed(), 'maya', 'zh', false)).jsonl);
+    expect(lists(surface).map(c => c.id)).not.toContain('group');
+    expect(lists(surface).map(c => c.id)).not.toContain('inbox');
+    const texts = Object.values(surface.components).filter(c => c.component === 'Text').map(c => String(c.text));
+    expect(texts.find(t => t.includes('幼儿园群'))).toContain('模拟');
+    expect(texts.find(t => t.includes('收件箱'))).toContain('模拟');
+  });
+
+  it('offers "post next group message" only in demo mode and while messages are left', () => {
+    const post = (state: HomemindState, demo: boolean) => actionsOf(parse(screenTurn('services', servicesInput(state, 'dad', 'en', demo)).jsonl)).filter(a => a.args?.verb === 'post-group-message');
+    expect(post(seed(), true)).toHaveLength(1);
+    expect(post(seed(), true)[0].label).toContain('(3)');
+    expect(post(seed(), false)).toHaveLength(0);
+    let state = seed();
+    for (let n = 0; n < 3; n++) {
+      const next = postNextGroupMessage(state, at18);
+      if (!next.ok) throw new Error('fixture');
+      state = next.state;
+    }
+    expect(post(state, true)).toHaveLength(0);
+  });
+
+  it("shows only the member's own inbox", () => {
+    const mom = JSON.stringify(parse(screenTurn('services', servicesInput(seed(), 'mom', 'en', false)).jsonl));
+    const dad = JSON.stringify(parse(screenTurn('services', servicesInput(seed(), 'dad', 'en', false)).jsonl));
+    expect(mom).toContain('Your books are due tomorrow');
+    expect(dad).not.toContain('Your books are due tomorrow');
+    expect(dad).toContain('Pool closed next Saturday');
+    expect(mom).not.toContain('Big sale');
   });
 });

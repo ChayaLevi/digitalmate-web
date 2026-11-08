@@ -34,6 +34,7 @@ import { seedState } from './homemind/seed';
 import { cancelCard, executeAction, expireCards, issueConfirmation } from './homemind/actions';
 import type { ActionErrorCode, AdapterRegistry } from './homemind/actions';
 import { applySettings, parseSettingsPatch } from './homemind/settings';
+import { KINDERGARTEN_GROUP, createSimulatedAdapters, postNextGroupMessage, servicesViewFor } from './homemind/fakes';
 import { createLlmClient, llmConfigFromEnv, llmStatus } from './homemind/llm';
 import type { LlmClient } from './homemind/llm';
 import { isImageDataUrl, MAX_IMAGE_DATA_URL, runExtraction, runIntent, LIMITS as INTENT_LIMITS } from './homemind/intents';
@@ -44,7 +45,7 @@ import type { BlockedChoice, PreferenceRequest, PreferenceResult } from './homem
 import { HomemindStore, dataFileFromEnv } from './homemind/store';
 import { createPpmaClient, fileSyncStore, isStatementId, ppmaConfigFromEnv, ppmaSyncFileFor } from './homemind/ppma';
 import type { PpmaClient } from './homemind/ppma';
-import { handlePpmaCommand, preferenceReport, reminderReport, reportsForChange } from './homemind/ppmaMap';
+import { groupMessageReport, handlePpmaCommand, preferenceReport, reminderReport, reportsForChange } from './homemind/ppmaMap';
 import type { PpmaReport } from './homemind/ppmaMap';
 import type { LoadSource } from './homemind/store';
 import { ID_PATTERN } from './homemind/types';
@@ -65,7 +66,7 @@ const CONFLICT_HORIZON_MS = 90 * 24 * 60 * 60 * 1000;
 /** The demo clock jumps at most a week at a time. */
 const MAX_JUMP_MINUTES = 7 * 24 * 60;
 
-const SCREENS = ['my-day', 'family', 'calendar', 'search', 'rules', 'memory', 'activity', 'settings', 'edit', 'item'] as const;
+const SCREENS = ['my-day', 'family', 'calendar', 'search', 'rules', 'memory', 'activity', 'settings', 'edit', 'item', 'services'] as const;
 type Screen = (typeof SCREENS)[number];
 
 /** Verbs on `POST /items/:id/:verb` that map straight to a core change. `ack` is the core's `confirm`. */
@@ -175,6 +176,8 @@ interface Runtime {
   llm?: { key: string; client: LlmClient };
   /** The PPMA client (T6.1), when `PPMA_URL` is set. Memory and advice only: never awaited in a request. */
   ppma?: PpmaClient;
+  /** The simulated services' adapters (T7.2), bound to this runtime's state and clock. */
+  adapters?: AdapterRegistry;
 }
 
 interface Holder {
@@ -344,14 +347,27 @@ async function scheduledTick(): Promise<void> {
 // --- action cards (T7.1) ------------------------------------------------------------------------------
 
 /**
- * The adapters actions may run. Empty until the simulated services exist (T7.2); with none, no card can
- * be prepared or run. There are no real adapters in the demo.
+ * The adapters actions may run: the simulated services (fakes.ts: group reply, pizza, babysitter), bound
+ * to this runtime. An adapter replaces `rt.state` without saving; `executeAction` saves right after it.
+ * There are no real adapters in the demo.
  */
-let adapters: AdapterRegistry = {};
+let adaptersOverride: AdapterRegistry | undefined;
 
 /** For tests: the adapters to use (`undefined` puts back the built-in set). */
 export function setHomemindAdaptersForTests(registry: AdapterRegistry | undefined): void {
-  adapters = registry ?? {};
+  adaptersOverride = registry;
+}
+
+function adaptersOf(rt: Runtime): AdapterRegistry {
+  if (adaptersOverride) return adaptersOverride;
+  rt.adapters ??= createSimulatedAdapters({
+    get: () => rt.state,
+    set: state => {
+      rt.state = state;
+    },
+    now: () => rt.clock.now()
+  });
+  return rt.adapters;
 }
 
 /** The confirmation-token key: derived from `HOMEMIND_SECRET`, so a session token can't pass as one. */
@@ -364,7 +380,7 @@ function confirmationsFor(rt: Runtime, member: Member): Record<string, { token: 
   if (!key || member.role !== 'parent') return out;
   for (const card of rt.state.actionCards) {
     if (card.status !== 'pending') continue;
-    const issued = issueConfirmation(rt.state, card.id, member.id, { key: actionKey(key), now: rt.clock.now() }, adapters);
+    const issued = issueConfirmation(rt.state, card.id, member.id, { key: actionKey(key), now: rt.clock.now() }, adaptersOf(rt));
     if (issued.ok) out[card.id] = { token: issued.token, expiresAt: issued.expiresAt };
   }
   return out;
@@ -403,7 +419,7 @@ async function confirmAction(ctx: Ctx): Promise<void> {
     { get: () => rt.state, set: state => commitCards(rt, state) },
     ctx.params[0],
     { kind: 'tap', memberId: ctx.member.id, token: body.token as string | undefined },
-    { adapters, key: actionKey(secret() as string), now: () => rt.clock.now() }
+    { adapters: adaptersOf(rt), key: actionKey(secret() as string), now: () => rt.clock.now() }
   );
   if (result.ok) return json(ctx.response, 200, { ok: true, card: result.card, activityId: result.activity.id });
   if (result.code === 'action_failed') return fail(ctx.response, 502, 'action_failed', result.message, { card: result.card, activityId: result.activity.id });
@@ -914,7 +930,9 @@ const routes: Route[] = [
         ...(edit ? { edit } : {}),
         ...(name === 'item' && itemPreferences.length ? { itemPreferences } : {}),
         ...(itemPpma ? { itemPpma } : {}),
-        ...(ppmaMemory ? { ppmaMemory } : {})
+        ...(ppmaMemory ? { ppmaMemory } : {}),
+        // The simulated services (T7.2); the inbox is this member's own mailbox only.
+        ...(name === 'services' ? { services: servicesViewFor(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()), demo: demo() } : {})
       });
       // The surface is what screens render. `view` stays for the client's forms (ids, versions).
       // A parent's confirmation tokens for pending action cards (T7.1): each binds that card, its payload and this parent.
@@ -1071,7 +1089,24 @@ const routes: Route[] = [
       json(ctx.response, 200, { ok: true, ...clockData(rt), delivered: ticked.deliveries.length });
     }
   },
-  { method: 'POST', pattern: /^\/demo\/post-group-message$/, auth: true, demoOnly: true, handler: notBuilt('T7.2') },
+  {
+    method: 'POST',
+    pattern: /^\/demo\/post-group-message$/,
+    auth: true,
+    demoOnly: true,
+    // The next sample message arrives in the simulated kindergarten group. PPMA hears of it (queued, never awaited).
+    handler: async ctx => {
+      pick(await readBody(ctx.request), [], 'post-group-message');
+      const { rt } = ctx;
+      const posted = postNextGroupMessage(rt.state, rt.clock.now());
+      if (!posted.ok) return fail(ctx.response, 409, posted.code, posted.message);
+      rt.state = posted.state;
+      await rt.store.save(posted.state);
+      rt.hub.broadcast({ event: 'services.changed', data: {} });
+      reportToPpma(rt, [groupMessageReport(posted.message, KINDERGARTEN_GROUP)]);
+      json(ctx.response, 200, { ok: true, message: posted.message, remaining: posted.remaining });
+    }
+  },
   {
     method: 'POST',
     pattern: /^\/demo\/reset$/,

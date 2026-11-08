@@ -193,7 +193,7 @@ for (const lang of ['en', 'zh'] as const) {
   test(`every Family screen at 390 px in ${lang}: no overflow, no serious axe issues`, async ({ page }) => {
     await openFamily(page, lang, 'mom');
     await expect(family(page)).toHaveAttribute('data-member', 'mom');
-    const names = lang === 'zh' ? ['我的一天', '家庭', '日历', '搜索', '规则', '记忆', '动态', '设置', '+ 添加'] : ['My day', 'Family', 'Calendar', 'Search', 'Rules', 'Memory', 'Activity', 'Settings', '+ Add'];
+    const names = lang === 'zh' ? ['我的一天', '家庭', '日历', '搜索', '规则', '记忆', '服务', '动态', '设置', '+ 添加'] : ['My day', 'Family', 'Calendar', 'Search', 'Rules', 'Memory', 'Services', 'Activity', 'Settings', '+ Add'];
     const nav = family(page).getByRole('navigation', { name: lang === 'zh' ? '家庭页面' : 'Family screens' });
     for (const name of names) {
       await nav.getByRole('button', { name, exact: true }).click();
@@ -732,4 +732,48 @@ test('Memory (T6.2): a teen cannot remove a hard preference, and the screen read
   await expect(surface.getByRole('button', { name: /^删除: / })).toHaveCount(1);
   await noOverflow(page);
   expect(await seriousIssues(page)).toEqual([]);
+});
+
+// T7.2: the simulated services, each card labelled on the card itself.
+test('Services (T7.2): every simulated card is labelled; posting the next group message reaches the other window live', async ({ browser }) => {
+  const momContext = await browser.newContext();
+  const dadContext = await browser.newContext();
+  const mom = await momContext.newPage();
+  const dad = await dadContext.newPage();
+  await openFamily(mom, 'en', 'mom');
+  await openFamily(dad, 'zh', 'dad');
+  await expect(family(mom)).toHaveAttribute('data-member', 'mom');
+  await expect(family(dad)).toHaveAttribute('data-member', 'dad');
+  await family(mom).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'Services', exact: true }).click();
+  await family(dad).getByRole('navigation', { name: '家庭页面' }).getByRole('button', { name: '服务', exact: true }).click();
+
+  const momSurface = mom.locator('.a2ui-surface');
+  const dadSurface = dad.locator('.a2ui-surface');
+  await expect(momSurface).toContainText('Kindergarten group');
+  await expect(momSurface).toContainText('No messages yet.');
+  // Pizza shop, babysitters, inbox and weather: one List each, and each row carries the badge.
+  const momLists = momSurface.locator('.a2ui-list');
+  await expect(momLists).toHaveCount(4);
+  for (let i = 0; i < 4; i++) {
+    const list = momLists.nth(i);
+    await expect(list.locator('.hm-sim-badge').first()).toHaveText('Simulated');
+    expect(await list.locator('.a2ui-list-row').count()).toBe(await list.locator('.hm-sim-badge').count());
+  }
+  await expect(momSurface).toContainText('Your books are due tomorrow');
+  await expect(dadSurface).not.toContainText('您借的书明天到期');
+  await expect(dadSurface).toContainText('下周六泳池关闭');
+
+  await momSurface.getByRole('button', { name: /^Post next group message \(demo\) \(3\)/ }).click();
+  await expect(family(mom)).toContainText('A new message arrived in the simulated group.');
+  await expect(momSurface).toContainText('各位家长好');
+  await expect(momLists).toHaveCount(5);
+  // Dad's window re-reads on the stream message, without a reload.
+  await expect(dadSurface).toContainText('各位家长好');
+  await expect(dadSurface.locator('.a2ui-list').first().locator('.hm-sim-badge').first()).toHaveText('模拟');
+  await noOverflow(dad);
+  expect(await seriousIssues(dad)).toEqual([]);
+  await dad.screenshot({ path: test.info().outputPath('services-zh.png'), fullPage: true });
+  await mom.screenshot({ path: test.info().outputPath('services-en.png'), fullPage: true });
+  await momContext.close();
+  await dadContext.close();
 });

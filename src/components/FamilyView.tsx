@@ -52,6 +52,7 @@ const TABS: Array<{ screen: HomemindScreenName; en: string; zh: string }> = [
   { screen: 'search', en: 'Search', zh: '搜索' },
   { screen: 'rules', en: 'Rules', zh: '规则' },
   { screen: 'memory', en: 'Memory', zh: '记忆' },
+  { screen: 'services', en: 'Services', zh: '服务' },
   { screen: 'activity', en: 'Activity', zh: '动态' },
   { screen: 'settings', en: 'Settings', zh: '设置' }
 ];
@@ -263,6 +264,7 @@ export function FamilyView({
           case 'preferences.changed':
           case 'memory.changed':
           case 'actions.changed':
+          case 'services.changed':
             return refreshSoon();
           case 'ppma.status':
             return setPpma(message.data.status);
@@ -480,6 +482,8 @@ export function FamilyView({
             ? tr('Preference saved.', '偏好已保存。')
           : verb === 'memory-correct'
             ? tr('Correction sent to PPMA. It shows here until PPMA has applied it.', '更正已发送给 PPMA，在 PPMA 处理完成前会显示在这里。')
+          : verb === 'post-group-message'
+            ? tr('A new message arrived in the simulated group.', '模拟群里收到一条新消息。')
           : verb === 'remove-preference'
             ? tr('Preference removed. PPMA was told.', '偏好已删除，已通知 PPMA。')
           : verb === 'cancel'

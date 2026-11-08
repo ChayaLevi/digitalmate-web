@@ -453,6 +453,24 @@ The goal is to find blockers while there is still time to change course.
 - Per group, off by default, first time needs approval, food and low-cost only, stops on unclear messages. At level 4 against the simulated group, it claims and alerts. "Change" posts a correction.
 - **Done when:** an e2e test runs Scene 2.
 
+**T7.5 Source changes mark dependent work as stale** (Opus) (optional, cut first if short on time)
+Idea taken from Orbit's revision model. Do not copy Orbit code: it has no license.
+- Messages from the simulated group and inbox get an id and a version. Every item, preparation, claim and draft
+  created from a message records `sourceRef: { id, version }`.
+- Add a demo control "update message" to the simulated group. Fixture: the party moves from Thursday to Friday,
+  and the sign-up list changes so apples are no longer needed.
+- When a message gets a new version: extract it again, and compare dates, times and requested items in code.
+  Use the model only to extract, never to decide what changed.
+- Every item that depends on the old version gets `stale: { reason, oldValue, newValue }`. Its pending reminders
+  pause, and any draft or action card that quotes it is held. A held card never executes, even at autonomy level 4.
+- One card: "The kindergarten changed the party to Friday. 3 items depend on it." Actions: `Apply changes`,
+  `Keep as is`, `Discard`. Apply moves the event, reschedules the preparations, and posts a correction in the
+  simulated group if a claim is affected. Keep clears the flag. Every action has Undo.
+- Notify the owners of the affected items, with neutral wording. "Parents only" still applies.
+- If this task is done, add it to the run guide as the last beat of Scene 2.
+- **Done when:** unit tests prove stale marking, that a held card cannot execute, that Apply reschedules correctly
+  and that Keep clears the flag; an e2e test runs Scene 2 with the update.
+
 ### P8: Remaining scenes
 
 **T8.1 A day gone wrong** (Opus)
@@ -496,7 +514,7 @@ Cut in this order, from the bottom up:
 | Should | Scene 5 with a correction |
 | Could | Scene 3 |
 | Could | Live PPMA, as opposed to recorded (never cut memory entirely without telling the owner) |
-| Cut first | Email ingestion, birthday, babysitter ranking, weekly summary, hosting |
+| Cut first | Email ingestion, stale-on-source-change (T7.5), birthday, babysitter ranking, weekly summary, hosting |
 
 If a feature is cut, remove it from the demo rather than faking it unlabeled.
 
@@ -507,3 +525,9 @@ email and calendar connections, production auth and multi-tenancy, Fridge2Table 
 first-version features not named above (bag by day, maintenance, chore rotation, no time to cook, weather rules).
 
 For later porting, keep core logic free of web APIs and prefer catalog components, as listed in guide section 10.
+
+**Orbit and the native path.** Native DigitalMate sends its home chat to an Orbit server through a gateway, so
+on Huawei phones Homemind will need to become either an Orbit capability or on-device tools. This is why
+`server/homemind/` must stay free of DigitalMate and web imports. Orbit is not part of this demo: DigitalMate Web's
+chat uses its local mock by default, and Homemind owns its own board and logic. Ask the human before touching
+`server/orbit.ts` or the Orbit code.

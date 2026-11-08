@@ -57,6 +57,7 @@ npm run build && npm start  # production bridge + static files
 - **PPMA:** use only its public HTTP contract.
 - **Fridge2Table:** optional. Keep its integration working, and do not depend on it.
 - **LAIX:** ideas only. There is no LAIX code to look for.
+- **Orbit:** not used in this demo. Do not connect the Homemind chat to Orbit, and do not change `server/orbit.ts`. Orbit's code has no license, so never copy from it.
 - **Model:** DeepSeek Flash through an OpenAI-compatible endpoint, for text and images. No other vendor.
 - **Language:** every UI string in English and Simplified Chinese using `tr(en, zh)`. No Hebrew in the product.
 - **Not in the product:** location, workload comparison between partners, children's learning, subscriptions.

@@ -41,6 +41,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T7.2 | Fake services | not started |  |
 | T7.3 | Pizza rule and wedding | not started |  |
 | T7.4 | Group claim | not started |  |
+| T7.5 | Source changes mark dependent work as stale | not started | optional, cut first |
 | T8.1 | A day gone wrong | not started |  |
 | T8.2 | Judgment and summaries | not started |  |
 | T8.3 | Sample email | not started |  |
@@ -249,6 +250,9 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 - [x] Real 接龙 screenshot: none available. A simulated one is used instead
 - [ ] Huawei phone for a browser test, if available, for T9.2
 - [ ] Someone to review the Chinese text, for T9.2
+- [ ] Ask the team: will PPMA go behind DigitalMate, and who owns the PPMA-Orbit integration?
+- [ ] Ask the team: who runs the DigitalMate gateway, and how do we get a development environment?
+- [ ] Ask the team: may we use or change the Orbit code?
 
 ## Current settings
 
@@ -287,6 +291,7 @@ Things that are simulated or limited, kept current for the presenter.
 - A screenshot sent in chat becomes **suggestions** (proposed items) only; a person taps Approve. The model reads it (live Flash about 2 to 3 s per screenshot); the quotes are shown so people can check. Tested on 3 clean rendered screenshots and 2 texts (all simulated samples), not on real phone photos. The 接龙 sign-up is shown, not claimed (claiming is T7.4).
 - "Why?" in chat today is Homemind's own board record (who added it, how, who has it, the last change), and the card says it is not from PPMA.
 - With `HOMEMIND_LLM=fake` the chat "model" is canned keyword rules, labelled "Simulated model". The live model (DeepSeek Flash) needs network on stage: about 1 to 1.7 s per chat message, about 3 s per screenshot.
+- On Huawei phones, DigitalMate's chat runs through the Orbit server. Homemind's logic is kept separate so it can move there later.
 
 ## Log
 
@@ -305,6 +310,10 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### Docs: T7.5 and Orbit notes (2026-11-08)
+**Built:** docs only. Added optional task T7.5, an Orbit note in PLAN.md and CLAUDE.md, three team questions and one demo fact.
+**Next task should know:** Orbit is not used in the demo. T7.5 comes only after T7.4 works.
 
 ### T6.1 PPMA client: done (2026-11-08)
 **Built:**

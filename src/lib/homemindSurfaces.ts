@@ -15,7 +15,7 @@
  * Components that do not render the flag (rules, settings rows) say the word in their text instead.
  */
 import type { A2uiAction, A2uiComponent } from '../types';
-import type { ActionCard, Activity, ExtractedEntry, Family, Item, ItemExplanation, Lang, Member, PendingReminder, PpmaExplanationData, PpmaMemoryData, Preference, Reminder, Rule, ServicesView, SignUpInfo, SkippedExtraction, Why } from '../../server/homemind/types';
+import type { ActionCard, Activity, ExtractedEntry, Family, Item, ItemExplanation, Lang, Member, PendingReminder, PpmaExplanationData, PpmaMemoryData, Preference, Reminder, Rule, RuleRun, ServicesView, SignUpInfo, SkippedExtraction, Why } from '../../server/homemind/types';
 
 export type HomemindLang = Lang;
 export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit' | 'item' | 'services';
@@ -36,6 +36,8 @@ export interface HomemindViewData {
   preferences: Preference[];
   rules: Rule[];
   actionCards: ActionCard[];
+  /** T7.3: what the standing rules did (already filtered for this member). */
+  ruleRuns?: RuleRun[];
   activity: Activity[];
   whys: Why[];
   /** Reminders that reached this member and wait for an answer (T4.2). Set by `screenTurn` from the input. */
@@ -67,8 +69,10 @@ export interface HomemindScreenData {
   itemPpma?: PpmaExplanationData;
   /** For the `services` screen (T7.2): the simulated services, the inbox already limited to this member's own. */
   services?: ServicesView;
-  /** `HOMEMIND_DEMO=1`: the screen may offer demo controls (post the next group message). */
+  /** `HOMEMIND_DEMO=1`: the screen may offer demo controls (post the next group message, prepare a rule card now). */
   demo?: boolean;
+  /** T7.3: a parent's confirmation token per pending card, put behind that card's Confirm button. */
+  confirmations?: Record<string, { token: string; expiresAt: string }>;
 }
 
 /** What the bridge sends the browser for every Homemind screen. Same shape as a Fridge2Table turn. */
@@ -165,6 +169,32 @@ const T = {
   cancelCard: { en: 'Cancel', zh: '取消' },
   expires: { en: 'Expires', zh: '截止' },
   statusPending: { en: 'Waiting for a parent', zh: '等待家长确认' },
+  recentCards: { en: 'Recently', zh: '最近' },
+  cardExecuted: { en: 'done (simulated)', zh: '已完成（模拟）' },
+  cardFailed: { en: 'did not go through', zh: '未能完成' },
+  cardExpired: { en: 'expired: nobody tapped, so nothing happened', zh: '已过期：没有人确认，所以什么都没发生' },
+  cardCancelled: { en: 'cancelled, nothing happened', zh: '已取消，什么都没发生' },
+  cardReplaced: { en: 'replaced: the calendar changed', zh: '已替换：日程有变' },
+  cardRuleOff: { en: 'withdrawn: the rule was turned off', zh: '已撤回：规则已关闭' },
+  ruleAhead: { en: 'card prepared {n} min before', zh: '提前 {n} 分钟准备卡片' },
+  ruleTurnOff: { en: 'Turn off', zh: '关闭' },
+  ruleTurnOn: { en: 'Turn on', zh: '开启' },
+  rulePrepareNow: { en: 'Prepare the next card now (demo)', zh: '立即准备下一张卡片（演示）' },
+  ruleParentsOnly: { en: 'Only a parent can turn a rule that spends money on or off.', zh: '只有家长可以开启或关闭会花钱的规则。' },
+  ruleRuns: { en: 'What the rules did', zh: '规则做了什么' },
+  runPrepared: { en: 'card prepared', zh: '已准备卡片' },
+  runStopped: { en: 'stopped, no card', zh: '已停止，没有卡片' },
+  runOverCap: { en: 'over the price cap', zh: '超过价格上限' },
+  runClosed: { en: 'the shop is closed then', zh: '那时店铺不营业' },
+  runNobody: { en: 'nobody is home then', zh: '那时家里没人' },
+  runInvalid: { en: 'the order is not valid', zh: '订单无效' },
+  runAtHome: { en: 'at home', zh: '人在家' },
+  runAway: { en: 'away', zh: '不在家' },
+  runSitter: { en: 'babysitter message drafted', zh: '已起草保姆消息' },
+  runNoSitter: { en: 'no babysitter on the list is free', zh: '名单上的保姆都没空' },
+  runSchedule: { en: 'on schedule', zh: '按时' },
+  runCalendar: { en: 'after a calendar change', zh: '日程变化后' },
+  runDemo: { en: 'demo control', zh: '演示控制' },
   metricOpen: { en: 'Open', zh: '待认领' },
   metricAwaiting: { en: 'Not confirmed', zh: '待确认' },
   metricProposed: { en: 'Proposed', zh: '待批准' },
@@ -474,35 +504,66 @@ function section(children: A2uiComponent[], data: Record<string, unknown>, id: s
   }
 }
 
-function pendingCards(view: HomemindViewData, lang: HomemindLang, now: string): { children: A2uiComponent[]; data: Record<string, unknown> } {
+const cardText = (card: ActionCard, key: 'title' | 'summary', lang: HomemindLang): string => {
+  const p = card.payload;
+  const zh = p[`${key}Zh`];
+  if (lang === 'zh' && typeof zh === 'string') return zh;
+  if (typeof p[key] === 'string') return p[key] as string;
+  return key === 'title' ? (lang === 'zh' && card.titleZh ? card.titleZh : card.title ?? card.adapter) : '';
+};
+
+/** How a finished card ended, in a few words. A card Homemind withdrew keeps its reason. */
+function cardEnd(card: ActionCard, lang: HomemindLang): string {
+  if (card.status === 'executed') return hx(lang, 'cardExecuted');
+  if (card.status === 'failed') return `${hx(lang, 'cardFailed')}${card.error ? `: ${card.error}` : ''}`;
+  if (card.status === 'expired') return hx(lang, 'cardExpired');
+  if (card.executedBy === 'homemind' && card.error?.startsWith('The calendar changed')) return hx(lang, 'cardReplaced');
+  if (card.executedBy === 'homemind' && card.error?.startsWith('The rule was turned off')) return hx(lang, 'cardRuleOff');
+  return hx(lang, 'cardCancelled');
+}
+
+const RECENT_MS = 12 * 60 * 60 * 1000;
+
+function pendingCards(view: HomemindViewData, lang: HomemindLang, now: string, confirmations: HomemindScreenData['confirmations'] = {}): { children: A2uiComponent[]; data: Record<string, unknown> } {
   const me = memberOf(view.family, view.memberId);
   const children: A2uiComponent[] = [];
   const data: Record<string, unknown> = {};
   // Only a parent can confirm an action, so only a parent is shown the card.
   if (me?.role !== 'parent') return { children, data };
   for (const card of view.actionCards.filter(c => c.status === 'pending' && Date.parse(c.expiresAt) > Date.parse(now))) {
-    const payload = card.payload;
     const simulated = card.mode === 'simulated';
     const expires = dateParts(card.expiresAt, view.family.timezone);
     data[card.id] = {
-      title: typeof payload.title === 'string' ? payload.title : card.adapter,
-      body: typeof payload.summary === 'string' ? payload.summary : '',
+      title: cardText(card, 'title', lang),
+      body: cardText(card, 'summary', lang),
       expires: expires ? `${hx(lang, 'expires')} ${expires.time}` : undefined,
       scope: hx(lang, 'statusPending'),
       simulated
     };
+    // The token binds this card, its exact contents and this parent (T7.1). Without one the server refuses the tap.
+    const token = Object.prototype.hasOwnProperty.call(confirmations, card.id) ? confirmations[card.id].token : undefined;
     children.push({
       id: `card-${card.id}`,
       component: 'ApprovalCard',
       dataPath: `/cards/${card.id}`,
       actions: [
-        { id: `homemind.confirm-card:${card.id}`, label: hx(lang, 'confirmCard'), variant: 'primary', kind: 'homemind', args: { verb: 'confirm-card', cardId: card.id } },
+        { id: `homemind.confirm-card:${card.id}`, label: hx(lang, 'confirmCard'), variant: 'primary', kind: 'homemind', args: { verb: 'confirm-card', cardId: card.id, ...(token ? { token } : {}) } },
         { id: `homemind.cancel-card:${card.id}`, label: hx(lang, 'cancelCard'), variant: 'ghost', kind: 'homemind', args: { verb: 'cancel-card', cardId: card.id } },
         { id: `homemind.why:${card.whyId}`, label: hx(lang, 'why'), variant: 'secondary', kind: 'homemind', args: { verb: 'why', whyId: card.whyId } }
       ]
     });
   }
-  return { children, data: children.length ? { cards: data } : {} };
+  // T7.3: a card that ended in the last hours stays visible as one line, so an expired card is seen, not just gone.
+  const nowMs = Date.parse(now);
+  const recent = view.actionCards
+    .filter(c => c.status !== 'pending' && c.status !== 'executing' && c.finishedAt && nowMs - Date.parse(c.finishedAt) < RECENT_MS)
+    .sort((a, b) => (b.finishedAt ?? '').localeCompare(a.finishedAt ?? ''))
+    .slice(0, 4);
+  if (recent.length) {
+    const lines = recent.map(c => `- ${cardText(c, 'title', lang)}: ${cardEnd(c, lang)}${c.mode === 'simulated' ? ` (${hx(lang, 'simulated')})` : ''}`);
+    children.push(text('cards-recent', `**${hx(lang, 'recentCards')}**\n\n${lines.join('\n')}`));
+  }
+  return { children, data: Object.keys(data).length ? { cards: data } : {} };
 }
 
 // --- screens ----------------------------------------------------------------------------------------
@@ -522,10 +583,10 @@ function myDay(input: HomemindScreenData): HomemindTurn {
   const todays = rest.filter(i => dayOf(i) === today);
   const later = rest.filter(i => { const d = dayOf(i); return d !== undefined && d > today && d <= weekEnd; });
 
-  const cards = pendingCards(view, lang, input.now);
+  const cards = pendingCards(view, lang, input.now, input.confirmations);
   const children: A2uiComponent[] = [...cards.children];
   const data: Record<string, unknown> = { ...cards.data };
-  if (cards.children.length) children.unshift(text('cards-title', `**${hx(lang, 'cards')}**`));
+  if (cards.data.cards) children.unshift(text('cards-title', `**${hx(lang, 'cards')}**`));
   section(children, data, 'needs', hx(lang, 'needsYou'), needs.map(i => taskRow(i, view, lang, today)));
   section(children, data, 'today', hx(lang, 'today'), todays.map(i => taskRow(i, view, lang, today)), hx(lang, 'nothingToday'));
   section(children, data, 'later', hx(lang, 'comingUp'), later.map(i => taskRow(i, view, lang, today)));
@@ -636,22 +697,59 @@ function searchScreen(input: HomemindScreenData): HomemindTurn {
   return turn('search', hx(lang, 'search'), undefined, children, data);
 }
 
+function runLine(run: RuleRun, view: HomemindViewData, lang: HomemindLang): string {
+  const rule = view.rules.find(r => r.id === run.ruleId);
+  const name = rule ? (lang === 'zh' && rule.titleZh ? rule.titleZh : rule.title) : run.ruleId;
+  const when = dateParts(run.occurrence, view.family.timezone);
+  const reasons: Record<string, keyof typeof T> = { over_cap: 'runOverCap', closed: 'runClosed', nobody_home: 'runNobody', invalid: 'runInvalid' };
+  const outcome = run.outcome === 'prepared' ? hx(lang, 'runPrepared') : `${hx(lang, 'runStopped')}: ${hx(lang, reasons[run.reason ?? 'invalid'])}`;
+  const away = run.away.map(a => nameOf(memberOf(view.family, a.memberId), lang)).filter(Boolean);
+  const people = `${run.home.length} ${hx(lang, 'runAtHome')}${away.length ? ` (${away.join(lang === 'zh' ? '、' : ', ')} ${hx(lang, 'runAway')})` : ''}`;
+  const money = run.total !== undefined ? `${run.total} ${run.currency ?? ''}`.trim() : '';
+  const sitter = run.sitter === 'drafted' ? hx(lang, 'runSitter') : run.sitter === 'none_free' ? hx(lang, 'runNoSitter') : '';
+  const trigger = hx(lang, run.trigger === 'calendar' ? 'runCalendar' : run.trigger === 'demo' ? 'runDemo' : 'runSchedule');
+  const day = when ? `${when.date.slice(5)} ${when.time}` : run.date;
+  return [`${name} · ${day}`, outcome, people, money, sitter, trigger].filter(Boolean).join(' · ');
+}
+
 function rulesScreen(input: HomemindScreenData): HomemindTurn {
   const { lang, view } = input;
-  const rules = view.rules.map(rule => {
+  const me = memberOf(view.family, view.memberId);
+  const isParent = me?.role === 'parent';
+  const rows: TaskRow[] = view.rules.map(rule => {
     const cap = rule.limits.maxPrice !== undefined ? `${hx(lang, 'ruleCap')} ${rule.limits.maxPrice} ${rule.limits.currency ?? ''}`.trim() : '';
+    const when = `${WEEKDAYS[lang][rule.trigger.weekday] ?? ''} ${rule.trigger.time}`;
+    const ahead = hx(lang, 'ruleAhead').replace('{n}', String(rule.trigger.leadMinutes));
+    const actions: A2uiAction[] = [];
+    if (isParent) {
+      actions.push({ id: `homemind.rule-toggle:${rule.id}`, label: hx(lang, rule.enabled ? 'ruleTurnOff' : 'ruleTurnOn'), variant: 'secondary', kind: 'homemind', args: { verb: 'rule-toggle', ruleId: rule.id, action: rule.enabled ? 'disable' : 'enable' } });
+      if (input.demo && rule.enabled) actions.push({ id: `homemind.run-rule:${rule.id}`, label: hx(lang, 'rulePrepareNow'), variant: 'ghost', kind: 'homemind', args: { verb: 'run-rule', ruleId: rule.id } });
+    }
     return {
+      id: rule.id,
       title: lang === 'zh' && rule.titleZh ? rule.titleZh : rule.title,
-      subtitle: [rule.enabled ? hx(lang, 'ruleOn') : hx(lang, 'ruleOff'), cap, hx(lang, 'simulated')].filter(Boolean).join(' · '),
-      meta: rule.enabled ? hx(lang, 'ruleOn') : hx(lang, 'ruleOff')
+      meta: [when, ahead, cap, hx(lang, 'simulated')].filter(Boolean).join(' · '),
+      ownerLabel: '',
+      state: '',
+      tone: rule.enabled ? 'accent' : 'muted',
+      // The rule acts only on a simulated service, and the badge says so on the row.
+      simulated: true,
+      actions
     };
   });
   const children: A2uiComponent[] = [text('note', hx(lang, 'rulesNote'))];
   const data: Record<string, unknown> = {};
-  if (rules.length) {
-    children.push({ id: 'rules', component: 'List', title: hx(lang, 'rules'), dataPath: '/rules' });
-    data.rules = rules;
-  } else children.push(text('empty', hx(lang, 'nothingHere')));
+  if (rows.length) {
+    // The state is in the row's meta line too, for screen readers and for a teen who has no buttons.
+    data.rules = rows.map(r => ({ ...r, meta: `${view.rules.find(x => x.id === r.id)?.enabled ? hx(lang, 'ruleOn') : hx(lang, 'ruleOff')} · ${r.meta}` }));
+    children.push(taskList('rules', hx(lang, 'rules'), '/rules'));
+  }
+  if (!isParent) children.push(text('rules-parents', hx(lang, 'ruleParentsOnly')));
+  const runs = [...(view.ruleRuns ?? [])].reverse().slice(0, 8);
+  if (runs.length) {
+    children.push({ id: 'runs', component: 'List', title: hx(lang, 'ruleRuns'), dataPath: '/runs' });
+    data.runs = runs.map(run => ({ title: runLine(run, view, lang), subtitle: hx(lang, 'simulated') }));
+  }
   return turn('rules', hx(lang, 'rules'), undefined, children, data);
 }
 
@@ -828,6 +926,23 @@ function activityLine(a: Activity, view: HomemindViewData, lang: HomemindLang): 
     };
     const w = words[a.note ?? ''] ?? words.corrected;
     return lang === 'zh' ? `${who} ${w[1]} ${a.note === 'removed' ? '' : what}`.trim() : `${who} ${w[0]} ${a.note === 'removed' ? '' : what}`.trim();
+  }
+  if (a.kind === 'rule') {
+    const rule = view.rules.find(r => r.id === a.ref);
+    const what = rule ? `“${lang === 'zh' && rule.titleZh ? rule.titleZh : rule.title}”` : '';
+    const words: Record<string, [string, string]> = { created: ['created the rule', '创建了规则'], enabled: ['turned on the rule', '开启了规则'], disabled: ['turned off the rule', '关闭了规则'] };
+    const w = words[a.note ?? ''] ?? words.enabled;
+    return lang === 'zh' ? `${who} ${w[1]} ${what}`.trim() : `${who} ${w[0]} ${what}`.trim();
+  }
+  if (a.kind === 'action') {
+    // T7.1/T7.3: an action card's outcome. Homemind itself expires or replaces cards.
+    const card = view.actionCards.find(c => c.id === a.ref);
+    const actor = a.actor === 'homemind' ? 'Homemind' : who;
+    const what = card ? `“${cardText(card, 'title', lang)}”` : '';
+    const words: Record<string, [string, string]> = { executed: ['confirmed', '确认了'], failed: ['tried', '尝试了'], cancelled: ['cancelled', '取消了'], expired: ['let expire', '让其过期：'] };
+    const w = words[a.note ?? ''] ?? words.cancelled;
+    const sim = card?.mode === 'simulated' ? ` (${hx(lang, 'simulated')})` : '';
+    return (lang === 'zh' ? `${actor} ${w[1]} ${what}${sim}` : `${actor} ${w[0]} ${what}${sim}`).trim();
   }
   const verb = verbs[a.kind ?? 'edit'] ?? verbs.edit;
   return lang === 'zh' ? `${who} ${verb[1]} ${title}`.trim() : `${who} ${verb[0]} ${title}`.trim();

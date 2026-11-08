@@ -10,8 +10,8 @@
  * member id; the client keeps it in `sessionStorage` and sends it as `x-homemind-session`, so two
  * windows can be two people. Roles (for example "Parents only") are enforced here and in the core.
  *
- * Routes whose task has not been built yet (rules, ...) are whitelisted and
- * answer 501 `not_implemented`, so nothing pretends to work. Chat (`POST /chat`, T5.2) reads a message
+ * Routes whose task has not been built yet are whitelisted and answer 501 `not_implemented`, so
+ * nothing pretends to work. Chat (`POST /chat`, T5.2) reads a message
  * through the model (server/homemind/intents.ts) and plans it with server/homemind/chat.ts.
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -34,6 +34,7 @@ import { seedState } from './homemind/seed';
 import { cancelCard, executeAction, expireCards, issueConfirmation } from './homemind/actions';
 import type { ActionErrorCode, AdapterRegistry } from './homemind/actions';
 import { applySettings, parseSettingsPatch } from './homemind/settings';
+import { applyRuleRequest, parseRuleBody, prepareRuleNow, runRules } from './homemind/rules';
 import { KINDERGARTEN_GROUP, createSimulatedAdapters, postNextGroupMessage, servicesViewFor } from './homemind/fakes';
 import { createLlmClient, llmConfigFromEnv, llmStatus } from './homemind/llm';
 import type { LlmClient } from './homemind/llm';
@@ -304,6 +305,8 @@ async function commit(rt: Runtime, state: HomemindState, events: readonly CoreEv
   await rt.store.save(ticked.state);
   rt.hub.publishChanges(ticked.state, events);
   publishTick(rt, ticked);
+  // A calendar change can change what a waiting rule card should say (who is home): check at once.
+  if (events.length) await applyRules(rt);
   if (rt.ppma && events.length) {
     try {
       reportToPpma(rt, reportsForChange(before, ticked.state, events, actorId));
@@ -319,10 +322,24 @@ function publishTick(rt: Runtime, ticked: TickResult): void {
 }
 
 /**
- * One tick on the loaded state: action cards past their time expire (visibly, T7.1), then reminders.
- * Reads and replaces the state with no await in between.
+ * T7.3: the standing rules look at their next occurrence (rules.ts). A rule only prepares cards; when it
+ * prepared, replaced or stopped one, the state is saved and every window re-reads. Returns whether it did.
+ */
+async function applyRules(rt: Runtime): Promise<boolean> {
+  const step = runRules(rt.state, rt.clock.now(), adaptersOf(rt));
+  if (!step.changed) return false;
+  rt.state = step.state;
+  await rt.store.save(step.state);
+  rt.hub.broadcast({ event: 'actions.changed', data: {} });
+  return true;
+}
+
+/**
+ * One tick on the loaded state: the standing rules (T7.3), action cards past their time expire
+ * (visibly, T7.1), then reminders. Reads and replaces the state with no await in between.
  */
 async function tickNow(rt: Runtime): Promise<TickResult> {
+  await applyRules(rt);
   const expired = expireCards(rt.state, rt.clock.now());
   if (expired.expired.length) {
     rt.state = expired.state;
@@ -463,9 +480,6 @@ interface Route {
   demoOnly?: boolean;
   handler: Handler;
 }
-
-const notBuilt = (task: string): Handler => ({ response }) =>
-  fail(response, 501, 'not_implemented', `This part of Homemind is not built yet (${task})`, { task });
 
 /** A change refused because a hard preference rules it out (T5.4). Hard preferences are never overridden. */
 interface BlockedByPreference {
@@ -917,6 +931,9 @@ const routes: Route[] = [
       const isParent = ctx.member.role === 'parent';
       // A view carries no Undo patches, so the server says which changes this member may undo.
       const undoable = ctx.rt.state.activity.filter(a => a.undo && !a.undone && (isParent || a.actor === ctx.member.id)).map(a => a.id);
+      // A parent's confirmation tokens for pending action cards (T7.1): each binds that card, its payload and this parent.
+      // T7.3: they also go behind each card's own Confirm button, so a tap sends the token for exactly that card.
+      const confirmations = confirmationsFor(ctx.rt, ctx.member);
       const turn = screenTurn(name, {
         lang: ctx.lang,
         now,
@@ -932,11 +949,11 @@ const routes: Route[] = [
         ...(itemPpma ? { itemPpma } : {}),
         ...(ppmaMemory ? { ppmaMemory } : {}),
         // The simulated services (T7.2); the inbox is this member's own mailbox only.
-        ...(name === 'services' ? { services: servicesViewFor(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()), demo: demo() } : {})
+        ...(name === 'services' ? { services: servicesViewFor(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()), demo: demo() } : {}),
+        ...(name === 'rules' ? { demo: demo() } : {}),
+        confirmations
       });
       // The surface is what screens render. `view` stays for the client's forms (ids, versions).
-      // A parent's confirmation tokens for pending action cards (T7.1): each binds that card, its payload and this parent.
-      const confirmations = confirmationsFor(ctx.rt, ctx.member);
       json(ctx.response, 200, {
         ...turn,
         screen: name,
@@ -1046,7 +1063,25 @@ const routes: Route[] = [
       json(ctx.response, 200, { ok: true, action: result.action, changed: result.changed, preference: result.preference, ...(result.activity ? { activityId: result.activity.id } : {}) });
     }
   },
-  { method: 'POST', pattern: /^\/rules$/, auth: true, handler: notBuilt('T7.3') },
+  {
+    method: 'POST',
+    pattern: /^\/rules$/,
+    auth: true,
+    // Create a weekly pizza rule, or turn one on or off. Every rule here spends money, so parents only.
+    handler: async ctx => {
+      const parsed = parseRuleBody(await readBody(ctx.request));
+      if (!parsed.ok) throw new HttpError(400, 'invalid', parsed.message);
+      const { rt, member } = ctx;
+      const result = applyRuleRequest(rt.state, parsed.value, member.id, rt.clock.now());
+      if (!result.ok) return fail(ctx.response, result.status, result.code, result.message);
+      if (result.changed) {
+        await commitCards(rt, result.state);
+        // A rule just turned on may be inside its lead time already.
+        await applyRules(rt);
+      }
+      json(ctx.response, 200, { ok: true, changed: result.changed, rule: result.rule, ...(result.activityId ? { activityId: result.activityId } : {}) });
+    }
+  },
   {
     method: 'PUT',
     pattern: /^\/settings$/,
@@ -1105,6 +1140,24 @@ const routes: Route[] = [
       rt.hub.broadcast({ event: 'services.changed', data: {} });
       reportToPpma(rt, [groupMessageReport(posted.message, KINDERGARTEN_GROUP)]);
       json(ctx.response, 200, { ok: true, message: posted.message, remaining: posted.remaining });
+    }
+  },
+  {
+    method: 'POST',
+    pattern: /^\/demo\/run-rule$/,
+    auth: true,
+    demoOnly: true,
+    // T7.3: a rule looks at its next occurrence now, instead of waiting for its lead time. Parents only:
+    // it prepares a card that spends money (the card still needs its own tap).
+    handler: async ctx => {
+      const body = pick(await readBody(ctx.request), ['ruleId'], 'run-rule');
+      const ruleId = idOf(body.ruleId, 'ruleId');
+      if (ctx.member.role !== 'parent') return fail(ctx.response, 403, 'forbidden', 'Only a parent can run a rule');
+      const { rt } = ctx;
+      const result = prepareRuleNow(rt.state, ruleId, rt.clock.now(), adaptersOf(rt));
+      if (!result.ok) return fail(ctx.response, result.status, result.code, result.message);
+      if (!result.existing) await commitCards(rt, result.state);
+      json(ctx.response, 200, { ok: true, run: result.run, existing: result.existing });
     }
   },
   {

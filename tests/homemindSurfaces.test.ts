@@ -490,3 +490,37 @@ describe('services screen (T7.2)', () => {
     expect(mom).not.toContain('Big sale');
   });
 });
+
+describe('rule cards and the Rules screen (T7.3)', () => {
+  const card = { id: 'card-1', adapter: 'pizza', mode: 'simulated' as const, payload: { title: 'Friday pizza night: order', titleZh: '周五披萨之夜：下单', summary: '1 × Large margherita · 89 CNY', summaryZh: '大号玛格丽特披萨 × 1 · 89 CNY' }, payloadHash: 'h', status: 'pending' as const, expiresAt: new Date(NOW + 3600_000).toISOString(), whyId: 'why-1' };
+
+  it("puts the parent's own token behind the card's Confirm button, and none without one", () => {
+    const s = { ...seed(), actionCards: [card] };
+    const withToken = parse(screenTurn('my-day', input(s, 'dad', 'zh', { confirmations: { 'card-1': { token: 'tok.sig', expiresAt: card.expiresAt } } })).jsonl);
+    expect(actionsOf(withToken).find(a => a.args?.verb === 'confirm-card')!.args).toMatchObject({ cardId: 'card-1', token: 'tok.sig' });
+    expect(JSON.stringify(withToken.data)).toContain('周五披萨之夜：下单');
+    expect(JSON.stringify(withToken.data)).toContain('大号玛格丽特披萨');
+    const without = parse(screenTurn('my-day', input(s, 'dad', 'en')).jsonl);
+    expect(actionsOf(without).find(a => a.args?.verb === 'confirm-card')!.args!.token).toBeUndefined();
+  });
+
+  it('shows a finished card as one line for a while, so an expired one is seen', () => {
+    const done = { ...card, status: 'expired' as const, finishedAt: new Date(NOW - 60_000).toISOString() };
+    const s = { ...seed(), actionCards: [done] };
+    expect(screenTurn('my-day', input(s, 'mom', 'en')).jsonl).toContain('Friday pizza night: order: expired: nobody tapped, so nothing happened (Simulated)');
+    expect(screenTurn('my-day', input(s, 'dad', 'zh')).jsonl).toContain('已过期');
+    expect(screenTurn('my-day', input(s, 'maya', 'en')).jsonl).not.toContain('Friday pizza');
+  });
+
+  it('gives parents Turn off (and the demo button only in demo mode); a teen gets no buttons and a note', () => {
+    const s = seed();
+    const mom = parse(screenTurn('rules', input(s, 'mom', 'en', { demo: true })).jsonl);
+    expect(actionsOf(mom).map(a => a.args?.verb)).toEqual(expect.arrayContaining(['rule-toggle', 'run-rule']));
+    expect(actionsOf(mom).find(a => a.args?.verb === 'rule-toggle')!.args).toMatchObject({ ruleId: 'rule-friday-pizza', action: 'disable' });
+    expect(actionsOf(parse(screenTurn('rules', input(s, 'mom', 'en')).jsonl)).some(a => a.args?.verb === 'run-rule')).toBe(false);
+    const maya = parse(screenTurn('rules', input(s, 'maya', 'en', { demo: true })).jsonl);
+    expect(actionsOf(maya)).toHaveLength(0);
+    expect(JSON.stringify(maya.data) + JSON.stringify(maya.components)).toContain('Only a parent can turn a rule');
+    expect(JSON.stringify(parse(screenTurn('rules', input(s, 'dad', 'zh')).jsonl).data)).toContain('周五 18:30');
+  });
+});

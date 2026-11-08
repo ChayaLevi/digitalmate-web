@@ -363,17 +363,13 @@ describe('Scene 4: availability', () => {
   });
 });
 
-describe('routes for later tasks', () => {
-  it('are whitelisted behind the same checks and answer 501', async () => {
+describe('routes built in later tasks', () => {
+  it('are behind the same checks (no route answers 501 any more since T7.3)', async () => {
     const mom = as(await login('mom'));
-    for (const [method, path, task] of [
-      ['POST', '/rules', 'T7.3']
-    ]) {
-      const res = await mom.send(method, path, method === 'GET' ? undefined : {});
-      expect(res.status, `${method} ${path}`).toBe(501);
-      expect((await json(res)).task).toBe(task);
-      expect((await as(undefined).send(method, path, method === 'GET' ? undefined : {})).status, `${method} ${path} signed out`).toBe(401);
-    }
+    // POST /rules (T7.3): an empty body is a 400, signed out a 401.
+    expect((await mom.send('POST', '/rules', {})).status).toBe(400);
+    expect((await as(undefined).send('POST', '/rules', {})).status).toBe(401);
+    expect((await mom.send('POST', '/rules', { action: 'enable', id: 'rule-friday-pizza' }, { origin: 'https://evil.example' })).status).toBe(403);
     expect((await mom.send('POST', '/actions/Bad_Id/confirm', {})).status).toBe(404);
     expect((await mom.send('POST', '/chat', {}, { origin: 'https://evil.example' })).status).toBe(403);
   });

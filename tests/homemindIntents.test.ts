@@ -116,6 +116,12 @@ describe('each intent, through the simulated model', () => {
     expect(await intentOf('Wedding on Saturday at 18:00')).toMatchObject({ intent: 'create_event', start: '2026-11-07T10:00:00.000Z', unavailableMemberIds: ['mom'] });
   });
 
+  it('create_event (fake model, T7.3): a wedding trip "from Tuesday to Saturday" lasts from noon to noon', async () => {
+    // Today is Wednesday 2026-11-04 in Shanghai: the next Tuesday is 11-10, the Saturday after it 11-14.
+    expect(await intentOf("I'm at my cousin's wedding from Tuesday to Saturday")).toMatchObject({ intent: 'create_event', start: '2026-11-10T04:00:00.000Z', end: '2026-11-14T04:00:00.000Z', unavailableMemberIds: ['mom'] });
+    expect(await intentOf('我从周二到周六去参加表姐的婚礼')).toMatchObject({ intent: 'create_event', start: '2026-11-10T04:00:00.000Z', end: '2026-11-14T04:00:00.000Z', unavailableMemberIds: ['mom'] });
+  });
+
   it('create_task', async () => {
     expect(await intentOf('Remind me to buy milk tomorrow')).toEqual({ intent: 'create_task', title: 'buy milk tomorrow', due: '2026-11-05T01:00:00.000Z', forMemberIds: [] });
   });

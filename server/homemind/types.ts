@@ -235,6 +235,39 @@ export interface ActionCard {
   finishedAt?: string;
   result?: Record<string, unknown>;
   error?: string;
+  /** T7.3: board items the card's text is about (the wedding that makes Mom away). A member who can't
+   * see one of them does not get the card (visibility.ts), as for a `Why`. */
+  refs?: string[];
+}
+
+/**
+ * T7.3: one time a standing rule looked at its next occurrence (rules.ts). `prepared` made a card;
+ * `stopped` made none and says why, so a rule that did nothing is visible too. Text is built by screens.
+ */
+export interface RuleRun {
+  id: string;
+  ruleId: string;
+  /** Local `YYYY-MM-DD` of the occurrence, and its instant (the pizza's delivery time). */
+  date: string;
+  occurrence: string;
+  at: string;
+  /** What started it: the rule's own lead time, a calendar change, or the demo control. */
+  trigger: 'schedule' | 'calendar' | 'demo';
+  outcome: 'prepared' | 'stopped';
+  reason?: 'over_cap' | 'closed' | 'nobody_home' | 'invalid';
+  cardId?: string;
+  /** Both parents are out then: a babysitter message was drafted, or no sitter on the list is free. */
+  sitter?: 'drafted' | 'none_free';
+  sitterCardId?: string;
+  /** Who is at home then, and who is away because of which event. */
+  home: string[];
+  away: Array<{ memberId: string; eventId: string }>;
+  total?: number;
+  currency?: string;
+  maxPrice?: number;
+  whyId: string;
+  /** What the plan would show, as one string (rules.ts): a new run is recorded only when it changes. */
+  planKey?: string;
 }
 
 /** One item as it was before a change. `before: null` means it did not exist. */
@@ -272,7 +305,9 @@ export type ActivityKind =
   | 'preference'
   /** T7.1: an action card was executed, failed, cancelled or expired (actions.ts). `ref` is the card id,
    * `note` is that outcome. No Undo: what an adapter did outside cannot be taken back from here. */
-  | 'action';
+  | 'action'
+  /** T7.3: a standing rule was created, turned on or off. `ref` is the rule id, `note` is `created`, `enabled` or `disabled`. No Undo. */
+  | 'rule';
 
 export interface Activity {
   id: string;
@@ -298,6 +333,8 @@ export interface Activity {
 export interface Why {
   id: string;
   summary: string;
+  /** T7.3: the summary in Simplified Chinese, when Homemind wrote it itself (a rule). */
+  summaryZh?: string;
   basis: Array<{ kind: string; ref?: string; note: string }>;
   source: 'rule' | 'model' | 'ppma';
   decisionId?: string;
@@ -367,6 +404,8 @@ export interface HomemindState {
   backupMessages?: BackupMessage[];
   /** T7.2: the simulated services' own state (fakes.ts). Absent in older files: fakes.ts fills in the seed. */
   services?: ServicesState;
+  /** T7.3: what the standing rules did, newest last (rules.ts keeps at most 100). Absent means none. */
+  ruleRuns?: RuleRun[];
 }
 
 // --- simulated services (T7.2, fakes.ts) ---------------------------------------------------------------

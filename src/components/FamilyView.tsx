@@ -468,7 +468,8 @@ export function FamilyView({
       if (outcome.kind === 'why') {
         const source = outcome.why.source === 'ppma' ? 'PPMA' : outcome.why.source === 'model' ? tr('the model', '模型') : tr('a Homemind rule', 'Homemind 规则');
         const explained = outcome.ppma?.state === 'ready' ? ` ${tr('PPMA explains', 'PPMA 的解释')}: ${outcome.ppma.summary || outcome.ppma.rationale || ''}` : outcome.ppma?.state === 'loading' ? ` ${tr('Asking PPMA for its explanation…', '正在向 PPMA 询问解释…')}` : '';
-        setNotice({ text: `${outcome.why.summary ?? ''} (${tr('Source', '来源')}: ${source})${explained}`, tone: 'info' });
+        const summary = lang === 'zh' && outcome.why.summaryZh ? outcome.why.summaryZh : outcome.why.summary ?? '';
+        setNotice({ text: `${summary} (${tr('Source', '来源')}: ${source})${explained}`, tone: 'info' });
         return;
       }
       const removedHere = verb === 'cancel' && (nav.screen === 'edit' || nav.screen === 'item') && nav.params.id === args.itemId;
@@ -484,6 +485,14 @@ export function FamilyView({
             ? tr('Correction sent to PPMA. It shows here until PPMA has applied it.', '更正已发送给 PPMA，在 PPMA 处理完成前会显示在这里。')
           : verb === 'post-group-message'
             ? tr('A new message arrived in the simulated group.', '模拟群里收到一条新消息。')
+          : verb === 'confirm-card'
+            ? tr('Done. It went to the simulated service only.', '已完成，只发送到模拟服务。')
+          : verb === 'cancel-card'
+            ? tr('Cancelled. Nothing happened.', '已取消，什么都没发生。')
+          : verb === 'rule-toggle'
+            ? tr('Rule updated.', '规则已更新。')
+          : verb === 'run-rule'
+            ? tr('The rule looked at the calendar. See the result here and on My day.', '规则已查看日程。结果见此处和“我的一天”。')
           : verb === 'remove-preference'
             ? tr('Preference removed. PPMA was told.', '偏好已删除，已通知 PPMA。')
           : verb === 'cancel'

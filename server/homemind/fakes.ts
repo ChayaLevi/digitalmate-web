@@ -304,8 +304,8 @@ export interface ServicesDeps {
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const cleanText = (v: unknown, max: number): string | null => (typeof v === 'string' && v.trim().length >= 1 && v.length <= max && !CONTROL.test(v) ? v.trim() : null);
-/** Card fields a screen shows; any adapter accepts them. */
-const CARD_KEYS = ['title', 'summary'];
+/** Card fields a screen shows (T7.3 added the Chinese ones); any adapter accepts them. */
+const CARD_KEYS = ['title', 'summary', 'titleZh', 'summaryZh'];
 
 function extraKeys(payload: Record<string, unknown>, keys: string[]): string | null {
   const unknown = Object.keys(payload).filter(k => !keys.includes(k) && !CARD_KEYS.includes(k));

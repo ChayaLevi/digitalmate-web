@@ -8,7 +8,7 @@
  */
 import { canSee } from './core';
 import type { CoreEvent } from './core';
-import type { Activity, ActionCard, Family, HomemindState, Item, Preference, Reminder, Rule, Why } from './types';
+import type { Activity, ActionCard, Family, HomemindState, Item, Preference, Reminder, Rule, RuleRun, Why } from './types';
 
 export { canSee };
 
@@ -61,6 +61,8 @@ export interface MemberView {
   preferences: Preference[];
   rules: Rule[];
   actionCards: ActionCard[];
+  /** T7.3: what the standing rules did. A run or card about an event this member can't see is left out. */
+  ruleRuns: RuleRun[];
   /** Without Undo patches: those hold whole earlier versions of items, and stay on the server. */
   activity: Activity[];
   whys: Why[];
@@ -77,7 +79,8 @@ export function viewFor(state: HomemindState, memberId: string): MemberView | nu
     reminders: state.reminders.filter(r => canSeeId(state, memberId, r.itemId)),
     preferences: state.preferences,
     rules: state.rules,
-    actionCards: state.actionCards,
+    actionCards: state.actionCards.filter(c => !(c.refs ?? []).some(id => hiddenIds.has(id))),
+    ruleRuns: (state.ruleRuns ?? []).filter(r => !r.away.some(a => hiddenIds.has(a.eventId))),
     activity: state.activity
       .filter(a => (a.itemId ? canSeeId(state, memberId, a.itemId) : isParent(state, memberId) || a.actor === memberId))
       .map(({ undo: _patch, ...rest }) => rest),

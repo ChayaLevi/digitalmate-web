@@ -134,6 +134,20 @@ function dayIn(today: Today, text: string): string | undefined {
   return undefined;
 }
 
+/** "from Tuesday to Saturday", "Tuesday until Saturday", "从周二到周六": the two local dates, the second after the first. */
+function rangeIn(today: Today, text: string): [string, string] | undefined {
+  const t = text.toLowerCase();
+  const days = WEEKDAYS_EN.join('|');
+  const en = new RegExp(`\\b(${days})\\b\\s+(?:to|until|till|through)\\s+(${days})\\b`).exec(t);
+  const zh = /(?:周|星期|礼拜)([日一二三四五六天])\s*(?:到|至|—|-)\s*(?:周|星期|礼拜)([日一二三四五六天])/.exec(text);
+  const pick = en ? [WEEKDAYS_EN.indexOf(en[1]), WEEKDAYS_EN.indexOf(en[2])] : zh ? [WEEKDAYS_ZH.indexOf(zh[1] === '天' ? '日' : zh[1]), WEEKDAYS_ZH.indexOf(zh[2] === '天' ? '日' : zh[2])] : undefined;
+  if (!pick || pick[0] < 0 || pick[1] < 0) return undefined;
+  const first = nextWeekday(today, pick[0]);
+  let second = nextWeekday(today, pick[1]);
+  while (second <= first) second = addDays(second, 7);
+  return [first, second];
+}
+
 function timeIn(text: string): string | undefined {
   const hm = /\b([01]?\d|2[0-3]):([0-5]\d)\b/.exec(text);
   if (hm) return `${hm[1].padStart(2, '0')}:${hm[2]}`;
@@ -234,8 +248,13 @@ function fakeIntent(today: Today, board: Board, text: string, lang: 'en' | 'zh')
   }
   const day = dayIn(today, text);
   if (day && /party|meeting|dinner|appointment|wedding|lesson|class|聚会|派对|会议|婚礼|晚饭|课|见面/.test(t)) {
-    const start = at(today, day, timeIn(text) ?? '10:00');
     const away = /wedding|婚礼/.test(t) ? [board.me.id] : [];
+    // T7.3: "from Tuesday to Saturday" / "从周二到周六": a trip of several days, from noon to noon.
+    const range = rangeIn(today, text);
+    if (range) {
+      return { intent: 'create_event', title: text.trim().slice(0, 80), start: at(today, range[0], timeIn(text) ?? '12:00'), end: at(today, range[1], '12:00'), allDay: false, forMemberIds: [], unavailableMemberIds: away, visibility: 'family', importance: 'normal' };
+    }
+    const start = at(today, day, timeIn(text) ?? '10:00');
     return { intent: 'create_event', title: text.trim().slice(0, 80), start, end: null, allDay: false, forMemberIds: [], unavailableMemberIds: away, visibility: 'family', importance: 'normal' };
   }
   return ask(...todaySummary(today, board, lang));

@@ -155,6 +155,8 @@ export interface CardInput {
   title?: string;
   titleZh?: string;
   ruleId?: string;
+  /** T7.3: board items the card is about, for per-member visibility. */
+  refs?: string[];
 }
 
 export type PrepareResult = { ok: true; state: HomemindState; card: ActionCard } | ActionError;
@@ -193,6 +195,7 @@ export function prepareCard(state: HomemindState, input: CardInput, adapters: Ad
     ...(input.title ? { title: input.title } : {}),
     ...(input.titleZh ? { titleZh: input.titleZh } : {}),
     ...(input.ruleId ? { ruleId: input.ruleId } : {}),
+    ...(input.refs?.length ? { refs: [...input.refs] } : {}),
     usedTokenIds: []
   };
   return { ok: true, card, state: { ...state, actionCards: [...state.actionCards, card] } };
@@ -405,6 +408,18 @@ export function cancelCard(state: HomemindState, cardId: string, memberId: strin
   const cancelled: ActionCard = { ...card, status: 'cancelled', finishedAt: isoAt(now), executedBy: memberId };
   const logged = logOutcome(replaceCard(state, cancelled), cancelled, 'cancelled', memberId, now);
   return { ok: true, state: logged.state, card: cancelled, activity: logged.activity };
+}
+
+/**
+ * T7.3: Homemind takes back a pending card it prepared, because what it was based on changed (the
+ * calendar, the rule was turned off). Like a cancel, but by `homemind`, with the reason kept on the
+ * card. Its tokens are worthless from now on. A card that is not pending is left as it is.
+ */
+export function withdrawCard(state: HomemindState, cardId: string, reason: string, now: number): { state: HomemindState; card?: ActionCard } {
+  const card = state.actionCards.find(c => c.id === cardId);
+  if (!card || card.status !== 'pending') return { state };
+  const withdrawn: ActionCard = { ...card, status: 'cancelled', finishedAt: isoAt(now), executedBy: HOMEMIND_ACTOR, error: reason.slice(0, 300) };
+  return { state: logOutcome(replaceCard(state, withdrawn), withdrawn, 'cancelled', HOMEMIND_ACTOR, now).state, card: withdrawn };
 }
 
 /** Marks every pending card past its expiry as `expired`, with an Activity entry each. Pure. */

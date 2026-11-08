@@ -35,7 +35,8 @@ const family = (page: Page) => page.locator('.hm-family');
 
 async function seriousIssues(page: Page) {
   // Wait for fades (`surfaceIn`) to end; looping animations (the background glow) never finish.
-  await page.evaluate(() => Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished)));
+  // allSettled: a live re-render can cancel a fade, which rejects its promise.
+  await page.evaluate(() => Promise.allSettled(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished)));
   const result = await new AxeBuilder({ page }).include('main').analyze();
   return result.violations.filter(v => v.impact === 'critical' || v.impact === 'serious').map(v => ({ id: v.id, targets: v.nodes.map(n => n.target) }));
 }
@@ -776,4 +777,107 @@ test('Services (T7.2): every simulated card is labelled; posting the next group 
   await mom.screenshot({ path: test.info().outputPath('services-en.png'), fullPage: true });
   await momContext.close();
   await dadContext.close();
+});
+
+// T7.3: Scene 4 as scripted: the wedding marks Mom away, her pickup is flagged, the Friday pizza card is
+// prepared smaller and waits for one tap, a babysitter message is drafted, and "Why?" says where it came from.
+type DebugState = { items: Array<{ id: string; start?: string; ownership: { state: string } }>; actionCards: Array<{ id: string; adapter: string; status: string; payload: Record<string, unknown> }>; services?: { pizzaOrders: Array<{ total: number }> }; clockOffsetMs: number };
+const debugState = async (request: APIRequestContext) => (await (await request.get(`${BASE}/api/homemind/debug/state`)).json()) as DebugState;
+
+async function jumpTo(request: APIRequestContext, token: string, target: number) {
+  const state = await debugState(request);
+  const minutes = Math.ceil((target - (Date.now() + state.clockOffsetMs)) / 60_000);
+  if (minutes < 1) return;
+  expect((await request.post(`${BASE}/api/homemind/demo/clock`, { headers: { 'x-homemind-session': token }, data: { minutes } })).ok()).toBe(true);
+}
+
+test('Scene 4: the wedding marks Mom away, her pickup is flagged, the Friday pizza card is smaller and waits for a tap, a babysitter is drafted, and Why? explains', async ({ browser, request }) => {
+  const HOUR = 3_600_000;
+  const token = await momToken(request);
+  // The seeded Tuesday pickup is at 16:30. Start the scene on the Monday before it, 10:00, so "Tuesday to
+  // Saturday" and "Friday" are the coming days whatever weekday the test runs on.
+  const tuesdayPickup = Date.parse((await debugState(request)).items.find(i => i.id === 'pickup-tuesday')?.start as string);
+  await jumpTo(request, token, tuesdayPickup - 30.5 * HOUR);
+  const fridayAt1805 = tuesdayPickup + 3 * 24 * HOUR + 2 * HOUR - 25 * 60_000;
+
+  const momContext = await browser.newContext();
+  const dadContext = await browser.newContext();
+  try {
+    const mom = await momContext.newPage();
+    const dad = await dadContext.newPage();
+    await openFamily(mom, 'en', 'mom', 'family');
+    await openFamily(dad, 'zh', 'dad');
+    await expect(family(mom)).toHaveAttribute('data-member', 'mom');
+    await expect(dad.locator('[data-stream="live"]')).toBeVisible();
+
+    // 1. Mom tells the Family companion about the wedding. She is away from Tuesday to Saturday.
+    await openChat(mom, 'en');
+    await chatTo(mom, "I'm at my cousin's wedding from Tuesday to Saturday");
+    await expect.poll(async () => (await debugState(request)).items.find(i => i.id === 'pickup-tuesday')?.ownership.state, { timeout: 15_000 }).toBe('open');
+
+    // 2. Her Tuesday pickup is flagged on Dad's board: "Who's taking this?".
+    await family(dad).getByRole('navigation', { name: '家庭页面' }).getByRole('button', { name: '家庭', exact: true }).click();
+    await expect(dad.locator('[data-task-id="pickup-tuesday"]').first()).toHaveAttribute('data-state', 'open');
+
+    // 3. The Friday rule looks at the calendar (the demo control instead of waiting for Friday 18:00).
+    await mom.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Family' }).click();
+    await family(mom).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'Rules', exact: true }).click();
+    await expect(family(mom)).toHaveAttribute('data-screen', 'rules');
+    await mom.getByRole('button', { name: /^Prepare the next card now \(demo\)/ }).click();
+    await expect(mom.locator('.a2ui-surface')).toContainText('card prepared');
+    await expect(mom.locator('.a2ui-surface')).toContainText('3 at home (Mom away)');
+
+    // 4. On My day the card waits for one tap: smaller order, labelled simulated, in both languages.
+    await family(mom).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'My day', exact: true }).click();
+    const momPizza = mom.locator('.approval-card', { hasText: 'Friday pizza night: order' });
+    await expect(momPizza).toContainText('1 × Large margherita, 1 × Medium margherita · 154 CNY');
+    await expect(momPizza).toContainText('for 3 at home (Mom away)');
+    await expect(momPizza.locator('.hm-sim-badge')).toHaveText('Simulated');
+    await family(dad).getByRole('navigation', { name: '家庭页面' }).getByRole('button', { name: '我的一天', exact: true }).click();
+    const dadPizza = dad.locator('.approval-card', { hasText: '周五披萨之夜：下单' });
+    await expect(dadPizza).toContainText('在家 3 人');
+    await expect(dadPizza.locator('.hm-sim-badge')).toHaveText('模拟');
+
+    // 5. Dad taps "Why?": the rule, who is away and why, and the source is the rule (never PPMA).
+    await dadPizza.getByRole('button', { name: '为什么？' }).click();
+    await expect(family(dad)).toContainText('来自 Homemind 规则');
+    await expect(family(dad)).toContainText('来源: Homemind 规则');
+    await noOverflow(dad);
+    expect(await seriousIssues(dad)).toEqual([]);
+    await dad.screenshot({ path: test.info().outputPath('scene4-card-zh.png'), fullPage: true });
+
+    // 6. Dad has a work dinner on Friday evening too: both parents are out. The card is replaced at once,
+    //    smaller again, and a message to a babysitter is drafted as its own card.
+    const dadToken = ((await (await request.post(`${BASE}/api/homemind/session`, { data: { memberId: 'dad' } })).json()) as { token: string }).token;
+    const dinner = await request.post(`${BASE}/api/homemind/items`, {
+      headers: { 'x-homemind-session': dadToken },
+      data: { type: 'event', title: 'Work dinner', start: new Date(fridayAt1805 - 5 * 60_000).toISOString(), end: new Date(fridayAt1805 + 4 * HOUR - 5 * 60_000).toISOString(), unavailableMemberIds: ['dad'] }
+    });
+    expect(dinner.ok()).toBe(true);
+    await expect(momPizza).toContainText('1 × Large margherita · 89 CNY');
+    await expect(momPizza).toContainText('for 2 at home (Mom, Dad away)');
+    const momSitter = mom.locator('.approval-card', { hasText: 'Babysitter for' });
+    await expect(momSitter).toContainText('Xiao Chen');
+    await expect(momSitter.locator('.hm-sim-badge')).toHaveText('Simulated');
+    await expect(family(mom)).toContainText('replaced: the calendar changed');
+    await momSitter.getByRole('button', { name: 'Why?' }).click();
+    await expect(family(mom)).toContainText('Both parents are out');
+    await expect(family(mom)).toContainText('(Source: a Homemind rule)');
+    await noOverflow(mom);
+    expect(await seriousIssues(mom)).toEqual([]);
+    await mom.screenshot({ path: test.info().outputPath('scene4-cards-en.png'), fullPage: true });
+
+    // 7. Friday, 18:05: Dad taps Confirm on the pizza card. The simulated shop gets the order once.
+    await jumpTo(request, token, fridayAt1805);
+    await dad.locator('.approval-card', { hasText: '周五披萨之夜：下单' }).getByRole('button', { name: '确认' }).click();
+    await expect(family(dad)).toContainText('已完成，只发送到模拟服务。');
+    await expect.poll(async () => (await debugState(request)).services?.pizzaOrders.map(o => o.total)).toEqual([89]);
+    await expect(mom.locator('.approval-card', { hasText: 'Friday pizza night: order' })).toHaveCount(0);
+    await expect(family(mom)).toContainText('Friday pizza night: order: done (simulated)');
+    // Nobody tapped the babysitter card, so nothing was sent.
+    expect((await debugState(request)).actionCards.find(c => c.adapter === 'babysitter' && c.status === 'pending')).toBeTruthy();
+  } finally {
+    await momContext.close();
+    await dadContext.close();
+  }
 });

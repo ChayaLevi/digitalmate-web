@@ -179,7 +179,7 @@ export const HOST_VERBS = ['add', 'edit', 'search', 'back', 'save', 'save-settin
 
 const ITEM_VERBS = new Set(['claim', 'assign', 'ack', 'handback', 'done', 'approve', 'dismiss', 'cancel', 'open', 'unassign', 'snooze']);
 
-export type ActionOutcome = { kind: 'mutation'; result: MutationResult; verb: string } | { kind: 'why'; why: { summary?: string; source?: string }; ppma?: { state: string; summary?: string; rationale?: string } };
+export type ActionOutcome = { kind: 'mutation'; result: MutationResult; verb: string } | { kind: 'why'; why: { summary?: string; summaryZh?: string; source?: string }; ppma?: { state: string; summary?: string; rationale?: string } };
 
 /**
  * One card button (`kind: 'homemind'`) as a bridge call. The server decides whether it is allowed:
@@ -202,7 +202,19 @@ export async function runHomemindAction(action: A2uiAction, token: string): Prom
     return { kind: 'mutation', result, verb };
   }
   if (verb === 'confirm-card' || verb === 'cancel-card') {
-    const result = await call<MutationResult>(`/api/homemind/actions/${id(args.cardId)}/${verb === 'confirm-card' ? 'confirm' : 'cancel'}`, { method: 'POST', token, body: '{}' });
+    // The card's own confirmation token (T7.1/T7.3), put behind its Confirm button by the bridge.
+    const body = verb === 'confirm-card' && typeof args.token === 'string' ? { token: args.token } : {};
+    const result = await call<MutationResult>(`/api/homemind/actions/${id(args.cardId)}/${verb === 'confirm-card' ? 'confirm' : 'cancel'}`, { method: 'POST', token, body: JSON.stringify(body) });
+    return { kind: 'mutation', result, verb };
+  }
+  if (verb === 'rule-toggle') {
+    // T7.3: turn a standing rule on or off. Parents only; the server decides.
+    const result = await call<MutationResult>('/api/homemind/rules', { method: 'POST', token, body: JSON.stringify({ action: args.action === 'enable' ? 'enable' : 'disable', id: args.ruleId }) });
+    return { kind: 'mutation', result, verb };
+  }
+  if (verb === 'run-rule') {
+    // Demo only (`HOMEMIND_DEMO=1`): the rule prepares its next card now instead of at its lead time.
+    const result = await call<MutationResult>('/api/homemind/demo/run-rule', { method: 'POST', token, body: JSON.stringify({ ruleId: args.ruleId }) });
     return { kind: 'mutation', result, verb };
   }
   if (verb === 'undo-preference' || verb === 'save-preference') {
@@ -229,7 +241,7 @@ export async function runHomemindAction(action: A2uiAction, token: string): Prom
     return { kind: 'mutation', result, verb };
   }
   if (verb === 'why') {
-    const body = await call<{ why: { summary?: string; source?: string }; ppma?: { state: string; summary?: string; rationale?: string } }>(`/api/homemind/why/${id(args.whyId)}`, { token });
+    const body = await call<{ why: { summary?: string; summaryZh?: string; source?: string }; ppma?: { state: string; summary?: string; rationale?: string } }>(`/api/homemind/why/${id(args.whyId)}`, { token });
     return { kind: 'why', why: body.why, ...(body.ppma ? { ppma: body.ppma } : {}) };
   }
   throw new HomemindError(400, 'unknown_action', `Unknown Homemind action: ${verb || action.id}`);

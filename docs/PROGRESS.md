@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T6.2 done (proposals, memory and "Why?"), which ends P6. A PPMA proposal command (`propose_item`, `propose_preparation`, `add_to_shopping`) becomes a `proposed` item with source PPMA and a Why that says so; a parent approves or dismisses it. The new **Memory** tab ("What we know") shows what PPMA remembers (read in the background, labelled as PPMA's words) and Homemind's saved preferences, with "That's wrong" / "Forget" on PPMA's statements (parents) and Remove on preferences. "Why?" on a PPMA item shows PPMA's reason, the saved preferences it weighed, and PPMA's own explanation when it has one. With PPMA off or down nothing is invented. **The Scene 5 correction is driven by the saved preferences, not by PPMA** (the sanctioned fallback; see Open issues)
-- **Next task:** T7.1 (Action guard)
+- **Current task:** T7.1 done (action guard). `server/homemind/actions.ts`: adapters declare `real` or `simulated`; a rule or chat only **prepares** a card; `executeAction` runs it only on a parent's tap carrying a signed, single-use confirmation token bound to that card, that parent and the payload hash, or at autonomy level 4 for a simulated adapter that allows it (never a real one). Untapped cards expire visibly on the scheduler tick. `POST /actions/:id/confirm|cancel` are real; a parent's screen JSON carries `confirmations` (one token per pending card). **No adapters are registered yet** (T7.2 adds the simulated services) and **no card UI yet** (T7.3, T7.4), so nothing in the browser shows this yet. Before that, T6.2 ended P6 (PPMA proposals, Memory tab, PPMA "Why?"; the Scene 5 correction is preference-driven, see Open issues)
+- **Next task:** T7.2 (Fake services)
 - **Scenes working end to end:** **Scene 1**, as scripted, in two windows: Mom assigns the pickup, it is on Dad's screen at once, he does not confirm, the demo clock jumps, Dad is reminded (alert and row), Mom gets "not confirmed yet" (alert and row), and she takes it from her board, which closes every alert in both windows. Covered by the e2e test "Scene 1: ...". Settings (quiet hours, autonomy, pause, backup contact) are editable and sync live
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-08, after T6.2
+- **Last updated:** 2026-11-08, after T7.1
 
 ## Task status
 
@@ -37,7 +37,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T5.4 | Preferences | done | `server/homemind/preferences.ts`, `POST /preferences`, chat `add_preference`, the hard block, "Family preferences that apply" on the item screen. 698 unit tests (23 new file + 5 bridge), 60 of 60 e2e (1 new). Live Flash: 4 of 4 valid, 0.85 to 1.3 s |
 | T6.1 | PPMA client | done | `server/homemind/{ppma,ppmaMap}.ts`, `scripts/fake-ppma.mjs`, the PPMA offline chip. 740 unit tests (42 new), 62 of 62 e2e (2 new). Checked against real `ppma serve --profile fake --auth strict`: manifest, token, stream and all 4 report types accepted |
 | T6.2 | Proposals, memory and "Why?" | done | `ppmaMap.ts` proposals, `ppma.ts` memory/explain/correct, Memory tab, `POST /memory/correct`. 773 passed, 1 skipped (774; 740 before, 33 new). Checked against real `ppma serve --profile fake`: memory read, correction accepted and applied. Scene 5 change is preference-driven (fallback). P6 phase checks pass |
-| T7.1 | Action guard | not started |  |
+| T7.1 | Action guard | done | `server/homemind/actions.ts`, confirm and cancel routes, `confirmations` on a parent's screen, expiry on the tick. 798 passed, 1 skipped (799; 773 before, 25 new). Every refusal the task names is tested. No adapters registered yet (T7.2) |
 | T7.2 | Fake services | not started |  |
 | T7.3 | Pizza rule and wedding | not started |  |
 | T7.4 | Group claim | not started |  |
@@ -52,6 +52,14 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 ## Decisions made during the build
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
+
+- T7.1: **adapters** (`ActionAdapter` in `actions.ts`): `id`, `mode: 'real' | 'simulated'`, `area` (for `autonomy.byArea`), `autoAllowed?` (simulated only; ignored for real), `validate(payload)` and `execute(payload, signal)`. The bridge keeps a registry (`adapters` in `server/homemind.ts`), **empty for now**; T7.2 registers the simulated services there. `setHomemindAdaptersForTests` swaps it in tests.
+- T7.1: **preparing a card** (`prepareCard`): `mode` and `area` are copied from the adapter, never from the caller, and `payloadHash` is sha256 of the canonical JSON (keys sorted). The adapter's `validate` must pass, the expiry must be in the future, at most 200 cards. Nothing runs. T7.3/T7.4 call this (then `commitCards`-style save and the `actions.changed` broadcast).
+- T7.1: **the confirmation token** (`issueConfirmation`): `<base64url body>.<HMAC>`, body `{t: random id, c: card, h: payload hash, m: parent, exp}`, lifetime 15 minutes and never past the card's expiry. The key is derived from `HOMEMIND_SECRET` with its own label, so a session token never passes as one (tested). Issued only to a parent with an account for a pending card. Times are the **demo clock**, like card expiry. **Delivery:** `GET /screen/:name` adds `confirmations: {cardId: {token, expiresAt}}` for a parent when any card is pending (absent for others and when none). T7.3/T7.4's card buttons must send `{token}` from there; a card re-prepared with a new payload needs a new token (the screen re-reads on `actions.changed`).
+- T7.1: **the guard** (`authorize`, pure). Tap: parent, token present, signature, same card, same member, not spent, card pending and not expired, token not expired, token hash = card hash, then the current payload hash = card hash, and the adapter's `validate`. Auto: refuse a real adapter (also when the card claims `simulated` but the adapter is real), an adapter without `autoAllowed`, a paused family, or an area level below 4. **A simulated adapter also needs a token on a tap**, so the flow is the same for every card.
+- T7.1: **running** (`executeAction` with a `StateRef`): the token is spent and the card set to `executing` and saved **before** the adapter is called, so a double tap is refused (`not_pending`) and a failed run keeps the token spent. Adapter timeout 10 s (`AbortSignal.timeout`); a throw or timeout makes the card `failed` with a neutral error (the adapter's own message is not shown for a throw). Every outcome (`executed`, `failed`, `cancelled`, `expired`) writes one Activity `kind: 'action'`, `ref` = card id, `note` = outcome, with the card's `whyId`; **no Undo**. Level-4 runs and expiry have actor `homemind`.
+- T7.1: **routes.** `POST /actions/:id/confirm {token}`: 200 `{card, activityId}`; refusals `400 no_token`, `403 not_parent | wrong_member | bad_token | wrong_card`, `404 not_found`, `409 not_pending | expired | token_expired | token_used | payload_changed | no_adapter`, `422 invalid_payload`, `502 action_failed` (with the failed card). A 409 carries the card as it is now ("This changed. Here is the latest"). `POST /actions/:id/cancel {}`: parents only. Both broadcast the new stream message `actions.changed` (no data; screens re-read).
+- T7.1: **expiry** runs at the start of every scheduler tick (and so on a demo clock jump): pending cards past `expiresAt` become `expired`, logged, and `actions.changed` is broadcast.
 
 - T6.2: **proposals** (`proposeFromPpma` in `ppmaMap.ts`, pure). The three tools only ever create a `proposed` item with `source {kind: 'ppma', label: 'PPMA'}`; `propose_item` is a task, or a 60-minute event when it has a `start`; `propose_preparation` goes under an **open or proposed, family-wide** event (a Parents-only or unknown event answers "No such event on the family board", so PPMA never learns it exists); `add_to_shopping` is a task whose note says nothing is bought. Arguments are checked by hand (title 1 to 120 characters, dates with an offset from 2 days back to 400 ahead, unknown arguments ignored): PPMA **cannot** set an owner, people, visibility, sensitivity or status. The outcome is `executed` (`path: auto`, result `{item_id, status: 'proposed', awaits}`); refusals are `rejected` with a plain `detail`: paused, bad arguments, already there (same words, type, time and event), **20 PPMA suggestions already waiting** (`PROPOSAL_LIMITS.waiting`), or a **hard preference** rules it out (`blockedChange`, the same check as the board's, with the word found).
 - T6.2: **who the proposal "is by".** The core needs a member, so the technical actor is the first parent with an account, but the commit passes **no actor** (`commit(rt, state, events)`): no change alert "from" a parent, and the report back to PPMA names nobody. The item's `createdBy` is that parent (core limit); everything a screen says about origin comes from `source` and the Why. Proposed items show in everyone's Family list, like any proposed item; there is no push alert for them yet.
@@ -192,6 +200,8 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 ## Deviations from the plan
 
+- T7.1: `ActionCard` gained `executing` (a run in progress) and optional `area`, `title`, `titleZh`, `createdAt`, `ruleId`, `usedTokenIds`, `executedBy`, `finishedAt`, `result`, `error`. `ActivityKind` gained `'action'`, `StreamMessage` gained `actions.changed`. Screen JSON gained `confirmations` for parents. The plan's "tokens" are delivered through the screen JSON, not through a separate route (the plan's route list has none). `POST /actions/:id/confirm|cancel` no longer answer 501. No adapter is registered yet: T7.2 owns the simulated services.
+
 - T6.2: `types.ts` gained `PpmaMemoryStatement`, `PpmaMemoryData`, `PpmaExplanationData` and the stream message `memory.changed`; `TaskRow.state` may be `''` (rows that are not board items); `ChatOutcome` `why` gained an optional `ppma`. `GET /screen/memory` is real (it was 501). Memory-screen preferences moved from a `List` to a `TaskList` so they can carry Remove. The fake `scripts/fake-ppma.mjs` now also serves memory views and explanations (owner token only), applies `user.correction`, and sends `ppma.memory_updated`. The plan's `user.correction` also covers "replace"; only `wrong` and `forget` have buttons.
 - T6.2: `PPMA_OWNER_TOKEN`'s role grew: besides the manifest and the token mint, the owner token is now used for memory views and explanations (the app token gets 403 there, T0.2). It still never leaves the server.
 - T5.4: new file `server/homemind/preferences.ts` (not in the plan's file list). Types: `Preference.createdBy`/`updatedAt`, `ActivityKind` `'preference'`, `Activity.prefUndo`, stream message `preferences.changed`. Preference Undo is its own (`POST /preferences {undo}`), not the item Undo, and the Activity screen shows preference changes without an Undo button (Undo is on the chat card). No form for preferences yet: they are saved from chat or by `POST /preferences`; the "What we know" screen is T6.2 (`GET /screen/memory` still 501). The hard block is enforced in the bridge, not in `core.ts` (the core has no preference logic).
@@ -229,6 +239,8 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 | Issue | Found in | Severity | Plan |
 | --- | --- | --- | --- |
+| A card left `executing` (the bridge stopped while an adapter ran) stays so after a restart: it can't run again or expire. With in-process simulated adapters this needs a crash in a sub-second window. | T7.1 | Low | Reset the demo, or add a "mark failed on load" step if it ever happens. |
+| Action cards are visible to every member (`viewFor` passes them all). The tokens go to parents only, and only parents can confirm or cancel, but a teen can see a card's payload. No card holds Parents-only content yet. | T7.1 | Low, for T7.3/T8.1 | If a card can quote a Parents-only item (babysitter, teacher message), add a card visibility and filter it in `viewFor`. |
 | `npm ci` reports 5 vulnerabilities (4 moderate, 1 high) in existing dependencies (6 on Node 20). | T0.1 | Low | Existing before this work. Not touched (no dependency changes without asking). |
 | ~~Fake PPMA issues no commands, so the `command.outcome` loop and PPMA proposals cannot be tested against it as is.~~ **Handled in T6.1** with `scripts/fake-ppma.mjs` (a contract-subset fake that can issue commands). The client was also checked against the real fake profile for everything but commands. | T0.2 | Closed | |
 | After a fake-profile PPMA restart, its ledger starts again at id 1. The client notices only through the 401 on its old app token (it then reads the stream from the start). A persistent PPMA that was restarted keeps its tokens and ledger, so nothing is needed there. | T6.1 | Low | Fine for the demo. If commands seem missing after a PPMA restart, delete `.homemind/state.ppma.json`. |
@@ -311,6 +323,7 @@ Things that are simulated or limited, kept current for the presenter.
 - The **Memory** tab shows two lists, labelled: what PPMA remembers (PPMA's words, with a confidence; needs PPMA and the network; parents can say "That's wrong" or "Forget") and what Homemind itself saved (preferences, with Remove). Without PPMA only the second list shows, with a "PPMA offline" notice. A correction to PPMA is sent and shown as "waiting" until PPMA has applied it, which can take seconds with the live model.
 - PPMA can only **propose**: a task, an event or a preparation lands as "Proposed" with a reason, and a parent taps Approve. It cannot assign, buy or send. At most 20 of its suggestions wait at once.
 - With `HOMEMIND_LLM=fake` the chat "model" is canned keyword rules, labelled "Simulated model". The live model (DeepSeek Flash) needs network on stage: about 1 to 1.7 s per chat message, about 3 s per screenshot.
+- **Every action needs its own tap, in code.** A rule only prepares a card; running it needs a parent's tap on that card, with a single-use confirmation bound to that card, that parent and the exact contents. If the contents change, the old tap is refused. Autonomy level 4 may act alone only against simulated services. The demo has **no real adapters** (nothing can buy, pay or send), so the "real" path is proven by unit tests only.
 - On Huawei phones, DigitalMate's chat runs through the Orbit server. Homemind's logic is kept separate so it can move there later.
 
 ## Log
@@ -330,6 +343,26 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T7.1 Action guard: done (2026-11-08)
+**Built:**
+- `server/homemind/actions.ts` (new): `ActionAdapter`, `canonicalJson`, `payloadHash`, `prepareCard`, `issueConfirmation`, `authorize`, `executeAction` (with a `StateRef`), `cancelCard`, `expireCards`, `autonomyLevelFor`.
+- `server/homemind.ts`: `POST /actions/:id/confirm` and `/cancel` (were 501), `confirmations` in a parent's screen JSON, expiry at the start of every tick, `actions.changed` broadcast, an empty adapter registry with `setHomemindAdaptersForTests`.
+- `types.ts`: `ActionCard` fields and `executing`, `ActivityKind` `'action'`, stream message `actions.changed`. `events.ts`, `src/transport/homemindEvents.ts`, `FamilyView.tsx`: the new message makes screens re-read.
+- Tests: `tests/homemindActions.test.ts` (new, 21), `tests/homemindActionsBridge.test.ts` (new, 6), `tests/homemindBridge.test.ts` (the 501 list no longer has the action routes).
+**Decisions:** see "Decisions made during the build" (T7.1).
+**Deviations:** see "Deviations from the plan" (T7.1).
+**Test results:**
+- At the start: `npm test` 773 passed, 1 skipped.
+- `npm test`: **798 passed, 1 skipped (799; 25 new)**. `npx tsc --noEmit`: clean. A temporary tsconfig that also includes `server/homemind.ts` and the 2 new test files: clean (apart from the known errors in `server/orbit.ts`).
+- `npm run test:e2e`: **64 of 64** (6.9 min). No new e2e: there is no card UI yet.
+- Refusals proven by unit tests: no token, reused token (also after a failed run), expired card (marked expired), expired token, changed payload (re-prepared, and edited in place), non-parent (teen, child, and another parent's token), forged token, token for another card, level 4 on a real adapter (also when the card claims simulated), level below 4, paused, adapter without `autoAllowed`, double tap while running, timeout and throw → failed. Bridge tests cover the same through HTTP, including that a session token is not accepted as a confirmation.
+**Not done or not verified:** no adapter is registered and no card is shown in the browser (T7.2, T7.3, T7.4). The phase is not over, so `npm run build` and the flag-off check were not run.
+**Next task should know:** T7.2 registers its simulated services in `adapters` in `server/homemind.ts` (mode `simulated`, an `area`, `autoAllowed: true` only where level 4 may act alone, for example the group claim; the pizza order should stay `autoAllowed: false` so it always waits for a tap). T7.3/T7.4: prepare with `prepareCard`, save and broadcast `actions.changed`, and put the button's `token` from the screen's `confirmations[cardId]`.
+**How to verify:**
+- Commands: `npm test` ; `npx tsc --noEmit` ; `npx vitest run tests/homemindActions.test.ts tests/homemindActionsBridge.test.ts`
+- Expected output: 798 passed, 1 skipped; no tsc output; 2 files, 27 tests pass.
+- Manual check: open `tests/homemindActions.test.ts`, change `'payload_changed'` in "refuses when the payload changed after the token was made" to `'token_used'`, and run the file: that test fails. Undo the change.
 
 ### T6.2 Proposals, memory and "Why?": done (2026-11-08). End of P6
 **Built:**

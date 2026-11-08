@@ -207,15 +207,34 @@ export interface Rule {
   createdBy: string;
 }
 
+/**
+ * A prepared action (an order, a message out, a sign-up claim) that waits for a parent's tap
+ * (actions.ts). `mode` comes from the adapter, never from whoever prepared the card.
+ * `executing`: the adapter is running; the card can't run a second time meanwhile.
+ */
 export interface ActionCard {
   id: string;
   adapter: string;
   mode: 'real' | 'simulated';
   payload: Record<string, unknown>;
+  /** sha256 of the canonical JSON of `payload` when the card was prepared. */
   payloadHash: string;
-  status: 'pending' | 'executed' | 'failed' | 'expired' | 'cancelled';
+  status: 'pending' | 'executing' | 'executed' | 'failed' | 'expired' | 'cancelled';
   expiresAt: string;
   whyId: string;
+  /** T7.1: the autonomy area (from the adapter), what screens call it, and where it came from. */
+  area?: string;
+  title?: string;
+  titleZh?: string;
+  createdAt?: string;
+  ruleId?: string;
+  /** T7.1: ids of confirmation tokens already spent on this card (single use). */
+  usedTokenIds?: string[];
+  /** T7.1: who ran it (a member id, or `homemind` for autonomy level 4), when it ended, and how. */
+  executedBy?: string;
+  finishedAt?: string;
+  result?: Record<string, unknown>;
+  error?: string;
 }
 
 /** One item as it was before a change. `before: null` means it did not exist. */
@@ -250,7 +269,10 @@ export type ActivityKind =
   | 'settings'
   /** T5.4: a preference was added, corrected, removed or put back (preferences.ts). `ref` is its id,
    * `note` is `added`, `corrected`, `removed` or `undone`. Undo is `prefUndo`, not `undo`. */
-  | 'preference';
+  | 'preference'
+  /** T7.1: an action card was executed, failed, cancelled or expired (actions.ts). `ref` is the card id,
+   * `note` is that outcome. No Undo: what an adapter did outside cannot be taken back from here. */
+  | 'action';
 
 export interface Activity {
   id: string;
@@ -386,6 +408,8 @@ export type StreamMessage =
   | { event: 'ppma.status'; data: { status: PpmaStatus } }
   /** What PPMA remembers, or an explanation from it, arrived or changed (T6.2). Carries nothing; screens re-read. */
   | { event: 'memory.changed'; data: Record<string, never> }
+  /** An action card was prepared, executed, failed, cancelled or expired (T7.1). Carries nothing; screens re-read. */
+  | { event: 'actions.changed'; data: Record<string, never> }
   /** The demo was reset: forget everything shown. */
   | { event: 'demo.reset'; data: Record<string, never> };
 

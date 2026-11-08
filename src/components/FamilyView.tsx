@@ -262,6 +262,7 @@ export function FamilyView({
           case 'settings.changed':
           case 'preferences.changed':
           case 'memory.changed':
+          case 'actions.changed':
             return refreshSoon();
           case 'ppma.status':
             return setPpma(message.data.status);

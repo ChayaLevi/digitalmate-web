@@ -10,7 +10,7 @@
  * member id; the client keeps it in `sessionStorage` and sends it as `x-homemind-session`, so two
  * windows can be two people. Roles (for example "Parents only") are enforced here and in the core.
  *
- * Routes whose task has not been built yet (actions, rules, ...) are whitelisted and
+ * Routes whose task has not been built yet (rules, ...) are whitelisted and
  * answer 501 `not_implemented`, so nothing pretends to work. Chat (`POST /chat`, T5.2) reads a message
  * through the model (server/homemind/intents.ts) and plans it with server/homemind/chat.ts.
  */
@@ -31,6 +31,8 @@ import { createEventHub } from './homemind/events';
 import type { EventHub } from './homemind/events';
 import type { Change, ChangeError, ItemPatch, NewItem } from './homemind/core';
 import { seedState } from './homemind/seed';
+import { cancelCard, executeAction, expireCards, issueConfirmation } from './homemind/actions';
+import type { ActionErrorCode, AdapterRegistry } from './homemind/actions';
 import { applySettings, parseSettingsPatch } from './homemind/settings';
 import { createLlmClient, llmConfigFromEnv, llmStatus } from './homemind/llm';
 import type { LlmClient } from './homemind/llm';
@@ -313,9 +315,18 @@ function publishTick(rt: Runtime, ticked: TickResult): void {
   rt.hub.publishAlerts(rt.state, ticked.deliveries);
 }
 
-/** One reminder tick on the loaded state. Reads and replaces the state with no await in between. */
+/**
+ * One tick on the loaded state: action cards past their time expire (visibly, T7.1), then reminders.
+ * Reads and replaces the state with no await in between.
+ */
 async function tickNow(rt: Runtime): Promise<TickResult> {
+  const expired = expireCards(rt.state, rt.clock.now());
+  if (expired.expired.length) {
+    rt.state = expired.state;
+    rt.hub.broadcast({ event: 'actions.changed', data: {} });
+  }
   const ticked = tickReminders(rt.state, rt.clock.now());
+  if (expired.expired.length && !ticked.changed) await rt.store.save(rt.state);
   if (!ticked.changed && ticked.deliveries.length === 0 && ticked.closed.length === 0) return ticked;
   rt.state = ticked.state;
   await rt.store.save(ticked.state);
@@ -328,6 +339,86 @@ async function scheduledTick(): Promise<void> {
   const holder = (globalThis as GlobalWithHolder)[HOLDER];
   if (!holder || !enabled()) return;
   await tickNow(await holder.ready);
+}
+
+// --- action cards (T7.1) ------------------------------------------------------------------------------
+
+/**
+ * The adapters actions may run. Empty until the simulated services exist (T7.2); with none, no card can
+ * be prepared or run. There are no real adapters in the demo.
+ */
+let adapters: AdapterRegistry = {};
+
+/** For tests: the adapters to use (`undefined` puts back the built-in set). */
+export function setHomemindAdaptersForTests(registry: AdapterRegistry | undefined): void {
+  adapters = registry ?? {};
+}
+
+/** The confirmation-token key: derived from `HOMEMIND_SECRET`, so a session token can't pass as one. */
+const actionKey = (key: string) => createHmac('sha256', key).update('homemind.action-confirm').digest();
+
+/** Tokens for this parent's pending cards, one per card, for the card's button. Nothing for anyone else. */
+function confirmationsFor(rt: Runtime, member: Member): Record<string, { token: string; expiresAt: string }> {
+  const key = secret();
+  const out: Record<string, { token: string; expiresAt: string }> = {};
+  if (!key || member.role !== 'parent') return out;
+  for (const card of rt.state.actionCards) {
+    if (card.status !== 'pending') continue;
+    const issued = issueConfirmation(rt.state, card.id, member.id, { key: actionKey(key), now: rt.clock.now() }, adapters);
+    if (issued.ok) out[card.id] = { token: issued.token, expiresAt: issued.expiresAt };
+  }
+  return out;
+}
+
+const ACTION_STATUS: Record<ActionErrorCode, number> = {
+  not_found: 404,
+  no_adapter: 409,
+  invalid_payload: 422,
+  not_parent: 403,
+  wrong_member: 403,
+  bad_token: 403,
+  wrong_card: 403,
+  no_token: 400,
+  not_pending: 409,
+  expired: 409,
+  token_expired: 409,
+  token_used: 409,
+  payload_changed: 409,
+  auto_not_allowed: 403
+};
+
+/** Saves a state that changed only action cards (and their Activity), and tells every window to re-read. */
+async function commitCards(rt: Runtime, state: HomemindState): Promise<void> {
+  rt.state = state;
+  await rt.store.save(state);
+  rt.hub.broadcast({ event: 'actions.changed', data: {} });
+}
+
+/** `POST /actions/:id/confirm {token}`: a parent's tap on that card. The guard is in actions.ts. */
+async function confirmAction(ctx: Ctx): Promise<void> {
+  const body = pick(await readBody(ctx.request), ['token'], 'confirm');
+  if (body.token !== undefined && (typeof body.token !== 'string' || body.token.length > 1024)) throw new HttpError(400, 'invalid', 'token must be a string');
+  const { rt } = ctx;
+  const result = await executeAction(
+    { get: () => rt.state, set: state => commitCards(rt, state) },
+    ctx.params[0],
+    { kind: 'tap', memberId: ctx.member.id, token: body.token as string | undefined },
+    { adapters, key: actionKey(secret() as string), now: () => rt.clock.now() }
+  );
+  if (result.ok) return json(ctx.response, 200, { ok: true, card: result.card, activityId: result.activity.id });
+  if (result.code === 'action_failed') return fail(ctx.response, 502, 'action_failed', result.message, { card: result.card, activityId: result.activity.id });
+  // "This changed. Here is the latest": the card as it is now, when the member may see it.
+  const card = rt.state.actionCards.find(c => c.id === ctx.params[0]);
+  fail(ctx.response, ACTION_STATUS[result.code], result.code, result.message, card && result.code !== 'not_found' ? { card } : {});
+}
+
+/** `POST /actions/:id/cancel`: a parent cancels a pending card. */
+async function cancelAction(ctx: Ctx): Promise<void> {
+  pick(await readBody(ctx.request), [], 'cancel');
+  const result = cancelCard(ctx.rt.state, ctx.params[0], ctx.member.id, ctx.rt.clock.now());
+  if (!result.ok) return fail(ctx.response, ACTION_STATUS[result.code], result.code, result.message);
+  await commitCards(ctx.rt, result.state);
+  json(ctx.response, 200, { ok: true, card: result.card, activityId: result.activity.id });
 }
 
 // --- requests -----------------------------------------------------------------------------------------
@@ -826,7 +917,18 @@ const routes: Route[] = [
         ...(ppmaMemory ? { ppmaMemory } : {})
       });
       // The surface is what screens render. `view` stays for the client's forms (ids, versions).
-      json(ctx.response, 200, { ...turn, screen: name, lang: ctx.lang, now, view, ppma: ppmaStatusOf(ctx.rt), ...(results ? { query, results } : {}) });
+      // A parent's confirmation tokens for pending action cards (T7.1): each binds that card, its payload and this parent.
+      const confirmations = confirmationsFor(ctx.rt, ctx.member);
+      json(ctx.response, 200, {
+        ...turn,
+        screen: name,
+        lang: ctx.lang,
+        now,
+        view,
+        ppma: ppmaStatusOf(ctx.rt),
+        ...(results ? { query, results } : {}),
+        ...(Object.keys(confirmations).length ? { confirmations } : {})
+      });
     }
   },
   { method: 'GET', pattern: /^\/events$/, auth: true, handler: openStream },
@@ -911,7 +1013,8 @@ const routes: Route[] = [
     }
   },
   { method: 'POST', pattern: /^\/chat$/, auth: true, handler: chatHandler },
-  { method: 'POST', pattern: /^\/actions\/([a-z0-9][a-z0-9_-]{0,63})\/(confirm|cancel)$/, auth: true, handler: notBuilt('T7.1') },
+  { method: 'POST', pattern: /^\/actions\/([a-z0-9][a-z0-9_-]{0,63})\/confirm$/, auth: true, handler: confirmAction },
+  { method: 'POST', pattern: /^\/actions\/([a-z0-9][a-z0-9_-]{0,63})\/cancel$/, auth: true, handler: cancelAction },
   {
     method: 'POST',
     pattern: /^\/preferences$/,

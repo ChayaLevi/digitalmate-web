@@ -367,8 +367,6 @@ describe('routes for later tasks', () => {
   it('are whitelisted behind the same checks and answer 501', async () => {
     const mom = as(await login('mom'));
     for (const [method, path, task] of [
-      ['POST', '/actions/card-1/confirm', 'T7.1'],
-      ['POST', '/actions/card-1/cancel', 'T7.1'],
       ['POST', '/rules', 'T7.3'],
       ['POST', '/demo/post-group-message', 'T7.2']
     ]) {

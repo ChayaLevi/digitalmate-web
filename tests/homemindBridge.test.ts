@@ -717,3 +717,82 @@ describe('POST /chat (T5.2)', () => {
     expect((await as(undefined).send('POST', '/chat', { text: 'hi' })).status).toBe(401);
   });
 });
+
+describe('POST /chat with a screenshot (T5.3)', () => {
+  const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  type ShotReply = { ok: boolean; outcome: string; intent?: string; message: string; jsonl: string; items?: Item[] };
+  const shot = async (api: Api, body: Record<string, unknown>, lang = 'en') => {
+    const res = await api.send('POST', `/chat?lang=${lang}`, body);
+    expect(res.status).toBe(200);
+    return json<ShotReply>(res);
+  };
+  const debugState = async () => json<HomemindState>(await as(undefined).get('/debug/state'));
+
+  it('puts proposed items on the board from the screenshot; Dad sees them; one tap approves an event and its preparation', async () => {
+    const mom = as(await login('mom'));
+    const reply = await shot(mom, { text: 'Read this screenshot', image: PNG });
+    expect(reply).toMatchObject({ ok: true, outcome: 'extracted', intent: 'extract' });
+    expect(reply.message).toContain('waiting for approval');
+    expect(reply.items?.every(i => i.status === 'proposed' && i.source.kind === 'screenshot')).toBe(true);
+    expect(reply.jsonl).toContain('Simulated model');
+    const dad = as(await login('dad'));
+    const party = (await json<{ view: { items: Item[] } }>(await dad.get('/screen/family'))).view.items.find(i => i.title === '秋季水果派对');
+    expect(party?.status).toBe('proposed');
+    const approve = await dad.send('POST', `/items/${party?.id}/approve`, { version: party?.version });
+    expect(approve.status).toBe(200);
+    const state = await debugState();
+    expect(state.items.find(i => i.parentEventId === party?.id)?.status).toBe('open');
+    expect(state.whys.some(w => w.source === 'model' && w.basis.some(b => b.ref === party?.id))).toBe(true);
+  });
+
+  it('the same screenshot again adds nothing', async () => {
+    const mom = as(await login('mom'));
+    await shot(mom, { image: PNG });
+    const count = (await debugState()).items.length;
+    const again = await shot(mom, { image: PNG });
+    expect(again.message).toContain('found nothing new');
+    expect((await debugState()).items).toHaveLength(count);
+  });
+
+  it('a model failure on a screenshot is an error card, and nothing changes', async () => {
+    setHomemindLlmForTests({ mode: 'live', status: 'live', complete: async () => ({ ok: true, content: '{"events":"nope"}', ms: 1 }) });
+    const mom = as(await login('mom'));
+    const before = await debugState();
+    const reply = await shot(mom, { image: PNG });
+    expect(reply).toMatchObject({ ok: false, outcome: 'failed' });
+    expect(reply.jsonl).toContain('could not read this screenshot');
+    expect((await debugState()).items).toEqual(before.items);
+  });
+
+  it('sends the image to the model inside the screenshot markers, never as instructions', async () => {
+    const requests: LlmRequest[] = [];
+    setHomemindLlmForTests({
+      mode: 'live',
+      status: 'live',
+      complete: async request => {
+        requests.push(request);
+        return { ok: true, content: '{"events":[],"preparations":[],"requests":[],"sign_up":null}', ms: 1 };
+      }
+    });
+    const mom = as(await login('mom'));
+    await shot(mom, { image: PNG });
+    expect(requests).toHaveLength(1);
+    const parts = requests[0].user as Array<{ type: string; text?: string; image_url?: { url: string } }>;
+    expect(parts.map(p => p.type)).toEqual(['text', 'image_url', 'text', 'text']);
+    expect(parts[0].text).toContain('<<<BEGIN SCREENSHOT>>>');
+    expect(parts[1].image_url?.url).toBe(PNG);
+    expect(requests[0].system).toMatch(/^Job: extraction/);
+  });
+
+  it('checks the image', { timeout: 60_000 }, async () => {
+    const mom = as(await login('mom'));
+    expect((await mom.send('POST', '/chat', { image: 'data:image/svg+xml;base64,PHN2Zz4=' })).status).toBe(400);
+    expect((await mom.send('POST', '/chat', { image: 'https://example.com/x.png' })).status).toBe(400);
+    expect((await mom.send('POST', '/chat', { image: 42 })).status).toBe(400);
+    expect((await mom.send('POST', '/chat', { image: PNG, text: 7 })).status).toBe(400);
+    expect((await mom.send('POST', '/chat', { image: `data:image/png;base64,${'A'.repeat(9 * 1024 * 1024)}` })).status).toBe(413);
+    // Text-only chat keeps its 64 KB limit.
+    expect((await mom.send('POST', '/chat', { text: 'x'.repeat(70 * 1024) })).status).toBe(400);
+    expect((await mom.send('POST', '/chat', { image: PNG }, { origin: 'https://evil.example' })).status).toBe(403);
+  });
+});

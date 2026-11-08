@@ -34,7 +34,8 @@ import { seedState } from './homemind/seed';
 import { applySettings, parseSettingsPatch } from './homemind/settings';
 import { createLlmClient, llmConfigFromEnv, llmStatus } from './homemind/llm';
 import type { LlmClient } from './homemind/llm';
-import { runIntent, LIMITS as INTENT_LIMITS } from './homemind/intents';
+import { isImageDataUrl, MAX_IMAGE_DATA_URL, runExtraction, runIntent, LIMITS as INTENT_LIMITS } from './homemind/intents';
+import { applyExtraction } from './homemind/extraction';
 import { planChat } from './homemind/chat';
 import { HomemindStore, dataFileFromEnv } from './homemind/store';
 import type { LoadSource } from './homemind/store';
@@ -49,6 +50,8 @@ export const SESSION_HEADER = 'x-homemind-session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const MIN_SECRET_LENGTH = 16;
 const MAX_BODY = 64 * 1024;
+/** `POST /chat` may carry one screenshot as a data URL (T5.3). */
+const MAX_CHAT_BODY = MAX_IMAGE_DATA_URL + 64 * 1024;
 const HEARTBEAT_MS = 15_000;
 const CONFLICT_HORIZON_MS = 90 * 24 * 60 * 60 * 1000;
 /** The demo clock jumps at most a week at a time. */
@@ -86,14 +89,17 @@ class HttpError extends Error {
   }
 }
 
-async function readBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+async function readBody(request: IncomingMessage, limit: number = MAX_BODY): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     size += (chunk as Buffer).length;
-    if (size > MAX_BODY) throw new HttpError(413, 'too_large', 'The request body is too large');
-    chunks.push(chunk as Buffer);
+    // Past the limit, keep reading (and dropping) up to 4x, so the client gets the 413 instead of a
+    // reset connection while it is still uploading. Beyond that, stop reading at once.
+    if (size > limit * 4) throw new HttpError(413, 'too_large', 'The request body is too large');
+    if (size <= limit) chunks.push(chunk as Buffer);
   }
+  if (size > limit) throw new HttpError(413, 'too_large', 'The request body is too large');
   const text = Buffer.concat(chunks).toString('utf8');
   if (!text.trim()) return {};
   let parsed: unknown;
@@ -517,16 +523,21 @@ async function answerReminder(ctx: Ctx, itemId: string, response: ReminderRespon
  * card), the same shape as a screen. A model failure is a card with an error, never a guess.
  */
 async function chatHandler(ctx: Ctx): Promise<void> {
-  const body = pick(await readBody(ctx.request), ['text'], 'chat');
-  if (typeof body.text !== 'string' || !body.text.trim()) throw new HttpError(400, 'invalid', 'text must be a message');
-  if (body.text.length > INTENT_LIMITS.message) throw new HttpError(400, 'invalid', `text is longer than ${INTENT_LIMITS.message} characters`);
+  const body = pick(await readBody(ctx.request, MAX_CHAT_BODY), ['text', 'image'], 'chat');
+  const image = body.image;
+  if (image !== undefined && (typeof image !== 'string' || !isImageDataUrl(image))) throw new HttpError(400, 'invalid', 'image must be a PNG, JPEG, WebP or GIF data URL under 6 MB');
+  if (image === undefined && (typeof body.text !== 'string' || !body.text.trim())) throw new HttpError(400, 'invalid', 'text must be a message');
+  if (body.text !== undefined && typeof body.text !== 'string') throw new HttpError(400, 'invalid', 'text must be a message');
+  if (typeof body.text === 'string' && body.text.length > INTENT_LIMITS.message) throw new HttpError(400, 'invalid', `text is longer than ${INTENT_LIMITS.message} characters`);
+  if (typeof image === 'string') return screenshotHandler(ctx, image, typeof body.text === 'string' ? body.text.trim() : '');
+  const text = (body.text as string).trim();
   const { rt, member, lang } = ctx;
   const llm = llmStatus(llmConfigFromEnv());
   const before = viewFor(rt.state, member.id);
   if (!before) return fail(ctx.response, 404, 'not_found', 'No such member');
 
   const started = Date.now();
-  const result = await runIntent(llmOf(rt), { view: before, now: rt.clock.now(), lang, text: body.text.trim() });
+  const result = await runIntent(llmOf(rt), { view: before, now: rt.clock.now(), lang, text });
   const answer = async (outcome: ChatOutcome, extra: Record<string, unknown> = {}) => {
     // The state may have changed while the model was thinking: the card is built from the latest view.
     const view = viewFor(rt.state, member.id) ?? before;
@@ -566,6 +577,45 @@ async function chatHandler(ctx: Ctx): Promise<void> {
       );
     }
   }
+}
+
+/**
+ * `POST /chat {image, text?}` (T5.3): a screenshot. The model extracts events, preparations and requests
+ * (validated, intents.ts), and `applyExtraction` puts them on the board as **proposed** items, all in
+ * one commit. Nothing is final until someone taps Approve. A model failure changes nothing.
+ * Any text with it is read as part of the source (data, like the image).
+ */
+async function screenshotHandler(ctx: Ctx, image: string, text: string): Promise<void> {
+  const { rt, member, lang } = ctx;
+  const llm = llmStatus(llmConfigFromEnv());
+  if (!viewFor(rt.state, member.id)) return fail(ctx.response, 404, 'not_found', 'No such member');
+  const started = Date.now();
+  const result = await runExtraction(llmOf(rt), { now: rt.clock.now(), timezone: rt.state.family.timezone, imageDataUrl: image, ...(text ? { text } : {}) });
+  const answer = (outcome: ChatOutcome, extra: Record<string, unknown> = {}) => {
+    const view = viewFor(rt.state, member.id);
+    if (!view) return fail(ctx.response, 404, 'not_found', 'No such member');
+    const now = new Date(rt.clock.now()).toISOString();
+    const turn = chatTurn({ lang, now, view, llm, turnId: randomBytes(6).toString('hex'), outcome, reminders: pendingRemindersFor(rt.state, member.id, rt.clock.now()) });
+    json(ctx.response, 200, { ...turn, ok: outcome.kind !== 'failed', outcome: outcome.kind, intent: 'extract', llm, ms: Date.now() - started, ...extra });
+  };
+  if (!result.ok) {
+    return answer({ kind: 'failed', reason: result.code === 'not_configured' ? 'not_configured' : 'image', code: result.code, message: result.message });
+  }
+  // Applied to the state as it is now (the model took a few seconds), and committed in one step.
+  const applied = applyExtraction(rt.state, result.value, member.id, rt.clock, { source: { kind: 'screenshot', label: member.name } });
+  if (!applied.ok) return answer({ kind: 'failed', reason: 'change', code: applied.code, message: applied.message }, { status: applied.status });
+  if (applied.created.length) await commit(rt, applied.state, applied.events, member.id);
+  const signUp = result.value.signUp;
+  return answer(
+    {
+      kind: 'extracted',
+      created: applied.created,
+      skipped: applied.skipped,
+      dropped: result.value.dropped,
+      ...(signUp ? { signUp: { topic: signUp.topic, ...(signUp.deadline ? { deadline: signUp.deadline } : {}), taken: signUp.taken } } : {})
+    },
+    { items: itemsById(rt.state, member.id, applied.created.map(c => c.itemId)) }
+  );
 }
 
 // --- handlers -----------------------------------------------------------------------------------------

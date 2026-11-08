@@ -351,6 +351,9 @@ describe('extraction', () => {
     expect(validateExtraction({ sign_up: { topic: 'x', taken: [{ who: 'a' }], confidence: 0.5, quote: 'x' } }, ctx).ok).toBe(false);
     expect(validateExtraction({ events: Array.from({ length: 21 }, () => ({ title: 'x', start: '2026-11-05T10:00:00Z', confidence: 0.5, quote: 'x' })) }, ctx).ok).toBe(false);
     expect(validateExtraction({}, ctx)).toMatchObject({ ok: true, value: { events: [], signUp: null } });
+    // T5.3: an old screenshot is still a valid reading (its past entries are skipped later), but not years old.
+    expect(validateExtraction({ events: [{ title: 'x', start: '2026-10-01T10:00:00Z', confidence: 0.5, quote: 'x' }] }, ctx).ok).toBe(true);
+    expect(validateExtraction({ events: [{ title: 'x', start: '2024-10-01T10:00:00Z', confidence: 0.5, quote: 'x' }] }, ctx).ok).toBe(false);
   });
 
   it('refuses no input and a bad image without calling the model', async () => {

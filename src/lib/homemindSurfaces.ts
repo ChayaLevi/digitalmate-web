@@ -15,7 +15,7 @@
  * Components that do not render the flag (rules, settings rows) say the word in their text instead.
  */
 import type { A2uiAction, A2uiComponent } from '../types';
-import type { ActionCard, Activity, Family, Item, ItemExplanation, Lang, Member, PendingReminder, Preference, Reminder, Rule, Why } from '../../server/homemind/types';
+import type { ActionCard, Activity, ExtractedEntry, Family, Item, ItemExplanation, Lang, Member, PendingReminder, Preference, Reminder, Rule, SignUpInfo, SkippedExtraction, Why } from '../../server/homemind/types';
 
 export type HomemindLang = Lang;
 export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit' | 'item';
@@ -963,8 +963,10 @@ export type ChatOutcome =
   | { kind: 'why'; explanation: ItemExplanation }
   | { kind: 'later'; intent: 'add_preference' | 'create_rule' | 'report_situation' }
   | { kind: 'missing' }
-  /** `model`: the model failed or gave nothing usable. `change`: the board refused the change. */
-  | { kind: 'failed'; reason: 'model' | 'change' | 'not_configured'; code: string; message: string };
+  /** T5.3: a screenshot read by the model. Everything created is proposed. */
+  | { kind: 'extracted'; created: ExtractedEntry[]; skipped: SkippedExtraction[]; dropped: number; signUp?: SignUpInfo }
+  /** `model`: the model failed or gave nothing usable. `image`: the same, for a screenshot. `change`: the board refused the change. */
+  | { kind: 'failed'; reason: 'model' | 'image' | 'change' | 'not_configured'; code: string; message: string };
 
 export interface ChatTurnData {
   lang: HomemindLang;
@@ -1011,6 +1013,23 @@ const C = {
   srcModel: { en: 'the model', zh: '模型' },
   srcPpma: { en: 'PPMA', zh: 'PPMA' },
   related: { en: 'On your board', zh: '你的看板上' },
+  readShot: { en: (n: number) => `I read the screenshot. ${n} suggestion(s) are on the board, waiting for approval. Nothing is final until someone taps Approve.`, zh: (n: number) => `已读取截图。${n} 条建议已放到看板上，等待批准。点“确认添加”之前都不会生效。` },
+  readNothing: { en: 'I read the screenshot but found nothing new to add. Nothing was changed.', zh: '已读取截图，但没有发现需要添加的新内容，没有做任何更改。' },
+  readDup: { en: (n: number) => `${n} entry(ies) were already on the board.`, zh: (n: number) => `有 ${n} 条已在看板上。` },
+  readPast: { en: (n: number) => `${n} entry(ies) are already over or past their deadline, and were left out.`, zh: (n: number) => `有 ${n} 条已经结束或已过截止时间，没有添加。` },
+  readPrepHint: { en: 'Approving an event also approves its preparations.', zh: '确认添加活动时，其准备事项也会一并添加。' },
+  readCheck: { en: 'Read by the model from your screenshot. Check the quotes before approving.', zh: '由模型从你的截图中读取。确认添加前请核对原文。' },
+  readWaiting: { en: 'Waiting for approval', zh: '等待批准' },
+  readQuotes: { en: 'What the screenshot says', zh: '截图原文' },
+  readSuggested: { en: 'time suggested by Homemind', zh: '时间由 Homemind 建议' },
+  readUnsure: { en: 'unsure, check it', zh: '不确定，请核对' },
+  signUpTitle: { en: 'Sign-up in the screenshot', zh: '截图中的接龙' },
+  signUpTopic: { en: 'Topic', zh: '主题' },
+  signUpDeadline: { en: 'Deadline', zh: '截止' },
+  signUpTaken: { en: 'Already taken', zh: '已认领' },
+  signUpNone: { en: 'nothing yet', zh: '暂无' },
+  failedImage: { en: 'The model could not read this screenshot. Nothing was changed. Try a clearer image, or add the items on the Family tab.', zh: '模型无法读取这张截图，没有做任何更改。请换一张更清晰的图片，或在家庭标签页手动添加。' },
+  whyQuote: { en: (t: string, q: string) => `The model read “${t}” from a screenshot. The source says: ${q}`, zh: (t: string, q: string) => `“${t}”是模型从截图中读取的。原文：${q}` },
   answered: { en: 'Answered from your board', zh: '根据你的看板回答' }
 } as const;
 
@@ -1132,7 +1151,8 @@ export function chatTurn(input: ChatTurnData): HomemindTurn {
     }
     case 'why': {
       const e = outcome.explanation;
-      message = e.why ? e.why.summary : C.whyLead[lang](titleById(e.itemId));
+      const quoted = e.why?.source === 'model' && e.why.basis.some(b => b.kind === 'quote');
+      message = e.why ? (quoted ? C.whyQuote[lang](plainChatText(titleById(e.itemId)), plainChatText(e.why.summary)) : e.why.summary) : C.whyLead[lang](titleById(e.itemId));
       const rows = rowsFor([e.itemId]);
       if (rows.length) {
         children.push(taskList('rows', hx(lang, 'thisItem'), '/rows'));
@@ -1150,8 +1170,50 @@ export function chatTurn(input: ChatTurnData): HomemindTurn {
     case 'missing':
       message = C.missing[lang];
       break;
+    case 'extracted': {
+      const created = outcome.created.filter(c => view.items.some(i => i.id === c.itemId));
+      const dups = outcome.skipped.filter(s => s.reason === 'duplicate').length;
+      const past = outcome.skipped.filter(s => s.reason === 'past').length;
+      const parts = [created.length ? C.readShot[lang](created.length) : C.readNothing[lang]];
+      if (dups) parts.push(C.readDup[lang](dups));
+      if (past) parts.push(C.readPast[lang](past));
+      if (created.some(c => c.kind === 'preparation') && created.some(c => c.kind === 'event')) parts.push(C.readPrepHint[lang]);
+      message = parts.join(' ');
+      // Events first, each followed by its preparations; then the rest, in the order read.
+      const byId = new Map(created.map(c => [c.itemId, c]));
+      const items = created.map(c => view.items.find(i => i.id === c.itemId)).filter((i): i is Item => !!i);
+      const ordered: Item[] = [];
+      for (const item of items) {
+        if (item.type === 'preparation' && items.some(e => e.id === item.parentEventId)) continue;
+        ordered.push(item, ...items.filter(p => p.type === 'preparation' && p.parentEventId === item.id));
+      }
+      if (ordered.length) {
+        children.push(taskList('rows', C.readWaiting[lang], '/rows'));
+        data.rows = ordered.map(item => {
+          const row = taskRow(item, view, lang, today);
+          const c = byId.get(item.id);
+          const marks = [c?.suggestedTime ? C.readSuggested[lang] : '', c?.unsure ? C.readUnsure[lang] : ''].filter(Boolean);
+          return marks.length ? { ...row, meta: [row.meta, ...marks].filter(Boolean).join(' · ') } : row;
+        });
+        children.push({ id: 'quotes', component: 'InfoRows', title: C.readQuotes[lang], dataPath: '/quotes' });
+        data.quotes = ordered.map(item => ({ label: titleOf(item, lang), value: byId.get(item.id)?.quote ? `“${byId.get(item.id)?.quote}”` : '—', tone: byId.get(item.id)?.unsure ? 'accent' : 'muted' }));
+      }
+      if (outcome.signUp) {
+        const s = outcome.signUp;
+        const deadline = s.deadline ? dateParts(s.deadline, zone) : null;
+        children.push({ id: 'signup', component: 'InfoRows', title: C.signUpTitle[lang], dataPath: '/signup' });
+        data.signup = [
+          { label: C.signUpTopic[lang], value: s.topic, tone: 'muted' },
+          ...(deadline ? [{ label: C.signUpDeadline[lang], value: `${deadline.date.slice(5)} ${deadline.time}`, tone: 'muted' }] : []),
+          { label: C.signUpTaken[lang], value: s.taken.length ? s.taken.map(t => `${t.item} (${t.who})`).join(lang === 'zh' ? '、' : ', ') : C.signUpNone[lang], tone: 'muted' }
+        ];
+      }
+      if (ordered.length || outcome.signUp) children.push(text('check', C.readCheck[lang]));
+      title = hx(lang, 'brand');
+      break;
+    }
     case 'failed': {
-      const body = outcome.reason === 'not_configured' ? C.failedOff[lang] : outcome.reason === 'model' ? C.failedModel[lang] : C.failedChange[lang];
+      const body = outcome.reason === 'not_configured' ? C.failedOff[lang] : outcome.reason === 'model' ? C.failedModel[lang] : outcome.reason === 'image' ? C.failedImage[lang] : C.failedChange[lang];
       children.push({ id: 'err', component: 'ErrorNotice', title: hx(lang, 'failed'), body: outcome.reason === 'change' && outcome.message ? `${body} (${outcome.message})` : body });
       break;
     }

@@ -287,6 +287,33 @@ export interface ItemExplanation {
   why?: Why;
 }
 
+/** T5.3: one item a screenshot put on the board (proposed), as the chat card shows it. */
+export interface ExtractedEntry {
+  itemId: string;
+  kind: 'event' | 'preparation' | 'request';
+  /** The source text the model quoted, in its own language. */
+  quote: string;
+  confidence: number;
+  /** The time is Homemind's suggestion, not from the source. */
+  suggestedTime: boolean;
+  unsure: boolean;
+}
+
+/** T5.3: an extracted entry that was not added: already on the board, or already over. */
+export interface SkippedExtraction {
+  kind: 'event' | 'preparation' | 'request';
+  title: string;
+  reason: 'duplicate' | 'past';
+  itemId?: string;
+}
+
+/** T5.3: a 接龙 sign-up the screenshot shows. Not an item; claiming is T7.4. */
+export interface SignUpInfo {
+  topic: string;
+  deadline?: string;
+  taken: Array<{ who: string; item: string }>;
+}
+
 export const STATE_SCHEMA_VERSION = 1;
 
 /** Everything the core owns. Persisted as one JSON file by store.ts. */

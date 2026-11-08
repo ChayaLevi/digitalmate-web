@@ -552,3 +552,51 @@ test('chat (T5.2): a teen asking about a Parents-only item gets no trace of it',
   await expect(reply).toContainText('Simulated model');
   await expect(reply).not.toContainText(/counselor|辅导/i);
 });
+
+test('screenshot (T5.3): Mom sends the 接龙 screenshot in chat; proposed items with quotes; Dad sees them live and one tap approves the party with its preparation', async ({ browser }) => {
+  const momContext = await browser.newContext();
+  const dadContext = await browser.newContext();
+  try {
+    const mom = await momContext.newPage();
+    const dad = await dadContext.newPage();
+    await openFamily(mom, 'en', 'mom', 'family');
+    await openFamily(dad, 'zh', 'dad', 'family');
+    await expect(family(dad)).toHaveAttribute('data-member', 'dad');
+    await expect(dad.locator('[data-stream="live"]')).toHaveText('实时');
+    // The Family screen lists what waits for approval.
+    await family(dad).getByRole('button', { name: '家庭', exact: true }).click();
+
+    await openChat(mom, 'en');
+    const before = await mom.locator('.message-assistant').count();
+    await mom.locator('.composer-wrap input[type="file"]:not([capture])').setInputFiles('e2e/fixtures/homemind/jielong-sample.png');
+    await mom.locator('.composer-send').click();
+    const card = mom.locator('.message-assistant').nth(before);
+    await expect(card).toContainText('waiting for approval');
+    await expect(card).toContainText('秋季水果派对');
+    await expect(card).toContainText('切好装盒，够8个小朋友吃');
+    await expect(card).toContainText('苹果 (乐乐妈妈)');
+    await expect(card).toContainText('Check the quotes before approving');
+    await expect(card).toContainText('Simulated model');
+    await noOverflow(mom);
+    expect(await seriousIssues(mom)).toEqual([]);
+    await mom.screenshot({ path: test.info().outputPath('screenshot-card-en.png'), fullPage: true });
+
+    // Dad's board shows the proposed party without a reload, with Approve.
+    const partyRow = dad.locator('[data-task-id]', { hasText: '秋季水果派对' }).first();
+    await expect(partyRow).toBeVisible();
+    await expect(partyRow).toContainText('待确认');
+    await partyRow.getByRole('button', { name: /^确认添加/ }).first().dispatchEvent('click'); // see the note on dispatchEvent above
+    await expect(dad.locator('[data-task-id]', { hasText: '秋季水果派对' }).first()).not.toContainText('待确认');
+    expect(await seriousIssues(dad)).toEqual([]);
+    await dad.screenshot({ path: test.info().outputPath('screenshot-approved-zh.png'), fullPage: true });
+
+    // The preparation was approved with it: asking the bridge as Dad.
+    const state = await (await dad.request.get(`${BASE}/api/homemind/debug/state`)).json();
+    const party = state.items.find((i: { title: string }) => i.title === '秋季水果派对');
+    expect(party.status).toBe('open');
+    expect(state.items.find((i: { parentEventId?: string }) => i.parentEventId === party.id).status).toBe('open');
+  } finally {
+    await momContext.close();
+    await dadContext.close();
+  }
+});

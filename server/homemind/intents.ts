@@ -116,6 +116,8 @@ export const LIMITS = {
   itemIds: 10,
   /** How far from now a date may be. */
   pastMs: 2 * 24 * 60 * 60 * 1000,
+  /** Extraction: how far back a date the source names may be. */
+  extractionPastMs: 400 * 24 * 60 * 60 * 1000,
   futureMs: 400 * 24 * 60 * 60 * 1000,
   /** Longest event. */
   spanMs: 14 * 24 * 60 * 60 * 1000,
@@ -277,6 +279,11 @@ export interface ExtractionInput {
 }
 
 const IMAGE_DATA_URL = /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/;
+/** Longest screenshot data URL (about 6 MB of image). */
+export const MAX_IMAGE_DATA_URL = 8 * 1024 * 1024;
+
+/** A PNG, JPEG, WebP or GIF data URL that is not too large. */
+export const isImageDataUrl = (value: string): boolean => value.length <= MAX_IMAGE_DATA_URL && IMAGE_DATA_URL.test(value);
 
 export function extractionPrompt(input: ExtractionInput): LlmRequest {
   const { line, offset } = todayLine(input.now, input.timezone);
@@ -320,7 +327,8 @@ const absent = (x: unknown) => x === undefined || x === null;
 
 class Checker {
   problems: string[] = [];
-  constructor(private readonly ctx: { now: number }) {}
+  /** `pastMs`: how far back a date may be (extraction allows older ones; they are skipped as past later). */
+  constructor(private readonly ctx: { now: number; pastMs?: number }) {}
 
   text(x: unknown, path: string, max: number): string {
     if (typeof x !== 'string' || !x.trim()) return this.bad(path, 'is not text'), '';
@@ -337,7 +345,7 @@ class Checker {
     if (typeof x !== 'string' || !ISO.test(x)) return this.bad(path, 'is not an ISO datetime with an offset'), '';
     const ms = Date.parse(x);
     if (!Number.isFinite(ms)) return this.bad(path, 'is not a real date'), '';
-    if (ms < this.ctx.now - LIMITS.pastMs || ms > this.ctx.now + LIMITS.futureMs) return this.bad(path, 'is too far from today'), '';
+    if (ms < this.ctx.now - (this.ctx.pastMs ?? LIMITS.pastMs) || ms > this.ctx.now + LIMITS.futureMs) return this.bad(path, 'is too far from today'), '';
     return new Date(ms).toISOString();
   }
   optTime(x: unknown, path: string): string | undefined {
@@ -474,7 +482,8 @@ const squash = (s: string) => s.replace(/[‹›<>]/g, '').replace(/\s+/g, '');
 
 export function validateExtraction(raw: unknown, ctx: { now: number; sourceText?: string }): Validation<Extraction> {
   if (!isObject(raw)) return { ok: false, problems: ['the reply is not a JSON object'] };
-  const c = new Checker(ctx);
+  // An old screenshot is still a valid reading: its dates may be long past. applyExtraction skips what is over.
+  const c = new Checker({ now: ctx.now, pastMs: LIMITS.extractionPastMs });
   const source = ctx.sourceText ? squash(ctx.sourceText) : undefined;
   let dropped = 0;
   /** For a text source the quote must be in the text; otherwise the entry was made up. */
@@ -576,7 +585,7 @@ export function runIntent(llm: LlmClient, input: { view: MemberView; now: number
 
 export async function runExtraction(llm: LlmClient, input: ExtractionInput): Promise<JobResult<Extraction>> {
   if (!input.text?.trim() && !input.imageDataUrl) return { ok: false, code: 'invalid', message: 'Nothing to read', attempts: 0, ms: 0 };
-  if (input.imageDataUrl && (!IMAGE_DATA_URL.test(input.imageDataUrl) || input.imageDataUrl.length > 8 * 1024 * 1024)) {
+  if (input.imageDataUrl && !isImageDataUrl(input.imageDataUrl)) {
     return { ok: false, code: 'invalid', message: 'The image must be a PNG, JPEG, WebP or GIF under 6 MB', attempts: 0, ms: 0 };
   }
   // A quote can be checked only against text Homemind has. A screenshot's text is in the image.

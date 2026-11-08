@@ -577,9 +577,13 @@ function planItemChange(state: HomemindState, change: ItemChange, actor: string)
     case 'approve':
     case 'dismiss': {
       if (item.status !== 'proposed') return fail(409, 'conflict', 'this is not waiting for approval', item);
-      return change.kind === 'approve'
-        ? one({ ...item, status: 'open' }, 'approve', 'Approved')
-        : one({ ...item, status: 'cancelled' }, 'dismiss', 'Dismissed');
+      const status = change.kind === 'approve' ? 'open' : 'cancelled';
+      const draft = change.kind === 'approve' ? one({ ...item, status }, 'approve', 'Approved') : one({ ...item, status }, 'dismiss', 'Dismissed');
+      // One tap for an event and the preparations proposed with it (T5.3). Undo restores them all.
+      if (item.type === 'event') {
+        for (const prep of preparationsOf(state, item.id)) if (prep.status === 'proposed') draft.next.set(prep.id, { ...prep, status });
+      }
+      return draft;
     }
 
     default:

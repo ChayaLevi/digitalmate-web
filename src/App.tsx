@@ -376,7 +376,9 @@ export default function App() {
       (outgoing.length > 0
         ? activePersona === 'kitchen'
           ? tr('Here are photos of my kitchen', '这是我厨房的照片')
-          : tr('Summarize the attachment', '总结附件')
+          : activePersona === 'family'
+            ? tr('Read this screenshot', '读取这张截图')
+            : tr('Summarize the attachment', '总结附件')
         : '');
     if (!prompt) return;
     if (busy) {

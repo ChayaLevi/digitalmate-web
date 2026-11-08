@@ -10,7 +10,8 @@
  *   Navigation verbs (add, edit, search, back, save) belong to the host and are not handled here.
  *
  * - Chat (`HomemindTransport`, T5.2): the Family companion's turns go to `POST /chat` with the window's
- *   session. The bridge answers with a turn (text and a card), mapped to `ChatTurnEvent`s.
+ *   session. The bridge answers with a turn (text and a card), mapped to `ChatTurnEvent`s. The first
+ *   attached image goes with it as a data URL (T5.3), and the bridge reads it as a screenshot.
  */
 import type { A2uiAction, A2uiSurface, Language } from '../types';
 import { apiUrl } from '../lib/api';
@@ -213,6 +214,18 @@ export async function runHomemindAction(action: A2uiAction, token: string): Prom
 
 // --- chat (T5.2) ------------------------------------------------------------------------------------
 
+/** Screenshot types the model reads (server/homemind/intents.ts). */
+const CHAT_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+
+function fileToDataUrl(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => (typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Could not read the image')));
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read the image'));
+    reader.readAsDataURL(file);
+  });
+}
+
 /** Two model calls at most (one retry), 30 s each by default, plus the board work. */
 const CHAT_TIMEOUT_MS = 75_000;
 
@@ -250,11 +263,17 @@ export class HomemindTransport implements ChatTransport {
       onEvent({ type: 'done' });
       return;
     }
-    const reading = say(lang, `Reading your message as ${session.member.name}`, `以${session.member.nameZh ?? session.member.name}的身份理解消息`);
+    const images = (request.images ?? []).filter(file => CHAT_IMAGE_TYPES.includes(file.type));
+    const skippedImages = (request.images ?? []).length - Math.min(images.length, 1);
+    const name = lang === 'zh' ? (session.member.nameZh ?? session.member.name) : session.member.name;
+    const reading = images.length ? say(lang, `Reading the screenshot as ${name}`, `以${name}的身份读取截图`) : say(lang, `Reading your message as ${name}`, `以${name}的身份理解消息`);
     onEvent({ type: 'thinking', step: reading, steps: [reading], index: 0, total: 1 });
     let turn: HomemindChatTurn;
     try {
-      turn = await call<HomemindChatTurn>(`/api/homemind/chat?lang=${lang}`, { method: 'POST', token: session.token, body: JSON.stringify({ text: request.text }), signal: chatSignal(signal) });
+      // One screenshot per message (T5.3). With it, any text is read as part of the source.
+      const body: Record<string, string> = { text: request.text };
+      if (images.length) body.image = await fileToDataUrl(images[0]);
+      turn = await call<HomemindChatTurn>(`/api/homemind/chat?lang=${lang}`, { method: 'POST', token: session.token, body: JSON.stringify(body), signal: chatSignal(signal) });
     } catch (error) {
       if (signal.aborted) return;
       const status = error instanceof HomemindError ? error.status : 0;
@@ -272,8 +291,8 @@ export class HomemindTransport implements ChatTransport {
     }
     if (signal.aborted) return;
     if (turn.message) onEvent({ type: 'text', text: turn.message });
-    if ((request.images ?? []).length) {
-      onEvent({ type: 'text', text: say(lang, '\n\nScreenshots are not read in chat yet. Only your text was sent.', '\n\n对话中暂时还不能读取截图，只发送了文字。') });
+    if (skippedImages > 0) {
+      onEvent({ type: 'text', text: say(lang, '\n\nOnly the first screenshot (PNG, JPEG, WebP or GIF) was read. Send the others one at a time.', '\n\n只读取了第一张截图（PNG、JPEG、WebP 或 GIF）。其他图片请逐张发送。') });
     }
     const surface = turn.jsonl ? A2uiSurfaceStore.fromJsonl(turn.jsonl).list()[0] : undefined;
     if (surface) onEvent({ type: 'surface', surface });

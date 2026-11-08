@@ -6,7 +6,7 @@
  * anything missed while the stream was down.
  */
 import { apiUrl } from '../lib/api';
-import type { AlertBatchEntry, HomemindAlert, StreamMessage } from '../../server/homemind/types';
+import type { AlertBatchEntry, HomemindAlert, PpmaStatus, StreamMessage } from '../../server/homemind/types';
 
 export const SESSION_HEADER = 'x-homemind-session';
 
@@ -47,7 +47,9 @@ export function toStreamMessage(frame: { event: string; data: string }): StreamM
   switch (frame.event) {
     case 'hello': {
       const clock = toClock(record);
-      return typeof record.memberId === 'string' && clock ? { event: 'hello', data: { memberId: record.memberId, ...clock } } : null;
+      if (typeof record.memberId !== 'string' || !clock) return null;
+      const ppma = toPpmaStatus(record.ppma);
+      return { event: 'hello', data: { memberId: record.memberId, ...clock, ...(ppma ? { ppma } : {}) } };
     }
     case 'clock': {
       const clock = toClock(record);
@@ -65,12 +67,19 @@ export function toStreamMessage(frame: { event: string; data: string }): StreamM
       return { event: 'settings.changed', data: {} };
     case 'preferences.changed':
       return { event: 'preferences.changed', data: {} };
+    case 'ppma.status': {
+      const status = toPpmaStatus(record.status);
+      return status ? { event: 'ppma.status', data: { status } } : null;
+    }
     case 'demo.reset':
       return { event: 'demo.reset', data: {} };
     default:
       return null;
   }
 }
+
+const PPMA_STATUSES: readonly PpmaStatus[] = ['off', 'connecting', 'ok', 'offline'];
+const toPpmaStatus = (value: unknown): PpmaStatus | null => (PPMA_STATUSES.includes(value as PpmaStatus) ? (value as PpmaStatus) : null);
 
 const str = (value: unknown, max = 300): value is string => typeof value === 'string' && value.length > 0 && value.length <= max;
 

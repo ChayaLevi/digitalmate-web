@@ -676,3 +676,28 @@ test('preferences (T5.4): saved from chat with reason and scope; a hard one bloc
     await dadContext.close();
   }
 });
+
+// T6.1: the e2e server points PPMA at a port where nothing listens (playwright.config.ts).
+test('PPMA offline (T6.1): the chip says so, and the board keeps working', async ({ page, request }) => {
+  const health = (await (await request.get(`${BASE}/api/homemind/health`)).json()) as { ppma: string };
+  expect(['offline', 'connecting']).toContain(health.ppma);
+  await openFamily(page, 'en', 'mom');
+  await expect(family(page)).toHaveAttribute('data-member', 'mom');
+  const chip = family(page).locator('[data-ppma="offline"]');
+  await expect(chip).toHaveText('PPMA offline');
+  // A board action does not wait for PPMA.
+  const row = page.locator('[data-task-id="library-books"]').first();
+  const started = Date.now();
+  await row.getByRole('button', { name: "I'll take it: Return the library books" }).click();
+  await expect(row).toHaveAttribute('data-state', 'confirmed');
+  expect(Date.now() - started).toBeLessThan(5000);
+  expect(await seriousIssues(page)).toEqual([]);
+});
+
+test('PPMA offline (T6.1): the chip in Chinese', async ({ page }) => {
+  await openFamily(page, 'zh', 'dad');
+  await expect(family(page)).toHaveAttribute('data-member', 'dad');
+  await expect(family(page).locator('[data-ppma="offline"]')).toHaveText('PPMA 离线');
+  await noOverflow(page);
+  expect(await seriousIssues(page)).toEqual([]);
+});

@@ -7361,7 +7361,7 @@ a {
   background: var(--accent-soft);
   color: var(--ink);
 }
-.hm-live.is-reconnecting, .hm-live.is-connecting { background: #f1f1f1; color: #444; }
+.hm-live.is-reconnecting, .hm-live.is-connecting, .hm-live.is-ppma-offline { background: #f1f1f1; color: #444; }
 .hm-alert.is-escalation { border-width: 2px; }
 .hm-demo-clock { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
 .hm-demo-clock strong { color: var(--ink); font-variant-numeric: tabular-nums; }

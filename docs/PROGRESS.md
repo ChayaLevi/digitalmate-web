@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T5.4 done (Preferences). Chat saves or corrects a family preference with the member's own reason and a scope, shows it for checking, with Undo. A hard preference (allergy, dietary law) blocks a preparation or task from chat, the board form and approval. The item screen lists the preferences that apply: the cake only on Noa's kindergarten party
-- **Next task:** T6.1 (PPMA client)
+- **Current task:** T6.1 done (PPMA client). With `PPMA_URL` set, the bridge registers the Homemind manifest, mints an app token, reports family-wide board changes, preferences, unavailability and reminder answers through a saved queue that retries, listens on one stream with resume, and answers every PPMA command with one `command.outcome`. PPMA down never slows or blocks a user action; the Family tab shows "PPMA offline". Proposals from PPMA are answered `rejected` until T6.2
+- **Next task:** T6.2 (Proposals, memory and "Why?")
 - **Scenes working end to end:** **Scene 1**, as scripted, in two windows: Mom assigns the pickup, it is on Dad's screen at once, he does not confirm, the demo clock jumps, Dad is reminded (alert and row), Mom gets "not confirmed yet" (alert and row), and she takes it from her board, which closes every alert in both windows. Covered by the e2e test "Scene 1: ...". Settings (quiet hours, autonomy, pause, backup contact) are editable and sync live
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-08, after T5.4
+- **Last updated:** 2026-11-08, after T6.1
 
 ## Task status
 
@@ -35,7 +35,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T5.2 | Chat transport | done | `server/homemind/chat.ts`, `POST /chat`, `chatTurn` in `homemindSurfaces.ts`, `HomemindTransport`. 646 unit tests (29 new), 58 of 58 e2e (2 new). Live Flash through the bridge: 4 of 4 as expected, 0.7 to 1.9 s |
 | T5.3 | Screenshots and preparations | done | `server/homemind/extraction.ts`, image on `POST /chat`, the screenshot card. 670 unit tests (24 new, 1 extended), 59 of 59 e2e (1 new). Live Flash: 5 of 5 sample inputs valid on the first attempt, 1.3 to 3.2 s |
 | T5.4 | Preferences | done | `server/homemind/preferences.ts`, `POST /preferences`, chat `add_preference`, the hard block, "Family preferences that apply" on the item screen. 698 unit tests (23 new file + 5 bridge), 60 of 60 e2e (1 new). Live Flash: 4 of 4 valid, 0.85 to 1.3 s |
-| T6.1 | PPMA client | not started |  |
+| T6.1 | PPMA client | done | `server/homemind/{ppma,ppmaMap}.ts`, `scripts/fake-ppma.mjs`, the PPMA offline chip. 740 unit tests (42 new), 62 of 62 e2e (2 new). Checked against real `ppma serve --profile fake --auth strict`: manifest, token, stream and all 4 report types accepted |
 | T6.2 | Proposals, memory and "Why?" | not started |  |
 | T7.1 | Action guard | not started |  |
 | T7.2 | Fake services | not started |  |
@@ -51,6 +51,15 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 ## Decisions made during the build
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
+
+- T6.1: **when PPMA is on.** Only with `PPMA_URL` set (no default URL in the code). The owner token comes from `PPMA_OWNER_TOKEN`, else `PPMA_OWNER_TOKEN_FILE`, else PPMA's own `~/.config/ppma/setup-token`. `PPMA_SPACE` defaults to `me`; `PPMA_TIMEOUT_MS` (default 10 s) is the per-call timeout. The owner token is used only for the manifest and the token mint; the **app token lives in memory only** and is minted again at start and after any 401. Neither token is logged or saved.
+- T6.1: **the client** (`server/homemind/ppma.ts`) is one per runtime (`rt.ppma`), started when the state loads and stopped by `resetHomemindRuntime()`. Two loops: the **outgoing queue** (`emit()` only pushes and returns at once; batches of up to 100 to `POST /messages`; 202 removes them; 401 re-mints; 422/400 drops the ids PPMA names, else the batch, with a log line, so one bad message never blocks the rest; anything else backs off 1, 2, 4, 8, 15, 30 s) and the **stream** (one long-lived `GET /stream?app=homemind` with `Last-Event-ID`; silence over 45 s counts as dead, PPMA's heartbeat is 15 s; a 401 also forgets the stream position and reads from the start, because a restarted fake PPMA forgets its ledger too, and commands are de-duplicated anyway). Status: `off`, `connecting`, `ok` (stream open and the last call worked), `offline`; `info()` adds `queued` and a short `lastError` code.
+- T6.1: **saved sync state** in `<state file>.ppma.json` (`.homemind/state.ppma.json`, e2e `.homemind/e2e-state.ppma.json`): the outbox (at most 1000; the oldest reports go first, never an outcome), `lastStreamId`, and the last 2000 handled command ids. It is beside the state file, not in it, so **a demo reset does not make old commands run again**. A command's outcome and its handled id are saved in the same write.
+- T6.1: **commands.** Every command gets exactly one `command.outcome` with `causation_id` = the command id (and its `correlation_id`). A repeat delivery is skipped. Past `expires_at` (real time): `expired`, the handler is not called. A throwing handler: `failed`. `dismissed` is always `path: asked`. The handler is `handlePpmaCommand` in `server/homemind/ppmaMap.ts` (pure): `homemind.get_board` → `executed` with the family-wide board (open and proposed items from 2 days back to 45 days ahead plus undated and weekly ones, at most 60, members, time zone); `propose_item`, `propose_preparation`, `add_to_shopping` → `rejected` "Homemind does not take proposals from PPMA yet" (**T6.2 replaces this**; the handler may return a new state, which the bridge commits); `ui.*`, `policy.set_threshold` and anything else → `rejected` with a reason.
+- T6.1: **the manifest** is `HOMEMIND_MANIFEST` in `ppma.ts` (the old `scripts/ppma-homemind-manifest.json` stays for the smoke script). Same events and tools as T0.2, with real input schemas and `x-ppma-carries`, and **`ui_commands: []`**, so PPMA sends Homemind no `ui.notify`/`ui.ask` (Homemind does not show them). No tool with effect `send` or `external`.
+- T6.1: **what is reported** (`reportsForChange`, `preferenceReport`, `reminderReport`): `homemind.item_changed` for every item a change touched that is family-wide before or after (`change`: `created`, `changed`, `removed`, or `hidden` when it became Parents-only, with nothing but the id); fields: id, type, title (EN, ZH), notes (500 chars), start, end, all day, weekly days, status, importance, ownership, owner id and name, confirmed, candidates, for whom, away, parent event, source kind, version, actor id and name. A **sensitive** item goes without title and notes. `homemind.member_unavailable` once per away member when a family-wide event newly makes them away (not on a notes edit). `homemind.preference_stated` on every saved preference change (reason, scope, strength; a removal carries no text). `homemind.reminder_outcome` for "Got it" / "Remind me later" on family-wide items. **Parents-only items, and preparations under them, are never sent.** `homemind.message_received` is declared but not sent yet (T7.2/T7.4). `occurred_at` is real time; item times are absolute.
+- T6.1: **health** gives `ppma` (`off`/`connecting`/`ok`/`offline`) and `ppmaQueued`. Screens get `ppma` in the JSON and pass `off`/`offline`/`ok` to the surfaces (`connecting` counts as offline). `hello` carries `ppma`, and a new stream message `ppma.status {status}` goes to every stream on a change. The Family tab shows a **PPMA offline** / **PPMA 离线** chip next to Live only while offline (nothing when off or ok).
+- T6.1: **e2e runs with PPMA set up but unreachable** (`PPMA_URL=http://127.0.0.1:9` on the 5176 server), so every Homemind e2e test also shows the board working with PPMA down.
 
 - T5.4: **saving.** `POST /preferences`: `{text, reason?, aboutMemberId?, strength, scope?}` saves; with `id` it corrects that one; `{id, remove: true}` removes; `{undo: activityId}` undoes. A save with no `id` whose words match a saved one (same person and scope, case and punctuation aside, or the seeded Chinese text) corrects it instead of adding a twin. Anyone with an account may add one (a teen too); **only a parent may correct or remove a hard one, or switch hard and soft**. Scope is stored lowercased. At most 200 preferences, text and reason 500 characters each. Every change writes one activity `kind: 'preference'` (`ref` = the preference, `note` = `added`/`corrected`/`removed`/`undone`) carrying `prefUndo: {preferenceId, before}`; Undo is allowed to the member who made it or a parent, once, and only for the latest change to that preference. Streams get `preferences.changed` (screens re-read). Seeded Chinese text is kept when the English words still match; a seeded Chinese reason is dropped when the reason changes.
 - T5.4: **chat.** `add_preference` at level 2 and up, not paused: saved at once, the card shows what was saved (preference, about, because, applies to, strength) and Undo, and asks the member to check the reason is theirs. **Level 1 or paused: nothing saved**, the card has a Save button (it calls `POST /preferences`, run on the Family tab like every chat-card button). The prompt now tells the model: `text` without the reason, `reason` copied from the member's own words (never from the board), scope as short English words joined by `-`. The fake model drops the "because …" part from `text`.
@@ -208,7 +217,9 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 | Issue | Found in | Severity | Plan |
 | --- | --- | --- | --- |
 | `npm ci` reports 5 vulnerabilities (4 moderate, 1 high) in existing dependencies (6 on Node 20). | T0.1 | Low | Existing before this work. Not touched (no dependency changes without asking). |
-| Fake PPMA issues no commands, so the `command.outcome` loop and PPMA proposals cannot be tested against it as is. | T0.2 | Medium, for T6.1 | Try `ppma serve --fake-script`, or write `scripts/fake-ppma.mjs` as the plan allows. |
+| ~~Fake PPMA issues no commands, so the `command.outcome` loop and PPMA proposals cannot be tested against it as is.~~ **Handled in T6.1** with `scripts/fake-ppma.mjs` (a contract-subset fake that can issue commands). The client was also checked against the real fake profile for everything but commands. | T0.2 | Closed | |
+| After a fake-profile PPMA restart, its ledger starts again at id 1. The client notices only through the 401 on its old app token (it then reads the stream from the start). A persistent PPMA that was restarted keeps its tokens and ledger, so nothing is needed there. | T6.1 | Low | Fine for the demo. If commands seem missing after a PPMA restart, delete `.homemind/state.ppma.json`. |
+| `npm test` failed 2 timing-sensitive tests once during T6.1 (`homemindEvents` "ends when the session token expires", a 300 ms token; `epicVite` 5 s timeout), both under full-suite load. They passed alone and in the next full run (740 of 740). | T6.1 | Low | Rerun once before investigating. |
 | Fake PPMA's memory entries hold the event type name, not the content. | T0.2 | Low | T0.3 confirmed a real model (Flash) writes real content. Use live Flash for memory tests. |
 | PPMA `--inference replay` always misses: every ask has a `NOW` block with the wall-clock time, and `ppma serve` cannot fix the clock. | T0.3 | Medium, for T6.1 and T9 | Use live Flash on stage. Optionally, Homemind saves good PPMA commands and offers them, labelled, when PPMA is offline. A PPMA clock option needs the human's OK. |
 | PPMA withholds `command.outcome` from the cloud model (no sensitivity label, so treated as health and financial). | T0.3 | Low | Outcomes are still recorded. Do not widen clearances. |
@@ -249,7 +260,7 @@ Never put keys here.
 | Work branch | `feat/homemind` |
 | LLM mode | live (`.env.local`) |
 | Model name | `deepseek-flash` |
-| PPMA mode | fake, strict auth, port 18765, for the smoke check only |
+| PPMA mode | off by default (`PPMA_URL` unset). Fake profile, strict auth, port 18765 for the smoke check and the live client check; `scripts/fake-ppma.mjs` (port 18766) for commands |
 | PPMA space | `me` |
 
 ## Known baseline
@@ -264,7 +275,8 @@ Things that are simulated or limited, kept current for the presenter.
 - The group, vendor, babysitter, inbox and weather are simulated and labeled.
 - Real WeChat group access is not available. The realistic product route is sharing and screenshots.
 - The 接龙 screenshot used in tests is simulated and says so. Extraction was measured only on that one clean image, not on real photos.
-- PPMA's memory and proposals need the live model and network on stage (replay does not work). Without them the board still works, and the memory screen says PPMA is offline.
+- PPMA's memory and proposals need the live model and network on stage (replay does not work). Without them the board still works, and the Family tab shows "PPMA offline". What Homemind reports waits in a queue and is sent when PPMA is back. Parents-only items are never sent to PPMA.
+- PPMA's own notifications (`ui.notify`, `ui.ask`) are not shown in Homemind; the manifest asks PPMA not to send them.
 - Reminders and escalation are banners inside the open app (Family tab). There are no push notifications, so a phone in a pocket gets nothing.
 - The backup contact (Grandma Lin) is simulated: nothing is sent. The banner says "(Simulated)". Settings can rename or remove it, and it stays simulated.
 - Settings are per family on one demo server. The demo sign-in is not authentication, so "parents only" for family settings protects against a teen's window, not against someone picking "Mom" in the picker.
@@ -293,6 +305,29 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T6.1 PPMA client: done (2026-11-08)
+**Built:**
+- `server/homemind/ppma.ts`: config from env, `HOMEMIND_MANIFEST`, `ulid`, the SSE parser, `createPpmaClient` (manifest and token, outgoing queue with retry and a saved outbox, one stream with `Last-Event-ID` resume, one `command.outcome` per command, de-duplication, expiry, status and `info()`), `fileSyncStore` / `memorySyncStore`.
+- `server/homemind/ppmaMap.ts` (pure): `reportsForChange`, `preferenceReport`, `reminderReport` (only family-wide data, sensitive items without title and notes), `boardForPpma`, `handlePpmaCommand`.
+- `server/homemind.ts`: one client per runtime when `PPMA_URL` is set; reports after every commit, preference change and reminder answer, never awaited; `ppma` in health, screens and `hello`; `ppma.status` broadcast. `types.ts`: `PpmaStatus`, stream message `ppma.status`. `events.ts`, `src/transport/homemindEvents.ts`: carry it.
+- `src/components/FamilyView.tsx`, `src/styles.css`: the "PPMA offline" / "PPMA 离线" chip.
+- `scripts/fake-ppma.mjs`: a contract-subset fake PPMA that can issue commands (also runnable: `node scripts/fake-ppma.mjs`, port 18766).
+- `playwright.config.ts`: the Homemind e2e server has PPMA set up but unreachable. `.env.example`: `PPMA_TIMEOUT_MS` and the fake.
+- Tests: `tests/homemindPpma.test.ts` (23, client against the fake), `tests/homemindPpmaMap.test.ts` (11, privacy and commands), `tests/homemindPpmaBridge.test.ts` (8, through the bridge, including PPMA down), `tests/homemindPpmaLive.test.ts` (1, skipped unless `PPMA_LIVE_URL` is set), 2 e2e tests.
+**Decisions:** see "Decisions made during the build" (the T6.1 entries).
+**Deviations:** new file `ppmaMap.ts` (not in the plan's file list), so the board mapping stays pure and T6.2 can extend it. The client's state is in its own file beside the state file, not in `HomemindState`. Proposals are answered `rejected` until T6.2 (the plan gives T6.2 the mapping). The "offline chip" is in the Family tab header; the memory screen itself is still T6.2 (`GET /screen/memory` 501).
+**Test results:**
+- `npm test`: 43 files, **740 passed** (698 before). At the start: 698 of 698. The first full run in this task failed 2 timing tests under load (see Open issues); they passed alone and in the full rerun.
+- `npx tsc --noEmit`: clean.
+- `npm run test:e2e`: **62 of 62** (6.4 min), with PPMA unreachable on the Homemind server, including the 2 new "PPMA offline (T6.1)" tests (EN and ZH, axe, 390 px).
+- **Real PPMA**: `ppma serve --profile fake --auth strict --port 18765` (throwaway owner token, no data kept), `tests/homemindPpmaLive.test.ts`: manifest (with `ui_commands: []`) accepted, token minted, stream opened (status ok), all 4 report types accepted with 202 and no refusal, owner memory views 200. PPMA's log showed no error.
+**Not done or not verified:** commands against the real PPMA (its fake profile issues none; covered by `scripts/fake-ppma.mjs`); a live run with DeepSeek behind PPMA (T6.2 needs it for proposals); `homemind.message_received` is not sent yet (T7.2/T7.4). Not a phase end, so no build or flag-off run.
+**Next task should know:** T6.2 extends `handlePpmaCommand` in `ppmaMap.ts`: return `{outcome, state}` and the bridge commits the state (no actor, so no change alerts). Command times come in UTC; `nowMs` given to the handler is the demo time, while expiry was already checked in real time. For "What we know" and "Why?" use the **owner** token (`rt.ppma.config`; the app token gets 403 there) with `AbortSignal.timeout`, and never in a way that blocks the board. `rt.ppma.status()` tells a screen whether PPMA is reachable. Run `node scripts/fake-ppma.mjs` to issue commands by hand: `curl -X POST localhost:18766/_fake/command -d '{"type":"homemind.propose_item","payload":{"title":"Cut fruit"}}'`.
+**How to verify:**
+- Commands: `npm test` ; `npx tsc --noEmit` ; `npx vitest run tests/homemindPpma.test.ts tests/homemindPpmaMap.test.ts tests/homemindPpmaBridge.test.ts` ; `npx playwright test e2e/homemind.spec.ts -g "T6.1"`
+- Expected output: 740 passed (1 skipped: the live test); no tsc output; 3 files, 42 passed; 2 passed.
+- Manual check: in one terminal `node scripts/fake-ppma.mjs`; in another, `PPMA_URL=http://127.0.0.1:18766 PPMA_OWNER_TOKEN=fake-ppma-owner-token-0123456789abcdef npm run dev` (with Homemind on as usual). Family tab as Mom: no PPMA chip. Assign the pickup to Dad, then open `http://127.0.0.1:18766/_fake/messages`: a `homemind.item_changed` with `owner_name: "Dad"`. Edit the counselor meeting: nothing about it appears there. Stop the fake PPMA: within a few seconds the tab shows "PPMA offline", and assigning still works at once; start it again: the chip goes and the queued change arrives.
 
 ### T5.4 Preferences: done (2026-11-08)
 **Built:**

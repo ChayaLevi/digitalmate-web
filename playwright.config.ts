@@ -56,7 +56,12 @@ export default defineConfig({
         HOMEMIND_SECRET: 'e2e-only-homemind-secret-0123',
         HOMEMIND_DEMO: '1',
         HOMEMIND_DATA_FILE: '.homemind/e2e-state.json',
-        HOMEMIND_LLM: 'fake'
+        HOMEMIND_LLM: 'fake',
+        // T6.1: PPMA is set up but unreachable (nothing listens on port 9), so every Homemind e2e test
+        // also proves the board works with PPMA down, and the "PPMA offline" chip is checked.
+        PPMA_URL: 'http://127.0.0.1:9',
+        PPMA_OWNER_TOKEN: 'e2e-only-ppma-owner-token-0123456789',
+        PPMA_TIMEOUT_MS: '1000'
       },
       url: `http://127.0.0.1:${homemindPort}/api/homemind/health`,
       reuseExistingServer: false,

@@ -369,7 +369,7 @@ export interface BackupMessage {
  */
 export type StreamMessage =
   /** First frame of every connection. The client refreshes its screen on it, which covers anything missed while it was away. */
-  | { event: 'hello'; data: { memberId: string; now: string; offsetMs: number; timezone: string } }
+  | { event: 'hello'; data: { memberId: string; now: string; offsetMs: number; timezone: string; ppma?: PpmaStatus } }
   /** `item` is `null` when the item left this member's view or no longer exists. Already redacted for this member. */
   | { event: 'item.changed'; data: { itemId: string; item: Item | null } }
   /** Something this member should know now: assigned to you, "Who's taking this?", reminders, escalation. */
@@ -382,8 +382,17 @@ export type StreamMessage =
   | { event: 'settings.changed'; data: Record<string, never> }
   /** A preference was saved, corrected or removed (T5.4). Carries nothing; screens re-read. */
   | { event: 'preferences.changed'; data: Record<string, never> }
+  /** The PPMA connection changed (T6.1). Carries no family data, so it goes to everyone. */
+  | { event: 'ppma.status'; data: { status: PpmaStatus } }
   /** The demo was reset: forget everything shown. */
   | { event: 'demo.reset'; data: Record<string, never> };
+
+/**
+ * The PPMA connection, as screens show it (T6.1). `off`: not set up (no `PPMA_URL`). `connecting`:
+ * starting. `ok`: the stream is open and the last call worked. `offline`: PPMA can't be reached or
+ * refused us; Homemind keeps working and queues what it reports.
+ */
+export type PpmaStatus = 'off' | 'connecting' | 'ok' | 'offline';
 
 /**
  * `assigned` and `open` come from a person's change (alerts.ts). The rest come from reminders.ts:

@@ -25,7 +25,7 @@ import {
 import type { HomemindHealth, HomemindMember, HomemindSession, MutationResult, ScreenParams } from '../transport/homemind';
 import { connectHomemindEvents } from '../transport/homemindEvents';
 import type { StreamStatus } from '../transport/homemindEvents';
-import type { HomemindAlert } from '../../server/homemind/types';
+import type { HomemindAlert, PpmaStatus } from '../../server/homemind/types';
 import type { A2uiAction, A2uiSurface } from '../types';
 
 /**
@@ -131,6 +131,8 @@ export function FamilyView({
   /** Live alerts from the stream, newest first. */
   const [alerts, setAlerts] = useState<HomemindAlert[]>([]);
   const [stream, setStream] = useState<StreamStatus | null>(null);
+  /** PPMA connection (T6.1), from the stream. Shown only when it is offline. */
+  const [ppma, setPpma] = useState<PpmaStatus | null>(null);
   const [clock, setClock] = useState<DemoClockView | null>(null);
   /** Re-renders the clock chip every 20 s. */
   const [tickAt, setTickAt] = useState(() => Date.now());
@@ -241,6 +243,7 @@ export function FamilyView({
         if (!active) return;
         switch (message.event) {
           case 'hello':
+            setPpma(message.data.ppma ?? null);
             setClock({ now: Date.parse(message.data.now), offsetMs: message.data.offsetMs, timezone: message.data.timezone, heardAt: Date.now() });
             // Covers anything missed while the stream was down.
             return refreshSoon();
@@ -258,6 +261,8 @@ export function FamilyView({
           case 'settings.changed':
           case 'preferences.changed':
             return refreshSoon();
+          case 'ppma.status':
+            return setPpma(message.data.status);
           case 'demo.reset':
             setAlerts([]);
             history.current = [];
@@ -273,6 +278,7 @@ export function FamilyView({
       clearTimeout(timer);
       stop();
       setStream(null);
+      setPpma(null);
     };
   }, [session]);
 
@@ -583,6 +589,14 @@ export function FamilyView({
               {' '}
               <span className={`hm-live is-${stream}`} data-stream={stream}>
                 {stream === 'live' ? tr('Live', '实时') : stream === 'connecting' ? tr('Connecting…', '连接中…') : tr('Reconnecting…', '重新连接中…')}
+              </span>
+            </>
+          ) : null}
+          {ppma === 'offline' ? (
+            <>
+              {' '}
+              <span className="hm-live is-ppma-offline" data-ppma="offline" title={tr('Long-term memory is not reachable. The board, reminders and alerts keep working.', '长期记忆暂时无法连接。看板、提醒和通知照常工作。')}>
+                {tr('PPMA offline', 'PPMA 离线')}
               </span>
             </>
           ) : null}

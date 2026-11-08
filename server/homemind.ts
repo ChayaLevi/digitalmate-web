@@ -40,9 +40,13 @@ import { planChat } from './homemind/chat';
 import { applyPreferenceRequest, blockedChange, parsePreferenceBody, preferencesForItem } from './homemind/preferences';
 import type { BlockedChoice, PreferenceRequest, PreferenceResult } from './homemind/preferences';
 import { HomemindStore, dataFileFromEnv } from './homemind/store';
+import { createPpmaClient, fileSyncStore, ppmaConfigFromEnv, ppmaSyncFileFor } from './homemind/ppma';
+import type { PpmaClient } from './homemind/ppma';
+import { handlePpmaCommand, preferenceReport, reminderReport, reportsForChange } from './homemind/ppmaMap';
+import type { PpmaReport } from './homemind/ppmaMap';
 import type { LoadSource } from './homemind/store';
 import { ID_PATTERN } from './homemind/types';
-import type { HomemindState, Item, Lang, Member, StreamMessage } from './homemind/types';
+import type { HomemindState, Item, Lang, Member, PpmaStatus, StreamMessage } from './homemind/types';
 import { redactItem, searchItems, viewFor } from './homemind/visibility';
 import { isSameOrigin } from './orbit';
 import { chatTurn, screenTurn } from '../src/lib/homemindSurfaces';
@@ -167,6 +171,8 @@ interface Runtime {
   hub: EventHub;
   /** One model client per runtime, made again only when the model settings change. */
   llm?: { key: string; client: LlmClient };
+  /** The PPMA client (T6.1), when `PPMA_URL` is set. Memory and advice only: never awaited in a request. */
+  ppma?: PpmaClient;
 }
 
 interface Holder {
@@ -185,7 +191,9 @@ async function runtime(): Promise<Runtime> {
     const store = new HomemindStore({ file, seed: () => seedState({ now: Date.now() }) });
     const ready = store.load().then(({ state, source, movedTo }) => {
       if (source === 'recovered') console.warn(`[homemind] the state file was unreadable; moved to ${movedTo} and reseeded`);
-      return { file, state, source, store, hub: createEventHub(), clock: createDemoClock(Date.now, state.clockOffsetMs) };
+      const rt: Runtime = { file, state, source, store, hub: createEventHub(), clock: createDemoClock(Date.now, state.clockOffsetMs) };
+      startPpma(rt);
+      return rt;
     });
     holders[HOLDER] = { file, ready };
     // One tick loop per process. It ticks only the runtime that is loaded, and never loads one.
@@ -203,7 +211,54 @@ export function resetHomemindRuntime(): void {
   delete (globalThis as GlobalWithHolder)[HOLDER];
   stopScheduler();
   // Close the streams of the runtime being dropped, so none is left open on a state nobody updates.
-  holder?.ready.then(rt => rt.hub.closeAll(), () => undefined);
+  holder?.ready.then(
+    rt => {
+      rt.hub.closeAll();
+      void rt.ppma?.stop();
+    },
+    () => undefined
+  );
+}
+
+// --- PPMA (T6.1) --------------------------------------------------------------------------------------
+
+/**
+ * Starts the PPMA client for this runtime when `PPMA_URL` is set. Its queue and stream position live in
+ * a file beside the state file (`state.ppma.json`), which a demo reset does not touch, so commands
+ * PPMA sent before a reset are never run again.
+ */
+function startPpma(rt: Runtime): void {
+  const config = ppmaConfigFromEnv();
+  if (!config.url) return;
+  const client = createPpmaClient(config, { sync: fileSyncStore(ppmaSyncFileFor(rt.file)) });
+  client.setCommandHandler(async command => {
+    const handled = handlePpmaCommand(rt.state, command, rt.clock.now());
+    if (handled.state) await commit(rt, handled.state);
+    return handled.outcome;
+  });
+  client.onStatus(status => rt.hub.broadcast({ event: 'ppma.status', data: { status } }));
+  rt.ppma = client;
+  client.start();
+}
+
+const ppmaStatusOf = (rt: Runtime): PpmaStatus => rt.ppma?.status() ?? 'off';
+/** Screens know three states: a connection still being made counts as offline until it works. */
+const ppmaForScreens = (rt: Runtime): 'off' | 'offline' | 'ok' => {
+  const status = ppmaStatusOf(rt);
+  return status === 'connecting' ? 'offline' : status;
+};
+
+/** Queues reports for PPMA. Never throws and never waits: PPMA must not slow down or fail a user action. */
+function reportToPpma(rt: Runtime, reports: readonly (PpmaReport | null)[]): void {
+  if (!rt.ppma) return;
+  for (const report of reports) {
+    if (!report) continue;
+    try {
+      rt.ppma.emit(report.type, report.payload);
+    } catch {
+      // emit does not throw; this guards the request path anyway.
+    }
+  }
 }
 
 let llmOverride: LlmClient | undefined;
@@ -240,6 +295,13 @@ async function commit(rt: Runtime, state: HomemindState, events: readonly CoreEv
   await rt.store.save(ticked.state);
   rt.hub.publishChanges(ticked.state, events);
   publishTick(rt, ticked);
+  if (rt.ppma && events.length) {
+    try {
+      reportToPpma(rt, reportsForChange(before, ticked.state, events, actorId));
+    } catch {
+      console.warn('[homemind] could not prepare the PPMA report for a change');
+    }
+  }
 }
 
 function publishTick(rt: Runtime, ticked: TickResult): void {
@@ -494,7 +556,7 @@ function openStream(ctx: Ctx): void {
 
   response.write('retry: 3000\n\n');
   unsubscribe = rt.hub.subscribe(member.id, send, end);
-  send({ event: 'hello', data: { memberId: member.id, ...clockData(rt) } });
+  send({ event: 'hello', data: { memberId: member.id, ...clockData(rt), ppma: ppmaStatusOf(rt) } });
 
   const beat = setInterval(() => {
     if (response.destroyed || response.writableEnded) return end();
@@ -527,6 +589,7 @@ async function answerReminder(ctx: Ctx, itemId: string, response: ReminderRespon
   rt.state = result.state;
   await rt.store.save(result.state);
   for (const closed of result.closed) rt.hub.publishClosed(closed.recipientIds, closed.reminderId);
+  reportToPpma(rt, [reminderReport(rt.state, reminder.id, itemId, response, member.id)]);
   json(res, 200, {
     ok: true,
     reminderId: reminder.id,
@@ -547,6 +610,8 @@ async function savePreference(ctx: Ctx, request: PreferenceRequest): Promise<Pre
     rt.state = result.state;
     await rt.store.save(result.state);
     rt.hub.broadcast({ event: 'preferences.changed', data: {} });
+    const id = result.preference?.id ?? result.activity?.ref;
+    if (id) reportToPpma(rt, [preferenceReport(rt.state, result.action, id, result.preference, member.id)]);
   }
   return result;
 }
@@ -677,13 +742,14 @@ const routes: Route[] = [
     method: 'GET',
     pattern: /^\/health$/,
     auth: false,
-    handler: ({ response }) =>
+    handler: ({ response, rt }) =>
       json(response, 200, {
         enabled: true,
         ready: secret() !== null,
-        // PPMA is built in a later task; "off" says so plainly.
         llm: llmStatus(llmConfigFromEnv()),
-        ppma: 'off',
+        // `off` (no PPMA_URL), `connecting`, `ok` or `offline`; the queue keeps what PPMA has not taken yet.
+        ppma: ppmaStatusOf(rt),
+        ...(rt.ppma ? { ppmaQueued: rt.ppma.info().queued } : {}),
         demo: demo()
       })
   },
@@ -738,14 +804,14 @@ const routes: Route[] = [
         query: name === 'search' ? query : undefined,
         results,
         undoable,
-        ppma: 'off',
+        ppma: ppmaForScreens(ctx.rt),
         llm: llmStatus(llmConfigFromEnv()),
         reminders: pendingRemindersFor(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()),
         ...(edit ? { edit } : {}),
         ...(name === 'item' && itemPreferences.length ? { itemPreferences } : {})
       });
       // The surface is what screens render. `view` stays for the client's forms (ids, versions).
-      json(ctx.response, 200, { ...turn, screen: name, lang: ctx.lang, now, view, ...(results ? { query, results } : {}) });
+      json(ctx.response, 200, { ...turn, screen: name, lang: ctx.lang, now, view, ppma: ppmaStatusOf(ctx.rt), ...(results ? { query, results } : {}) });
     }
   },
   { method: 'GET', pattern: /^\/events$/, auth: true, handler: openStream },

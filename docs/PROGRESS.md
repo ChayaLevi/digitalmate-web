@@ -349,7 +349,7 @@ Template (copy for each task):
 - `server/homemind/actions.ts` (new): `ActionAdapter`, `canonicalJson`, `payloadHash`, `prepareCard`, `issueConfirmation`, `authorize`, `executeAction` (with a `StateRef`), `cancelCard`, `expireCards`, `autonomyLevelFor`.
 - `server/homemind.ts`: `POST /actions/:id/confirm` and `/cancel` (were 501), `confirmations` in a parent's screen JSON, expiry at the start of every tick, `actions.changed` broadcast, an empty adapter registry with `setHomemindAdaptersForTests`.
 - `types.ts`: `ActionCard` fields and `executing`, `ActivityKind` `'action'`, stream message `actions.changed`. `events.ts`, `src/transport/homemindEvents.ts`, `FamilyView.tsx`: the new message makes screens re-read.
-- Tests: `tests/homemindActions.test.ts` (new, 21), `tests/homemindActionsBridge.test.ts` (new, 6), `tests/homemindBridge.test.ts` (the 501 list no longer has the action routes).
+- Tests: `tests/homemindActions.test.ts` (new, 19), `tests/homemindActionsBridge.test.ts` (new, 6), `tests/homemindBridge.test.ts` (the 501 list no longer has the action routes).
 **Decisions:** see "Decisions made during the build" (T7.1).
 **Deviations:** see "Deviations from the plan" (T7.1).
 **Test results:**
@@ -361,7 +361,7 @@ Template (copy for each task):
 **Next task should know:** T7.2 registers its simulated services in `adapters` in `server/homemind.ts` (mode `simulated`, an `area`, `autoAllowed: true` only where level 4 may act alone, for example the group claim; the pizza order should stay `autoAllowed: false` so it always waits for a tap). T7.3/T7.4: prepare with `prepareCard`, save and broadcast `actions.changed`, and put the button's `token` from the screen's `confirmations[cardId]`.
 **How to verify:**
 - Commands: `npm test` ; `npx tsc --noEmit` ; `npx vitest run tests/homemindActions.test.ts tests/homemindActionsBridge.test.ts`
-- Expected output: 798 passed, 1 skipped; no tsc output; 2 files, 27 tests pass.
+- Expected output: 798 passed, 1 skipped; no tsc output; 2 files, 25 tests pass.
 - Manual check: open `tests/homemindActions.test.ts`, change `'payload_changed'` in "refuses when the payload changed after the token was made" to `'token_used'`, and run the file: that test fails. Undo the change.
 
 ### T6.2 Proposals, memory and "Why?": done (2026-11-08). End of P6

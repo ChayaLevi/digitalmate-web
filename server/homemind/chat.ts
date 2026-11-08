@@ -6,7 +6,9 @@
  *   write    one core change for the bridge to apply (it has Undo, like every family item write)
  *   suggest  autonomy level 1, or paused: nothing changes, the member gets a button that does it
  *   why      Homemind's own record of an item: who added it, how, who has it, the last change
- *   later    an intent whose task is not built yet (preferences T5.4, rules T7.3, situations T8.1)
+ *   preference  save a preference (T5.4); at level 1 or paused, a card with a Save button instead
+ *   blocked  a preparation or task that a hard preference rules out (T5.4): nothing changes
+ *   later    an intent whose task is not built yet (rules T7.3, situations T8.1)
  *   missing  the item is no longer on the member's board (changed while the model was thinking)
  *
  * Autonomy (CLAUDE.md): at level 2 and up, the family item writes a member asks for apply at once,
@@ -20,20 +22,25 @@ import { addDays, localParts, zonedToUtc } from './clock';
 import type { Change, NewItem } from './core';
 import type { ChatIntent, IntentName } from './intents';
 import type { MemberView } from './visibility';
+import { blockedChange, parsePreferenceInput } from './preferences';
+import type { BlockedChoice, PreferenceInput } from './preferences';
 import type { Family, ItemExplanation, ItemSource } from './types';
 
 /** A timed event the model gave no end for lasts this long. */
 export const DEFAULT_EVENT_MINUTES = 60;
 
 export type WriteIntent = 'create_event' | 'create_task' | 'add_preparation' | 'assign' | 'claim' | 'mark_done';
-export type LaterIntent = 'add_preference' | 'create_rule' | 'report_situation';
+export type LaterIntent = 'create_rule' | 'report_situation';
 
 export type ChatPlan =
   | { kind: 'answer'; answer: string; itemIds: string[] }
   | { kind: 'write'; intent: WriteIntent; change: Change; proposed: boolean }
   | { kind: 'suggest'; intent: 'assign' | 'claim' | 'mark_done'; itemId: string; verb: 'assign' | 'claim' | 'done'; memberId?: string; reason: 'level1' | 'paused' }
   | { kind: 'why'; explanation: ItemExplanation }
-  | { kind: 'later'; intent: LaterIntent; task: 'T5.4' | 'T7.3' | 'T8.1' }
+  /** `save: false`: level 1 or paused, so the member gets a Save button instead. */
+  | { kind: 'preference'; input: PreferenceInput; save: boolean; reason?: 'level1' | 'paused' }
+  | { kind: 'blocked'; intent: 'create_task' | 'add_preparation'; title: string; blocked: BlockedChoice[] }
+  | { kind: 'later'; intent: LaterIntent; task: 'T7.3' | 'T8.1' }
   | { kind: 'missing'; intent: IntentName };
 
 /** Whether chat may change the board on its own (level 2 and up, not paused). */
@@ -83,6 +90,8 @@ export function planChat(view: MemberView, intent: ChatIntent): ChatPlan {
         source: chatSource(name),
         ...(mayWrite ? {} : { proposed: true })
       };
+      const blocked = blockedChange(view, { kind: 'create', item });
+      if (blocked.length) return { kind: 'blocked', intent: 'create_task', title: item.title, blocked };
       return { kind: 'write', intent: 'create_task', change: { kind: 'create', item }, proposed: !mayWrite };
     }
 
@@ -97,6 +106,8 @@ export function planChat(view: MemberView, intent: ChatIntent): ChatPlan {
         source: chatSource(name),
         ...(mayWrite ? {} : { proposed: true })
       };
+      const blocked = blockedChange(view, { kind: 'create', item });
+      if (blocked.length) return { kind: 'blocked', intent: 'add_preparation', title: item.title, blocked };
       return { kind: 'write', intent: 'add_preparation', change: { kind: 'create', item }, proposed: !mayWrite };
     }
 
@@ -129,8 +140,12 @@ export function planChat(view: MemberView, intent: ChatIntent): ChatPlan {
       return explanation ? { kind: 'why', explanation } : { kind: 'missing', intent: intent.intent };
     }
 
-    case 'add_preference':
-      return { kind: 'later', intent: 'add_preference', task: 'T5.4' };
+    case 'add_preference': {
+      // Checked again with the request rules (the intent validator is close, not the same).
+      const parsed = parsePreferenceInput({ ...intent }, view.family.members);
+      if (!parsed.ok) return { kind: 'missing', intent: intent.intent };
+      return mayWrite ? { kind: 'preference', input: parsed.value, save: true } : { kind: 'preference', input: parsed.value, save: false, reason };
+    }
     case 'create_rule':
       return { kind: 'later', intent: 'create_rule', task: 'T7.3' };
     case 'report_situation':

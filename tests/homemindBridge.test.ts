@@ -369,7 +369,6 @@ describe('routes for later tasks', () => {
     for (const [method, path, task] of [
       ['POST', '/actions/card-1/confirm', 'T7.1'],
       ['POST', '/actions/card-1/cancel', 'T7.1'],
-      ['POST', '/preferences', 'T5.4'],
       ['POST', '/rules', 'T7.3'],
       ['POST', '/demo/post-group-message', 'T7.2'],
       ['GET', '/screen/memory', 'T6.2']
@@ -701,9 +700,8 @@ describe('POST /chat (T5.2)', () => {
     expect((await mom.send('POST', '/items/pickup-today/assign', { version: pickup.version, ownerId: 'dad' })).status).toBe(200);
   });
 
-  it('preferences and situations say they are not built yet', async () => {
+  it('situations say they are not built yet', async () => {
     const mom = as(await login('mom'));
-    expect(await chat(mom, 'Noa loves cake because she enjoys it most')).toMatchObject({ outcome: 'later', intent: 'add_preference', task: 'T5.4' });
     expect(await chat(mom, 'Noa is sick today')).toMatchObject({ outcome: 'later', intent: 'report_situation', task: 'T8.1' });
   });
 
@@ -794,5 +792,90 @@ describe('POST /chat with a screenshot (T5.3)', () => {
     // Text-only chat keeps its 64 KB limit.
     expect((await mom.send('POST', '/chat', { text: 'x'.repeat(70 * 1024) })).status).toBe(400);
     expect((await mom.send('POST', '/chat', { image: PNG }, { origin: 'https://evil.example' })).status).toBe(403);
+  });
+});
+
+describe('preferences (T5.4)', () => {
+  const debugState = async () => json<HomemindState>(await as(undefined).get('/debug/state'));
+  const chat = async (api: Api, text: string, lang = 'en') => {
+    const res = await api.send('POST', `/chat?lang=${lang}`, { text });
+    expect(res.status, text).toBe(200);
+    return json(res);
+  };
+
+  it('POST /preferences saves, corrects by id, removes and undoes, with the usual checks', async () => {
+    const mom = as(await login('mom'));
+    const saved = await mom.send('POST', '/preferences', { text: 'Pack a towel', reason: 'Maya forgets it', aboutMemberId: 'maya', strength: 'soft', scope: 'swimming' });
+    expect(saved.status).toBe(200);
+    const body = await json(saved);
+    expect(body).toMatchObject({ ok: true, action: 'added', changed: true, preference: { text: 'Pack a towel', reason: 'Maya forgets it', createdBy: 'mom' } });
+    const id = body.preference.id as string;
+    expect((await debugState()).preferences.map(p => p.id)).toContain(id);
+
+    const fixed = await json(await mom.send('POST', '/preferences', { id, text: 'Pack a big towel', aboutMemberId: 'maya', strength: 'soft', scope: 'swimming' }));
+    expect(fixed).toMatchObject({ action: 'corrected', preference: { text: 'Pack a big towel' } });
+    expect((await json(await mom.send('POST', '/preferences', { undo: fixed.activityId }))).action).toBe('undone');
+    expect((await debugState()).preferences.find(p => p.id === id)?.text).toBe('Pack a towel');
+    expect((await json(await mom.send('POST', '/preferences', { id, remove: true }))).action).toBe('removed');
+    expect((await debugState()).preferences.find(p => p.id === id)).toBeUndefined();
+
+    expect((await mom.send('POST', '/preferences', { text: 'x', strength: 'maybe' })).status).toBe(400);
+    expect((await mom.send('POST', '/preferences', { id: 'pref-nope', remove: true })).status).toBe(404);
+    expect((await mom.send('POST', '/preferences', { text: 'x', strength: 'soft' }, { origin: 'https://evil.example' })).status).toBe(403);
+    expect((await as(undefined).send('POST', '/preferences', { text: 'x', strength: 'soft' })).status).toBe(401);
+    // A teen can't remove Noa's allergy.
+    const maya = as(await login('maya'));
+    expect((await maya.send('POST', '/preferences', { id: 'pref-noa-peanuts', remove: true })).status).toBe(403);
+  });
+
+  it('chat saves a preference with the member’s own reason and scope, and Undo puts the old one back', async () => {
+    const mom = as(await login('mom'));
+    const reply = await chat(mom, 'For kindergarten parties, bake a cake because Noa enjoys it most');
+    expect(reply).toMatchObject({ ok: true, outcome: 'preference', intent: 'add_preference', preferenceId: 'pref-noa-cake' });
+    expect(reply.jsonl).toContain('Noa enjoys it most');
+    expect(reply.jsonl).toContain('kindergarten-party');
+    expect(reply.jsonl).toContain('undo-preference');
+    const cake = (await debugState()).preferences.find(p => p.id === 'pref-noa-cake');
+    expect(cake).toMatchObject({ reason: 'Noa enjoys it most', scope: 'kindergarten-party', strength: 'soft' });
+    expect((await mom.send('POST', '/preferences', { undo: reply.activityId })).status).toBe(200);
+    expect((await debugState()).preferences.find(p => p.id === 'pref-noa-cake')?.reason).toBe('Noa enjoys baking it with us the most');
+  });
+
+  it('at level 1 chat saves nothing and offers a Save button', async () => {
+    const mom = as(await login('mom'));
+    expect((await mom.send('PUT', '/settings', { autonomy: 1 })).status).toBe(200);
+    const reply = await chat(mom, 'Maya likes pasta');
+    expect(reply).toMatchObject({ ok: true, outcome: 'preference-suggest' });
+    expect(reply.jsonl).toContain('save-preference');
+    expect((await debugState()).preferences).toHaveLength(2);
+  });
+
+  it('a hard preference blocks a choice from chat and from the board, and nothing is added', async () => {
+    const dad = as(await login('dad'));
+    expect(await chat(dad, 'Noa is allergic to kiwi')).toMatchObject({ outcome: 'preference', intent: 'add_preference' });
+    const before = (await debugState()).items.length;
+    const blocked = await chat(dad, "Bring kiwi salad for Family dinner at Grandma's");
+    expect(blocked).toMatchObject({ ok: true, outcome: 'blocked', intent: 'add_preparation' });
+    expect(blocked.jsonl).toContain('kiwi');
+    const res = await dad.send('POST', '/items', { type: 'preparation', title: 'Peanut cookies', parentEventId: 'family-dinner' });
+    expect(res.status).toBe(422);
+    expect(await json(res)).toMatchObject({ error: 'blocked_by_preference', preferences: [{ id: 'pref-noa-peanuts', term: 'peanut' }] });
+    expect((await debugState()).items.length).toBe(before);
+    // Something else for the dinner is fine.
+    expect((await dad.send('POST', '/items', { type: 'preparation', title: 'Bake a cake', parentEventId: 'family-dinner' })).status).toBe(200);
+  });
+
+  it('the item screen lists the preferences that apply: the cake on Noa’s kindergarten party only', async () => {
+    const mom = as(await login('mom'));
+    const created = await json(await mom.send('POST', '/items', { type: 'event', title: 'Kindergarten autumn party', start: '2026-11-20T07:00:00.000Z', end: '2026-11-20T08:00:00.000Z', forMemberIds: ['noa'] }));
+    const partyId = created.items[0].id as string;
+    const screen = async (id: string) => (await json(await mom.get(`/screen/item?id=${id}`))).jsonl as string;
+    const party = await screen(partyId);
+    expect(party).toContain('For kindergarten parties, bake a cake');
+    expect(party).toContain('No peanuts');
+    const dinner = await screen('family-dinner');
+    expect(dinner).toContain('No peanuts');
+    expect(dinner).not.toContain('bake a cake');
+    expect(await screen('piano-tomorrow')).not.toContain('No peanuts');
   });
 });

@@ -197,7 +197,8 @@ function fakeIntent(today: Today, board: Board, text: string, lang: 'en' | 'zh')
     const because = /\bbecause\b\s*(.+)$|因为(.+)$/i.exec(text);
     const reason = because ? (because[1] ?? because[2]).trim().slice(0, 200) : null;
     const hard = /allerg|过敏|不能吃|kosher|halal/.test(t);
-    return { intent: 'add_preference', text: text.trim().slice(0, 200), reason, aboutMemberId: findMember(board, text)?.id ?? null, strength: hard ? 'hard' : 'soft', scope: /\bpart(y|ies)\b|派对|聚会/.test(t) ? 'kindergarten-party' : null };
+    const said = (because ? text.slice(0, because.index) : text).trim().replace(/[,，]$/, '');
+    return { intent: 'add_preference', text: (said || text.trim()).slice(0, 200), reason, aboutMemberId: findMember(board, text)?.id ?? null, strength: hard ? 'hard' : 'soft', scope: /\bpart(y|ies)\b|派对|聚会/.test(t) ? 'kindergarten-party' : null };
   }
   const every = /\bevery (sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/.exec(t) ?? /每(周|星期)([日一二三四五六])/.exec(text);
   if (every) {

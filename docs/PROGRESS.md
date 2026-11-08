@@ -4,11 +4,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T5.3 done (Screenshots and preparations). A screenshot sent in the Family companion's chat becomes proposed items on the board (events, preparations with times, requests), with the source quotes; approving an event approves its preparations in one tap
-- **Next task:** T5.4 (Preferences)
+- **Current task:** T5.4 done (Preferences). Chat saves or corrects a family preference with the member's own reason and a scope, shows it for checking, with Undo. A hard preference (allergy, dietary law) blocks a preparation or task from chat, the board form and approval. The item screen lists the preferences that apply: the cake only on Noa's kindergarten party
+- **Next task:** T6.1 (PPMA client)
 - **Scenes working end to end:** **Scene 1**, as scripted, in two windows: Mom assigns the pickup, it is on Dad's screen at once, he does not confirm, the demo clock jumps, Dad is reminded (alert and row), Mom gets "not confirmed yet" (alert and row), and she takes it from her board, which closes every alert in both windows. Covered by the e2e test "Scene 1: ...". Settings (quiet hours, autonomy, pause, backup contact) are editable and sync live
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-08, after T5.3
+- **Last updated:** 2026-11-08, after T5.4
 
 ## Task status
 
@@ -34,7 +34,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T5.1 | LLM client and intents | done | `server/homemind/{llm,intents,llmFake}.ts`, `scripts/fake-llm.mjs` (`npm run llm:fake`). 617 unit tests (56 new, 1 extended), 56 of 56 e2e. Live Flash: 9 of 9 intents and the 接龙 screenshot, about 1 to 1.7 s per intent |
 | T5.2 | Chat transport | done | `server/homemind/chat.ts`, `POST /chat`, `chatTurn` in `homemindSurfaces.ts`, `HomemindTransport`. 646 unit tests (29 new), 58 of 58 e2e (2 new). Live Flash through the bridge: 4 of 4 as expected, 0.7 to 1.9 s |
 | T5.3 | Screenshots and preparations | done | `server/homemind/extraction.ts`, image on `POST /chat`, the screenshot card. 670 unit tests (24 new, 1 extended), 59 of 59 e2e (1 new). Live Flash: 5 of 5 sample inputs valid on the first attempt, 1.3 to 3.2 s |
-| T5.4 | Preferences | not started |  |
+| T5.4 | Preferences | done | `server/homemind/preferences.ts`, `POST /preferences`, chat `add_preference`, the hard block, "Family preferences that apply" on the item screen. 698 unit tests (23 new file + 5 bridge), 60 of 60 e2e (1 new). Live Flash: 4 of 4 valid, 0.85 to 1.3 s |
 | T6.1 | PPMA client | not started |  |
 | T6.2 | Proposals, memory and "Why?" | not started |  |
 | T7.1 | Action guard | not started |  |
@@ -51,6 +51,12 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 ## Decisions made during the build
 
 Record decisions that future chats need and that are not in `docs/PLAN.md`.
+
+- T5.4: **saving.** `POST /preferences`: `{text, reason?, aboutMemberId?, strength, scope?}` saves; with `id` it corrects that one; `{id, remove: true}` removes; `{undo: activityId}` undoes. A save with no `id` whose words match a saved one (same person and scope, case and punctuation aside, or the seeded Chinese text) corrects it instead of adding a twin. Anyone with an account may add one (a teen too); **only a parent may correct or remove a hard one, or switch hard and soft**. Scope is stored lowercased. At most 200 preferences, text and reason 500 characters each. Every change writes one activity `kind: 'preference'` (`ref` = the preference, `note` = `added`/`corrected`/`removed`/`undone`) carrying `prefUndo: {preferenceId, before}`; Undo is allowed to the member who made it or a parent, once, and only for the latest change to that preference. Streams get `preferences.changed` (screens re-read). Seeded Chinese text is kept when the English words still match; a seeded Chinese reason is dropped when the reason changes.
+- T5.4: **chat.** `add_preference` at level 2 and up, not paused: saved at once, the card shows what was saved (preference, about, because, applies to, strength) and Undo, and asks the member to check the reason is theirs. **Level 1 or paused: nothing saved**, the card has a Save button (it calls `POST /preferences`, run on the Family tab like every chat-card button). The prompt now tells the model: `text` without the reason, `reason` copied from the member's own words (never from the board), scope as short English words joined by `-`. The fake model drops the "because …" part from `text`.
+- T5.4: **where a preference applies** (`appliesTo`, pure). About a member: items for that member; a **scoped** one also items for nobody in particular (a party read from a group) when the scope matches; unscoped ones only where the member is named. A scope matches when every concept it names is in the item's words, in English or Chinese (`kindergarten` = kindergarten/preschool/幼儿园/..., `party` = party/派对/聚会/..., and about 10 more), plus any other word literally. The words: the item's title in both languages, notes, its parent event's, the source label, and `tags` a caller passes (T7.4: the kindergarten group passes `kindergarten`, since the 接龙 party, 秋季水果派对, does not say 幼儿园). A preparation for nobody is for its event's people, or the whole family when the event names nobody.
+- T5.4: **the hard block.** A hard preference's text (both languages) gives what it rules out (`No X`, `allergic to X`, `X-free`, `X allergy`, `不吃X`, `对X过敏`, ...), with words for about 12 common allergens and dietary rules in both languages. Creating, retitling or approving (with an event's proposed preparations) a **preparation or task** that names one, where the preference applies, is refused **in the bridge before the core** (`applyAndCommit`), so every path is covered: `422 {error: 'blocked_by_preference', preferences: [{id, text, term}]}`; chat answers `outcome: 'blocked'` with the preference and the word found. Events are not choices and are never blocked. Soft preferences never block.
+- T5.4: **item screen.** `GET /screen/item?id=` lists "Family preferences that apply" (hard first, then scoped), computed by the bridge from the member's own view and passed to the surface (`itemPreferences`), so the surface stays pure.
 
 - T5.3: **screenshot flow.** `POST /chat {image, text?}`: `image` is a PNG, JPEG, WebP or GIF data URL (at most 8 MB as text, about 6 MB of image; this route's body cap is 8 MB + 64 KB, others stay 64 KB). With an image, the chat is an extraction, never an intent: `runExtraction` (any text goes in as part of the source, as data) → `applyExtraction` (`server/homemind/extraction.ts`, pure) → **one commit** for all items. Answer: a turn with `outcome: 'extracted'`, `intent: 'extract'`, `items`. A model failure is `ok: false` with "could not read this screenshot", and nothing changes.
 - T5.3: **what becomes what.** Events → proposed events. Preparations → proposed preparations under the event they **name** (`for_event`: one from the same screenshot, else an upcoming one on the member's board); one that names no event, or names one the member can't see, is a proposed **task** (no guessing under the only event). Requests → proposed tasks. The sign-up (接龙) is **not** an item: the card shows its topic, deadline and what is taken (claiming is T7.4). Source `{kind: 'screenshot', label: <member name>}`; the core forces `proposed`, and the module asks for it for text too. The quote is the item's note (`“…”`).
@@ -166,6 +172,8 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 
 ## Deviations from the plan
 
+- T5.4: new file `server/homemind/preferences.ts` (not in the plan's file list). Types: `Preference.createdBy`/`updatedAt`, `ActivityKind` `'preference'`, `Activity.prefUndo`, stream message `preferences.changed`. Preference Undo is its own (`POST /preferences {undo}`), not the item Undo, and the Activity screen shows preference changes without an Undo button (Undo is on the chat card). No form for preferences yet: they are saved from chat or by `POST /preferences`; the "What we know" screen is T6.2 (`GET /screen/memory` still 501). The hard block is enforced in the bridge, not in `core.ts` (the core has no preference logic).
+
 - T5.3: upload is the chat attachment only, not also `FilePicker` (the plan says "or"). `POST /chat` stays JSON (an `image` data-URL field), not multipart. Types `ExtractedEntry`, `SkippedExtraction`, `SignUpInfo` are in `types.ts`. New file `server/homemind/extraction.ts` (not in the plan's file list). Approve/Dismiss on an event now cascades to its proposed preparations. Extraction dates may be 400 days back (was 2, as for intents).
 
 - T5.2: `POST /chat` takes JSON `{text}`, not multipart: images are T5.3, which can switch it to multipart or add a field. Added `server/homemind/chat.ts` (not in the plan's file list) so the intent-to-change logic stays pure and testable. The plan's "routing in `send()`" and "mapping to `ChatTurnEvent`" are as planned.
@@ -208,7 +216,11 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 | `npx tsc --noEmit` still does not check `server/*.ts` outside `server/homemind/` (for example the future `server/homemind.ts` adapter), nor `services/` or `vite.config.ts`. | T1.1 | Low | Existing setup. The adapter is covered by bridge tests. Widening `include` further needs the human's OK. |
 | The one-off copy of a weekly occurrence (availability split) loses a seeded Chinese title, because `NewItem` has no `titleZh`. Seeded pickups are one-off, so the demo is not affected. A candidate list without the unavailable parent tells a teen that parent can't make it, but not why or where. | T1.3 | Low | Add `titleZh` to `NewItem` if a weekly seeded item needs the split. |
 | One e2e test (`fridge2table.spec.ts:77`, restaurant search) failed once in a 1.3 h run (the file took 44 min, so the machine was probably suspended), and passed alone in 7 s. | T2.3 | Low | Rerun alone before investigating. |
-| In the live check, `add_preference` gave the seeded preference's reason ("enjoys baking it with us the most") instead of the member's own words ("enjoys it most"). Close, but taken from the context. | T5.1 | Low, for T5.4 | T5.4 should show the saved text and reason for confirmation, or tell the model to keep the member's own reason. |
+| ~~In the live check, `add_preference` gave the seeded preference's reason instead of the member's own words.~~ **Fixed in T5.4**: the prompt says to copy the member's reason; live Flash gave "my daughter enjoys it most" and "诺娅最喜欢". The card also shows the saved reason for checking. | T5.1 | Closed | |
+| Live Flash turns "幼儿园聚会的时候烤蛋糕，因为诺娅最喜欢" into its own words, which do not match the seeded Chinese text ("幼儿园聚会时，烤一个蛋糕"), so it is saved as a **second** cake preference, not a correction. In English the same message corrects the seeded one. | T5.4 | Low, for T7.4 and T9.2 | Both apply to the same party and say the same thing. Rehearse Scene 2 in English, or correct by id (T6.2's memory screen). Matching by meaning would need the model. |
+| Live Flash answered "Bring peanut cookies to the family dinner" with a warning (`ask`) instead of `add_preparation`, so the block card did not appear; nothing was added either way. The fake model takes the `add_preparation` path. | T5.4 | Low | Fine: both refuse. The bridge block is the guarantee. |
+| The hard block reads simple patterns ("No X", "allergic to X", "不吃X", ...) and a word list of about 12 allergens. A preference worded otherwise ("Keep Noa away from anything with sesame in it") may block nothing, and a dish that hides an allergen ("satay") is not caught. | T5.4 | Medium, to say out loud | Demo facts list it. Real allergen knowledge would need the model or a food database. |
+| Proposed items from a screenshot are not checked against hard preferences until someone taps Approve (then they are refused). The extraction card does not warn in advance. | T5.4 | Low, for T7.4 | T7.4 checks the sign-up choice with `checkChoice` before claiming. |
 | Chat Undo and suggestion buttons switch the window to the Family tab to run (T3.2 design), so the chat conversation is left behind after a tap. | T5.2 | Low | Fine for the demo (two screens show the board). Running chat-card actions in place needs `App.tsx` changes; revisit in T9.2 if it feels odd on stage. |
 | The fake model is keyword-based. It covers the test and rehearsal phrasings only and says nothing about what the real model understands. | T5.1 | Low | Rehearse with the live model (T9.2). The fake is labelled "Simulated model". |
 | **The simulated 接龙 screenshot has fixed dates** (“本周四（11月5日）”, “周五（11月6日）”). Since 2026-11-07 the live model reads them as past, so the live demo gets "already over" and adds nothing. The fake model ignores the printed dates ("this Thursday"), so tests pass. | T5.3 | **High, for the demo** | T9.1/T9.2: regenerate `jielong-sample.html/.png` for the demo week (or drop the printed dates), and update the fake model's quotes with it. |
@@ -257,7 +269,9 @@ Things that are simulated or limited, kept current for the presenter.
 - The backup contact (Grandma Lin) is simulated: nothing is sent. The banner says "(Simulated)". Settings can rename or remove it, and it stays simulated.
 - Settings are per family on one demo server. The demo sign-in is not authentication, so "parents only" for family settings protects against a teen's window, not against someone picking "Mom" in the picker.
 - The demo clock moves only the app's own time, and only forward. A reset puts it back.
-- Chat with the Family companion reads **one message at a time**: it has no memory of the earlier messages in the conversation. It can answer, add, assign, take, mark done and explain. Preferences, rules and "someone is sick" from chat say "not built yet" until T5.4, T7.3, T8.1.
+- Chat with the Family companion reads **one message at a time**: it has no memory of the earlier messages in the conversation. It can answer, add, assign, take, mark done, explain and save preferences. Rules and "someone is sick" from chat say "not built yet" until T7.3, T8.1.
+- A **hard** preference (allergy, dietary law) blocks a preparation or task that names the thing it rules out, from chat or the board. It works by simple patterns and a short word list in both languages (peanut, nuts, kiwi, egg, dairy, pork, gluten, shellfish, fish, sesame, soy, meat), not by understanding food: "satay" would pass. Say "it helps, but it can miss things" (never call it a safety feature).
+- "Family preferences that apply" on an item: matched by words in the title (for example "kindergarten" + "party"), not by meaning.
 - A screenshot sent in chat becomes **suggestions** (proposed items) only; a person taps Approve. The model reads it (live Flash about 2 to 3 s per screenshot); the quotes are shown so people can check. Tested on 3 clean rendered screenshots and 2 texts (all simulated samples), not on real phone photos. The 接龙 sign-up is shown, not claimed (claiming is T7.4).
 - "Why?" in chat today is Homemind's own board record (who added it, how, who has it, the last change), and the card says it is not from PPMA.
 - With `HOMEMIND_LLM=fake` the chat "model" is canned keyword rules, labelled "Simulated model". The live model (DeepSeek Flash) needs network on stage: about 1 to 1.7 s per chat message, about 3 s per screenshot.
@@ -279,6 +293,29 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T5.4 Preferences: done (2026-11-08)
+**Built:**
+- `server/homemind/preferences.ts` (pure): `parsePreferenceBody`, `applyPreferenceRequest` (save, correct, remove, undo; hard ones parents only), `appliesTo` / `applicablePreferences` / `preferencesForItem` (member and scope matching, EN and ZH concept words), `avoidedTerms` / `checkChoice` / `blockedChange` (the hard block).
+- `server/homemind/chat.ts`: `add_preference` → `preference` plan (saved at level 2+, a Save button at level 1 or paused); `create_task` / `add_preparation` → `blocked` when a hard preference rules them out.
+- `server/homemind.ts`: `POST /preferences` (was 501); the hard block in `applyAndCommit` (422 `blocked_by_preference`) for every board path; chat outcomes `preference`, `preference-suggest`, `blocked`; `itemPreferences` on the item screen; `preferences.changed` broadcast.
+- `server/homemind/intents.ts`: the prompt keeps the member's own reason and asks for English scope names. `llmFake.ts`: text without the "because" part. `types.ts`, `events.ts`: see Deviations.
+- `src/lib/homemindSurfaces.ts`: the preference card (with Undo), the Save suggestion, the block card, "Family preferences that apply" on the item screen, preference lines in Activity. EN and ZH.
+- `src/transport/homemind.ts` (`undo-preference`, `save-preference`), `homemindEvents.ts`, `FamilyView.tsx` (refresh on `preferences.changed`, a bilingual block notice on the form).
+- Tests: `tests/homemindPreferences.test.ts` (23), 5 bridge tests, 3 old "not built yet" tests updated, 1 e2e test.
+**Decisions:** see "Decisions made during the build" (the T5.4 entries).
+**Deviations:** new file `preferences.ts`; preference Undo is separate from item Undo; no preference form (chat and `POST /preferences` only; the memory screen is T6.2); the block lives in the bridge, not the core.
+**Test results:**
+- `npm test`: 40 files, **698 passed** (670 before). At the start: 670 of 670.
+- `npx tsc --noEmit`: clean.
+- `npm run test:e2e`: **60 of 60** (8.1 min), including "preferences (T5.4): ..." (Mom EN, Dad ZH, two windows, axe, 390 px screenshots checked by eye: no overflow).
+- **Live DeepSeek Flash** (scratch script outside the repo, 4 messages, all valid on the first attempt, 0.85 to 1.3 s): the cake sentence in English → text "For kindergarten parties, bake a cake", reason "my daughter enjoys it most" (the member's own words), about Noa, scope `kindergarten-party`; "Noa is allergic to kiwi" → hard, about Noa; the Chinese cake sentence → reason "诺娅最喜欢", scope `kindergarten-party` (saved as a second preference, see Open issues); "Bring peanut cookies to the family dinner" → the model itself answered with a peanut warning (`ask`), nothing added.
+**Not done or not verified:** a preference form on the board; matching preferences by meaning (word lists only); warnings on extraction cards before approval. Not a phase end, so no build or flag-off run.
+**Next task should know:** T6.1 can report saved preferences as `homemind.preference_stated` (the `preference` activities carry `ref`). T6.2: `memoryScreen` already lists preferences; corrections can call `POST /preferences {id, ...}`. T7.4: use `checkChoice(prefs, {memberIds, texts, tags: ['kindergarten']}, [choice])` before claiming, and `applicablePreferences` to find the cake for "Change".
+**How to verify:**
+- Commands: `npm test` ; `npx tsc --noEmit` ; `npx vitest run tests/homemindPreferences.test.ts tests/homemindBridge.test.ts` ; `npx playwright test e2e/homemind.spec.ts -g "preferences"`
+- Expected output: 698 passed; no tsc output; 2 files, 78 passed; 1 passed.
+- Manual check: `npm run dev` with `HOMEMIND_LLM=fake`, Family tab as Mom, choose the Family companion, Chat: send "Noa is allergic to kiwi" (card: "Saved as a family preference", "Never overridden", Undo), then "Bring kiwi salad for Family dinner at Grandma's" (card: "Not added", the kiwi preference). Family tab → + Add → title "Kindergarten autumn party", 15:00 to 16:00, For Noa, Save: the item shows "Family preferences that apply" with the cake and No peanuts; the same with "Swimming gala" shows no cake.
 
 ### T5.3 Screenshots and preparations: done (2026-11-08)
 **Built:**

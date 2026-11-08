@@ -10,7 +10,7 @@
  * member id; the client keeps it in `sessionStorage` and sends it as `x-homemind-session`, so two
  * windows can be two people. Roles (for example "Parents only") are enforced here and in the core.
  *
- * Routes whose task has not been built yet (actions, rules, preferences, ...) are whitelisted and
+ * Routes whose task has not been built yet (actions, rules, ...) are whitelisted and
  * answer 501 `not_implemented`, so nothing pretends to work. Chat (`POST /chat`, T5.2) reads a message
  * through the model (server/homemind/intents.ts) and plans it with server/homemind/chat.ts.
  */
@@ -37,6 +37,8 @@ import type { LlmClient } from './homemind/llm';
 import { isImageDataUrl, MAX_IMAGE_DATA_URL, runExtraction, runIntent, LIMITS as INTENT_LIMITS } from './homemind/intents';
 import { applyExtraction } from './homemind/extraction';
 import { planChat } from './homemind/chat';
+import { applyPreferenceRequest, blockedChange, parsePreferenceBody, preferencesForItem } from './homemind/preferences';
+import type { BlockedChoice, PreferenceRequest, PreferenceResult } from './homemind/preferences';
 import { HomemindStore, dataFileFromEnv } from './homemind/store';
 import type { LoadSource } from './homemind/store';
 import { ID_PATTERN } from './homemind/types';
@@ -292,7 +294,22 @@ interface Route {
 const notBuilt = (task: string): Handler => ({ response }) =>
   fail(response, 501, 'not_implemented', `This part of Homemind is not built yet (${task})`, { task });
 
-function changeFailed(ctx: Ctx, error: ChangeError): void {
+/** A change refused because a hard preference rules it out (T5.4). Hard preferences are never overridden. */
+interface BlockedByPreference {
+  ok: false;
+  status: 422;
+  code: 'blocked_by_preference';
+  message: string;
+  blocked: BlockedChoice[];
+  current?: undefined;
+}
+type Refusal = ChangeError | BlockedByPreference;
+
+function changeFailed(ctx: Ctx, error: Refusal): void {
+  if (error.code === 'blocked_by_preference') {
+    const preferences = error.blocked.map(b => ({ id: b.preference.id, text: b.preference.text, textZh: b.preference.textZh, aboutMemberId: b.preference.aboutMemberId, term: b.term }));
+    return fail(ctx.response, error.status, error.code, error.message, { preferences });
+  }
   const current = error.current ? redactItem(ctx.rt.state, ctx.member.id, error.current) : undefined;
   fail(ctx.response, error.status, error.code, error.message, current ? { current } : {});
 }
@@ -335,8 +352,14 @@ interface Applied {
 }
 
 /** Applies one change as the member, saves and publishes it, then runs the availability check. */
-async function applyAndCommit(ctx: Ctx, change: Change, afterEventId?: (changedIds: string[]) => string | undefined): Promise<Applied | ChangeError> {
+async function applyAndCommit(ctx: Ctx, change: Change, afterEventId?: (changedIds: string[]) => string | undefined): Promise<Applied | Refusal> {
   const { rt, member } = ctx;
+  // A preparation or task that a hard preference rules out never reaches the board, from any path.
+  const blocked = blockedChange(rt.state, change);
+  if (blocked.length) {
+    const words = blocked.map(b => `${b.preference.text} (${b.term})`).join('; ');
+    return { ok: false, status: 422, code: 'blocked_by_preference', message: `A preference that is never overridden rules this out: ${words}`, blocked };
+  }
   const result = applyChange(rt.state, change, member.id, rt.clock);
   if (!result.ok) return result;
   await commit(rt, result.state, result.events, member.id);
@@ -516,6 +539,18 @@ async function answerReminder(ctx: Ctx, itemId: string, response: ReminderRespon
 
 // --- chat ---------------------------------------------------------------------------------------------
 
+/** Applies a preference request as the member, saves it and tells every open stream (T5.4). */
+async function savePreference(ctx: Ctx, request: PreferenceRequest): Promise<PreferenceResult> {
+  const { rt, member } = ctx;
+  const result = applyPreferenceRequest(rt.state, request, member.id, rt.clock.now());
+  if (result.ok && result.changed) {
+    rt.state = result.state;
+    await rt.store.save(result.state);
+    rt.hub.broadcast({ event: 'preferences.changed', data: {} });
+  }
+  return result;
+}
+
 /**
  * `POST /chat {text}`: one chat message. The model reads it against the member's own view and returns
  * one validated intent (intents.ts); `planChat` decides what that does under the family's autonomy;
@@ -562,11 +597,26 @@ async function chatHandler(ctx: Ctx): Promise<void> {
       return answer({ kind: 'suggest', intent: plan.intent, itemId: plan.itemId, verb: plan.verb, ...(plan.memberId ? { memberId: plan.memberId } : {}), reason: plan.reason }, { intent });
     case 'later':
       return answer({ kind: 'later', intent: plan.intent }, { intent, task: plan.task });
+    case 'blocked':
+      return answer({ kind: 'blocked', title: plan.title, blocked: plan.blocked }, { intent });
+    case 'preference': {
+      if (!plan.save) return answer({ kind: 'preference-suggest', input: plan.input, reason: plan.reason ?? 'level1' }, { intent });
+      const saved = await savePreference(ctx, { op: 'save', input: plan.input });
+      if (!saved.ok) return answer({ kind: 'failed', reason: 'change', code: saved.code, message: saved.message }, { intent, status: saved.status });
+      const action = saved.changed ? (saved.action === 'added' ? 'added' : 'corrected') : 'unchanged';
+      return answer(
+        { kind: 'preference', action, preference: saved.preference as NonNullable<typeof saved.preference>, ...(saved.activity ? { activityId: saved.activity.id } : {}) },
+        { intent, preferenceId: saved.preference?.id, ...(saved.activity ? { activityId: saved.activity.id } : {}) }
+      );
+    }
     case 'missing':
       return answer({ kind: 'missing' }, { intent });
     case 'write': {
       const isEvent = plan.change.kind === 'create' && plan.change.item.type === 'event';
       const applied = await applyAndCommit(ctx, plan.change, ids => (isEvent ? ids[0] : undefined));
+      if (!applied.ok && applied.code === 'blocked_by_preference' && plan.change.kind === 'create') {
+        return answer({ kind: 'blocked', title: plan.change.item.title, blocked: applied.blocked }, { intent });
+      }
       if (!applied.ok) return answer({ kind: 'failed', reason: 'change', code: applied.code, message: applied.message }, { intent, status: applied.status });
       const itemId = 'itemId' in plan.change ? plan.change.itemId : applied.changedIds[0];
       // Undo, as on the board: the member made this change, so they may undo it.
@@ -675,6 +725,9 @@ const routes: Route[] = [
       const results = name === 'search' ? searchItems(ctx.rt.state, ctx.member.id, query) : undefined;
       // Add and edit: `?id=` opens an item, `?parent=` adds a preparation under an event. A bad id is a 400.
       const edit = name === 'edit' || name === 'item' ? editTarget(ctx.url) : undefined;
+      // The item screen lists the preferences that apply to that item, from the member's own view.
+      const shown = name === 'item' && edit?.itemId ? view.items.find(i => i.id === edit.itemId) : undefined;
+      const itemPreferences = shown ? preferencesForItem(view, shown) : [];
       const isParent = ctx.member.role === 'parent';
       // A view carries no Undo patches, so the server says which changes this member may undo.
       const undoable = ctx.rt.state.activity.filter(a => a.undo && !a.undone && (isParent || a.actor === ctx.member.id)).map(a => a.id);
@@ -688,7 +741,8 @@ const routes: Route[] = [
         ppma: 'off',
         llm: llmStatus(llmConfigFromEnv()),
         reminders: pendingRemindersFor(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()),
-        ...(edit ? { edit } : {})
+        ...(edit ? { edit } : {}),
+        ...(name === 'item' && itemPreferences.length ? { itemPreferences } : {})
       });
       // The surface is what screens render. `view` stays for the client's forms (ids, versions).
       json(ctx.response, 200, { ...turn, screen: name, lang: ctx.lang, now, view, ...(results ? { query, results } : {}) });
@@ -755,7 +809,19 @@ const routes: Route[] = [
   },
   { method: 'POST', pattern: /^\/chat$/, auth: true, handler: chatHandler },
   { method: 'POST', pattern: /^\/actions\/([a-z0-9][a-z0-9_-]{0,63})\/(confirm|cancel)$/, auth: true, handler: notBuilt('T7.1') },
-  { method: 'POST', pattern: /^\/preferences$/, auth: true, handler: notBuilt('T5.4') },
+  {
+    method: 'POST',
+    pattern: /^\/preferences$/,
+    auth: true,
+    // Save (new, or a correction by `id`), remove, or undo one change. Hard ones: parents only to change.
+    handler: async ctx => {
+      const parsed = parsePreferenceBody(await readBody(ctx.request), ctx.rt.state.family.members);
+      if (!parsed.ok) throw new HttpError(400, 'invalid', parsed.message);
+      const result = await savePreference(ctx, parsed.value);
+      if (!result.ok) return fail(ctx.response, result.status, result.code, result.message);
+      json(ctx.response, 200, { ok: true, action: result.action, changed: result.changed, preference: result.preference, ...(result.activity ? { activityId: result.activity.id } : {}) });
+    }
+  },
   { method: 'POST', pattern: /^\/rules$/, auth: true, handler: notBuilt('T7.3') },
   {
     method: 'PUT',

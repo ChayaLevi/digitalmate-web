@@ -205,6 +205,15 @@ export async function runHomemindAction(action: A2uiAction, token: string): Prom
     const result = await call<MutationResult>(`/api/homemind/actions/${id(args.cardId)}/${verb === 'confirm-card' ? 'confirm' : 'cancel'}`, { method: 'POST', token, body: '{}' });
     return { kind: 'mutation', result, verb };
   }
+  if (verb === 'undo-preference' || verb === 'save-preference') {
+    // T5.4: from a chat card. Save carries the fields the card showed; the server checks them again.
+    const body =
+      verb === 'undo-preference'
+        ? { undo: args.activityId }
+        : Object.fromEntries(['text', 'reason', 'aboutMemberId', 'strength', 'scope'].filter(k => args[k] !== undefined).map(k => [k, args[k]]));
+    const result = await call<MutationResult>('/api/homemind/preferences', { method: 'POST', token, body: JSON.stringify(body) });
+    return { kind: 'mutation', result, verb };
+  }
   if (verb === 'why') {
     const body = await call<{ why: { summary?: string; source?: string } }>(`/api/homemind/why/${id(args.whyId)}`, { token });
     return { kind: 'why', why: body.why };

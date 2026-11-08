@@ -102,9 +102,8 @@ describe('planChat: answers, explanations and what is not built', () => {
     expect(planChat(view(fresh(), 'mom'), { intent: 'why', itemId: 'nope' })).toEqual({ kind: 'missing', intent: 'why' });
   });
 
-  it('preferences, rules and situations wait for their tasks and change nothing', () => {
+  it('rules and situations wait for their tasks and change nothing', () => {
     const v = view(fresh(), 'mom');
-    expect(planChat(v, { intent: 'add_preference', text: 'x', strength: 'soft' })).toEqual({ kind: 'later', intent: 'add_preference', task: 'T5.4' });
     expect(planChat(v, { intent: 'create_rule', title: 'x', weekday: 5, time: '18:00', leadMinutes: 30, action: 'x' })).toEqual({ kind: 'later', intent: 'create_rule', task: 'T7.3' });
     expect(planChat(v, { intent: 'report_situation', situation: 'sick', date: '2026-11-04', summary: 'x' })).toEqual({ kind: 'later', intent: 'report_situation', task: 'T8.1' });
   });
@@ -178,7 +177,7 @@ describe('chatTurn', () => {
     const s = surfaceOf(t.jsonl);
     expect(Object.values(s.components).some(c => c.component === 'ErrorNotice' && String(c.body).includes('Nothing was changed'))).toBe(true);
     expect(turnFor({ kind: 'failed', reason: 'not_configured', code: 'not_configured', message: '' }, { lang: 'zh' }).jsonl).toContain('模型未配置');
-    expect(turnFor({ kind: 'later', intent: 'add_preference' }).message).toContain('Nothing was saved');
+    expect(turnFor({ kind: 'later', intent: 'create_rule' }).message).toContain('Nothing was set up');
   });
 
   it('builds every outcome in both languages', () => {

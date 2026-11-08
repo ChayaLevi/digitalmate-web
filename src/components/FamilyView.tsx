@@ -155,6 +155,7 @@ export function FamilyView({
     (error: unknown): string => {
       if (error instanceof HomemindError) {
         if (error.status === 409 && error.code === 'stale') return tr('This changed. Here is the latest.', '内容已更新，这是最新版本。');
+        if (error.code === 'blocked_by_preference') return tr('Not saved: a family preference that is never overridden rules this out (for example an allergy).', '没有保存：一条不可更改的家庭偏好排除了这一项（例如过敏）。');
         if (error.status === 501) return tr('This part of Homemind is not built yet.', 'Homemind 的这部分还没有完成。');
         if (error.status === 503) return tr('Homemind is not configured on the bridge (HOMEMIND_SECRET).', '桥接服务未配置 Homemind（HOMEMIND_SECRET）。');
         return error.message;
@@ -255,6 +256,7 @@ export function FamilyView({
           case 'alert':
             return setAlerts(list => addAlert(list, message.data));
           case 'settings.changed':
+          case 'preferences.changed':
             return refreshSoon();
           case 'demo.reset':
             setAlerts([]);
@@ -462,8 +464,10 @@ export function FamilyView({
       else refresh();
       afterWrite(
         outcome.result,
-        verb === 'undo'
+        verb === 'undo' || verb === 'undo-preference'
           ? tr('Undone.', '已撤销。')
+          : verb === 'save-preference'
+            ? tr('Preference saved.', '偏好已保存。')
           : verb === 'cancel'
             ? tr('Removed.', '已删除。')
             : verb === 'snooze'

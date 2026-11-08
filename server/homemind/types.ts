@@ -181,6 +181,9 @@ export interface Preference {
   strength: 'hard' | 'soft';
   /** Where it applies, for example `kindergarten-party`. Absent means everywhere. */
   scope?: string;
+  /** T5.4: who saved it (absent for seeded ones), and when it was last saved or corrected. */
+  createdBy?: string;
+  updatedAt?: string;
 }
 
 export type RuleTrigger = {
@@ -244,7 +247,10 @@ export type ActivityKind =
   | 'dismiss'
   | 'undo'
   /** T4.2: settings changed (settings.ts). No item, no Undo. `note` lists the setting keys. */
-  | 'settings';
+  | 'settings'
+  /** T5.4: a preference was added, corrected, removed or put back (preferences.ts). `ref` is its id,
+   * `note` is `added`, `corrected`, `removed` or `undone`. Undo is `prefUndo`, not `undo`. */
+  | 'preference';
 
 export interface Activity {
   id: string;
@@ -261,6 +267,8 @@ export interface Activity {
   ref?: string;
   whyId?: string;
   undo?: UndoPatch;
+  /** T5.4: the preference as it was before this change (`null`: it did not exist), for Undo. */
+  prefUndo?: { preferenceId: string; before: Preference | null };
   /** Set once the change has been undone, so it can't be undone twice. */
   undone?: { at: string; by: string; activityId: string };
 }
@@ -372,6 +380,8 @@ export type StreamMessage =
   | { event: 'clock'; data: { now: string; offsetMs: number; timezone: string } }
   /** Family or member settings changed (T4.2). Carries nothing, so it goes to everyone; screens re-read. */
   | { event: 'settings.changed'; data: Record<string, never> }
+  /** A preference was saved, corrected or removed (T5.4). Carries nothing; screens re-read. */
+  | { event: 'preferences.changed'; data: Record<string, never> }
   /** The demo was reset: forget everything shown. */
   | { event: 'demo.reset'; data: Record<string, never> };
 

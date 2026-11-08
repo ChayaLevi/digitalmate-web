@@ -600,3 +600,79 @@ test('screenshot (T5.3): Mom sends the 接龙 screenshot in chat; proposed items
     await dadContext.close();
   }
 });
+
+test('preferences (T5.4): saved from chat with reason and scope; a hard one blocks a choice in chat and on the board; the cake applies only to Noa’s kindergarten party', async ({ browser }) => {
+  const momContext = await browser.newContext();
+  const dadContext = await browser.newContext();
+  try {
+    const mom = await momContext.newPage();
+    const dad = await dadContext.newPage();
+    await openFamily(mom, 'en', 'mom', 'family');
+    await openFamily(dad, 'zh', 'dad', 'family');
+    await expect(family(mom)).toHaveAttribute('data-member', 'mom');
+    await expect(family(dad)).toHaveAttribute('data-member', 'dad');
+
+    // A new hard preference, saved and shown for checking.
+    await openChat(mom, 'en');
+    const kiwi = await chatTo(mom, 'Noa is allergic to kiwi');
+    await expect(kiwi).toContainText('Saved as a family preference');
+    await expect(kiwi).toContainText('Never overridden');
+    await expect(kiwi.getByRole('button', { name: 'Undo' })).toBeVisible();
+
+    // The cake preference, corrected with Mom's own reason, and its scope.
+    const cake = await chatTo(mom, 'For kindergarten parties, bake a cake because Noa enjoys it most');
+    await expect(cake).toContainText('Updated the saved preference');
+    await expect(cake).toContainText('Noa enjoys it most');
+    await expect(cake).toContainText('kindergarten-party');
+    await expect(cake).toContainText('Can be overridden');
+
+    // The hard block in chat: nothing is added.
+    const blocked = await chatTo(mom, "Bring kiwi salad for Family dinner at Grandma's");
+    await expect(blocked).toContainText('Not added');
+    await expect(blocked).toContainText('Noa is allergic to kiwi');
+    await expect(blocked).toContainText('Simulated model');
+    await noOverflow(mom);
+    expect(await seriousIssues(mom)).toEqual([]);
+    await mom.screenshot({ path: test.info().outputPath('preferences-chat-en.png'), fullPage: true });
+
+    // And in Chinese, for the seeded peanut allergy.
+    await openChat(dad, 'zh');
+    const dadBlocked = await chatTo(dad, '要带花生饼干去奶奶家吃饭');
+    await expect(dadBlocked).toContainText('没有添加');
+    await expect(dadBlocked).toContainText('不吃花生');
+    expect(await seriousIssues(dad)).toEqual([]);
+    await dad.screenshot({ path: test.info().outputPath('preferences-chat-zh.png'), fullPage: true });
+
+    // On the board: the same block on the Add form.
+    await mom.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Family' }).click();
+    await mom.locator('[data-task-id="family-dinner"]').first().getByRole('button', { name: /Edit|Family dinner/ }).first().click();
+    await mom.getByRole('button', { name: 'Add preparation' }).last().click();
+    await expect(mom.locator('.a2ui-surface h3')).toHaveText('Add preparation');
+    await mom.getByLabel('Title').fill('Peanut cookies');
+    await mom.getByRole('button', { name: 'Save' }).dispatchEvent('click');
+    await expect(mom.locator('.hm-notice')).toContainText('Not saved: a family preference that is never overridden rules this out');
+
+    // Scope: the cake shows on Noa's kindergarten party, not on her swimming gala.
+    for (const [title, hasCake] of [['Kindergarten autumn party', true], ['Swimming gala', false]] as const) {
+      await mom.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Family' }).click();
+      await mom.getByRole('button', { name: '+ Add' }).first().click();
+      await expect(mom.locator('.a2ui-surface h3')).toHaveText('Add to the board');
+      await mom.getByLabel('Title').fill(title);
+      await mom.getByLabel('Start time (empty for all day)').fill('15:00');
+      await mom.getByLabel('End time').fill('16:00');
+      await mom.getByLabel('For Noa').check();
+      await mom.getByRole('button', { name: 'Save' }).dispatchEvent('click');
+      await expect(mom.locator('.a2ui-surface h3')).toHaveText(title);
+      const applies = mom.locator('.a2ui-surface', { hasText: 'Family preferences that apply' });
+      await expect(applies).toContainText('No peanuts');
+      if (hasCake) await expect(applies).toContainText('For kindergarten parties, bake a cake');
+      else await expect(applies).not.toContainText('bake a cake');
+    }
+    await noOverflow(mom);
+    expect(await seriousIssues(mom)).toEqual([]);
+    await mom.screenshot({ path: test.info().outputPath('preferences-item-en.png'), fullPage: true });
+  } finally {
+    await momContext.close();
+    await dadContext.close();
+  }
+});

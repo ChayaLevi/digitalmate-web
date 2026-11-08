@@ -260,7 +260,8 @@ Reply with ONE JSON object, no prose. "intent" is one of:
 {"intent":"claim","itemId":item id}            (the member takes it themselves)
 {"intent":"mark_done","itemId":item id}
 {"intent":"add_preference","text":string,"reason":string|null,"aboutMemberId":member id|null,"strength":"hard"|"soft","scope":string|null}
-   hard = allergies, dietary laws, medical; soft = likes and habits. scope: where it applies, e.g. "kindergarten-party", or null for everywhere.
+   text: the preference itself, without the reason. reason: the member's own words after "because"/"因为", copied as written (never a reason from the BOARD), or null.
+   hard = allergies, dietary laws, medical; soft = likes and habits. scope: where it applies, as short English words joined by "-" (e.g. "kindergarten-party", "school-lunch"), or null for everywhere.
 {"intent":"create_rule","title":string,"weekday":0-6 (0 = Sunday),"time":"HH:MM","leadMinutes":number,"action":string}
 {"intent":"report_situation","situation":"sick"|"away"|"late"|"other","memberId":member id|null,"date":"YYYY-MM-DD","summary":string}
 {"intent":"why","itemId":item id}

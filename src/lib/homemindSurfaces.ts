@@ -57,6 +57,8 @@ export interface HomemindScreenData {
   llm?: 'live' | 'fake' | 'not_configured';
   /** For the `edit` screen. */
   edit?: HomemindEditTarget;
+  /** For the `item` screen (T5.4): the preferences that apply to that item, decided by the server. */
+  itemPreferences?: Preference[];
   /** Reminders waiting for this member's answer: rows get "Remind me later", "Got it" and so on (T4.2). */
   reminders?: PendingReminder[];
 }
@@ -644,21 +646,39 @@ function rulesScreen(input: HomemindScreenData): HomemindTurn {
   return turn('rules', hx(lang, 'rules'), undefined, children, data);
 }
 
+/** One preference as a `List` row: what, about whom, why, where, and whether it can be overridden. */
+function prefListRow(p: Preference, view: HomemindViewData, lang: HomemindLang): { title: string; subtitle: string; meta: string } {
+  const about = nameOf(memberOf(view.family, p.aboutMemberId), lang);
+  const reason = lang === 'zh' && p.reasonZh ? p.reasonZh : p.reason;
+  return {
+    title: lang === 'zh' && p.textZh ? p.textZh : p.text,
+    subtitle: [about, reason ? `${hx(lang, 'because')}: ${reason}` : '', p.scope ? `${hx(lang, 'appliesTo')}: ${p.scope}` : ''].filter(Boolean).join(' · '),
+    meta: p.strength === 'hard' ? hx(lang, 'hard') : hx(lang, 'soft')
+  };
+}
+
+type PrefFields = { text: string; textZh?: string; reason?: string; reasonZh?: string; aboutMemberId?: string; strength: 'hard' | 'soft'; scope?: string };
+
+/** One preference as `InfoRows`, so the member can check what was saved (T5.4). */
+function prefInfoRows(p: PrefFields, view: HomemindViewData, lang: HomemindLang): Array<{ label: string; value: string; tone: string }> {
+  const about = nameOf(memberOf(view.family, p.aboutMemberId), lang);
+  const reason = lang === 'zh' && p.reasonZh ? p.reasonZh : p.reason;
+  return [
+    { label: C.prefWhat[lang], value: lang === 'zh' && p.textZh ? p.textZh : p.text, tone: 'muted' },
+    { label: C.prefAbout[lang], value: about || C.prefEveryone[lang], tone: 'muted' },
+    { label: hx(lang, 'because'), value: reason || '—', tone: 'muted' },
+    { label: hx(lang, 'appliesTo'), value: p.scope || C.prefEverywhere[lang], tone: 'muted' },
+    { label: C.prefStrength[lang], value: p.strength === 'hard' ? hx(lang, 'hard') : hx(lang, 'soft'), tone: p.strength === 'hard' ? 'accent' : 'muted' }
+  ];
+}
+
 function memoryScreen(input: HomemindScreenData): HomemindTurn {
   const { lang, view } = input;
   const children: A2uiComponent[] = [];
   const data: Record<string, unknown> = {};
   // Never invent memory: PPMA's own entries are not here, and the screen says so.
   if (input.ppma !== 'ok') children.push({ id: 'ppma', component: 'ErrorNotice', title: input.ppma === 'offline' ? 'PPMA offline' : 'PPMA', body: hx(lang, input.ppma === 'offline' ? 'ppmaOffline' : 'ppmaOff') });
-  const prefs = view.preferences.map(p => {
-    const about = nameOf(memberOf(view.family, p.aboutMemberId), lang);
-    const reason = lang === 'zh' && p.reasonZh ? p.reasonZh : p.reason;
-    return {
-      title: lang === 'zh' && p.textZh ? p.textZh : p.text,
-      subtitle: [about, reason ? `${hx(lang, 'because')}: ${reason}` : '', p.scope ? `${hx(lang, 'appliesTo')}: ${p.scope}` : ''].filter(Boolean).join(' · '),
-      meta: p.strength === 'hard' ? hx(lang, 'hard') : hx(lang, 'soft')
-    };
-  });
+  const prefs = view.preferences.map(p => prefListRow(p, view, lang));
   if (prefs.length) {
     children.push({ id: 'prefs', component: 'List', title: hx(lang, 'memory'), dataPath: '/prefs' });
     data.prefs = prefs;
@@ -688,6 +708,18 @@ function activityLine(a: Activity, view: HomemindViewData, lang: HomemindLang): 
     undo: ['undid a change to', '撤销了对以下内容的修改'],
     settings: ['changed the settings', '修改了设置']
   };
+  if (a.kind === 'preference') {
+    const pref = view.preferences.find(p => p.id === a.ref);
+    const what = pref ? `“${lang === 'zh' && pref.textZh ? pref.textZh : pref.text}”` : '';
+    const words: Record<string, [string, string]> = {
+      added: ['saved the preference', '保存了偏好'],
+      corrected: ['corrected the preference', '更正了偏好'],
+      removed: ['removed a preference', '删除了一条偏好'],
+      undone: ['undid a preference change', '撤销了一次偏好更改']
+    };
+    const w = words[a.note ?? ''] ?? words.corrected;
+    return lang === 'zh' ? `${who} ${w[1]} ${a.note === 'removed' ? '' : what}`.trim() : `${who} ${w[0]} ${a.note === 'removed' ? '' : what}`.trim();
+  }
   const verb = verbs[a.kind ?? 'edit'] ?? verbs.edit;
   return lang === 'zh' ? `${who} ${verb[1]} ${title}`.trim() : `${who} ${verb[0]} ${title}`.trim();
 }
@@ -939,6 +971,10 @@ function itemScreen(input: HomemindScreenData): HomemindTurn {
     }
   ];
   const data: Record<string, unknown> = { this: [row], details: rows };
+  if (input.itemPreferences?.length) {
+    children.splice(2, 0, { id: 'prefs', component: 'List', title: C.prefApply[lang], dataPath: '/prefs' });
+    data.prefs = input.itemPreferences.map(p => prefListRow(p, view, lang));
+  }
   if (item.type === 'event') preparationsBlock(item, view, lang, today, children, data);
   return turn('item', titleOf(item, lang), undefined, children, data);
 }
@@ -961,7 +997,13 @@ export type ChatOutcome =
     }
   | { kind: 'suggest'; intent: 'assign' | 'claim' | 'mark_done'; itemId: string; verb: 'assign' | 'claim' | 'done'; memberId?: string; reason: 'level1' | 'paused' }
   | { kind: 'why'; explanation: ItemExplanation }
-  | { kind: 'later'; intent: 'add_preference' | 'create_rule' | 'report_situation' }
+  /** T5.4: a preference saved (`added`, `corrected`) or already saved as said (`unchanged`). */
+  | { kind: 'preference'; action: 'added' | 'corrected' | 'unchanged'; preference: Preference; activityId?: string }
+  /** T5.4: level 1 or paused: nothing saved, a Save button instead. */
+  | { kind: 'preference-suggest'; input: { text: string; reason?: string; aboutMemberId?: string; strength: 'hard' | 'soft'; scope?: string }; reason: 'level1' | 'paused' }
+  /** T5.4: a hard preference rules this out. Nothing changed. */
+  | { kind: 'blocked'; title: string; blocked: Array<{ preference: Preference; term: string }> }
+  | { kind: 'later'; intent: 'create_rule' | 'report_situation' }
   | { kind: 'missing' }
   /** T5.3: a screenshot read by the model. Everything created is proposed. */
   | { kind: 'extracted'; created: ExtractedEntry[]; skipped: SkippedExtraction[]; dropped: number; signUp?: SignUpInfo }
@@ -992,7 +1034,27 @@ const C = {
   level1: { en: 'Autonomy is set to “Suggests”, so nothing was changed. Tap to do it:', zh: '自主程度设为“仅建议”，所以没有做任何更改。点一下即可执行：' },
   pausedMsg: { en: 'Automatic actions are paused, so nothing was changed. Tap to do it:', zh: '自动操作已暂停，所以没有做任何更改。点一下即可执行：' },
   suggestion: { en: 'Suggestion', zh: '建议' },
-  laterPref: { en: 'Saving preferences from chat is not built yet. Nothing was saved.', zh: '通过对话保存偏好的功能尚未完成，没有保存任何内容。' },
+  prefAdded: { en: 'Saved as a family preference. Check that the reason is in your own words.', zh: '已保存为家庭偏好。请确认原因是你自己的说法。' },
+  prefCorrected: { en: 'Updated the saved preference. Check that it reads right.', zh: '已更新保存的偏好。请确认内容无误。' },
+  prefUnchanged: { en: 'This preference was already saved like this. Nothing changed.', zh: '这条偏好已经这样保存过了，没有更改。' },
+  prefLevel1: { en: 'Autonomy is set to “Suggests”, so nothing was saved. Tap Save to keep it:', zh: '自主程度设为“仅建议”，所以没有保存。点“保存”即可保留：' },
+  prefPaused: { en: 'Automatic actions are paused, so nothing was saved. Tap Save to keep it:', zh: '自动操作已暂停，所以没有保存。点“保存”即可保留：' },
+  prefSave: { en: 'Save', zh: '保存' },
+  prefTitle: { en: 'Family preference', zh: '家庭偏好' },
+  prefWhat: { en: 'Preference', zh: '偏好' },
+  prefAbout: { en: 'About', zh: '关于' },
+  prefEveryone: { en: 'The whole family', zh: '全家' },
+  prefEverywhere: { en: 'Everywhere', zh: '所有场合' },
+  prefStrength: { en: 'Strength', zh: '程度' },
+  prefApply: { en: 'Family preferences that apply', zh: '适用的家庭偏好' },
+  blockedMsg: {
+    en: (t: string) => `Not added: “${t}” goes against a preference that is never overridden. Nothing was changed.`,
+    zh: (t: string) => `没有添加：“${t}”违反了一条不可更改的偏好，没有做任何更改。`
+  },
+  blockedTitle: { en: 'Ruled out by a preference', zh: '被偏好排除' },
+  blockedWord: { en: 'Found', zh: '包含' },
+  blockedWhy: { en: 'Hard preferences (allergies, dietary laws) are never overridden. Choose something else, or a parent can change the preference.', zh: '硬性偏好（过敏、饮食禁忌）不会被违反。请换一个选择，或由家长修改这条偏好。' },
+  blockedList: { en: 'The preference', zh: '相关偏好' },
   laterRule: { en: 'Standing rules from chat are not built yet. Nothing was set up. A rule will only prepare a card that a parent taps.', zh: '通过对话设置长期规则的功能尚未完成，没有设置任何规则。规则只会准备卡片，由家长点一下确认。' },
   laterSituation: { en: 'Planning around a situation (who stays home, what to postpone) is not built yet. Nothing was changed.', zh: '根据突发情况重新安排（谁留在家、推迟什么）的功能尚未完成，没有做任何更改。' },
   missing: { en: 'That item is not on your board any more. Nothing was changed.', zh: '这个事项已不在你的看板上，没有做任何更改。' },
@@ -1164,8 +1226,46 @@ export function chatTurn(input: ChatTurnData): HomemindTurn {
       title = titleById(e.itemId) || C.whyTitle[lang];
       break;
     }
+    case 'preference': {
+      message = outcome.action === 'added' ? C.prefAdded[lang] : outcome.action === 'corrected' ? C.prefCorrected[lang] : C.prefUnchanged[lang];
+      if (outcome.activityId) message = `${message} ${C.undoHint[lang]}`;
+      children.push({ id: 'pref', component: 'InfoRows', title: C.prefTitle[lang], dataPath: '/pref' });
+      data.pref = prefInfoRows(outcome.preference, view, lang);
+      if (outcome.activityId) {
+        children.push({
+          id: 'actions',
+          component: 'ActionBar',
+          actions: [{ id: `homemind.undo-preference:${outcome.activityId}`, label: hx(lang, 'undo'), variant: 'secondary', kind: 'homemind', args: { verb: 'undo-preference', activityId: outcome.activityId } }]
+        });
+      }
+      title = C.prefTitle[lang];
+      break;
+    }
+    case 'preference-suggest': {
+      message = outcome.reason === 'paused' ? C.prefPaused[lang] : C.prefLevel1[lang];
+      children.push({ id: 'pref', component: 'InfoRows', title: C.suggestion[lang], dataPath: '/pref' });
+      data.pref = prefInfoRows(outcome.input, view, lang);
+      children.push({
+        id: 'actions',
+        component: 'ActionBar',
+        actions: [{ id: 'homemind.save-preference', label: C.prefSave[lang], variant: 'primary', kind: 'homemind', args: { verb: 'save-preference', ...outcome.input } }]
+      });
+      title = C.prefTitle[lang];
+      break;
+    }
+    case 'blocked': {
+      message = C.blockedMsg[lang](plainChatText(outcome.title));
+      children.push({ id: 'err', component: 'ErrorNotice', title: C.blockedTitle[lang], body: C.blockedWhy[lang] });
+      children.push({ id: 'blocked', component: 'List', title: C.blockedList[lang], dataPath: '/blocked' });
+      data.blocked = outcome.blocked.map(b => {
+        const row = prefListRow(b.preference, view, lang);
+        return { ...row, subtitle: [row.subtitle, `${C.blockedWord[lang]}: ${b.term}`].filter(Boolean).join(' · ') };
+      });
+      title = C.blockedTitle[lang];
+      break;
+    }
     case 'later':
-      message = outcome.intent === 'add_preference' ? C.laterPref[lang] : outcome.intent === 'create_rule' ? C.laterRule[lang] : C.laterSituation[lang];
+      message = outcome.intent === 'create_rule' ? C.laterRule[lang] : C.laterSituation[lang];
       break;
     case 'missing':
       message = C.missing[lang];

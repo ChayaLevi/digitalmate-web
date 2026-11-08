@@ -608,3 +608,15 @@ describe('core.ts stays pure', () => {
     expect(code).not.toMatch(/\bfetch\s*\(|Date\.now\s*\(|new Date\(\)|process\.|globalThis/);
   });
 });
+
+describe('Chinese titles Homemind words itself (T7.4)', () => {
+  it('a create may carry titleZh; it is trimmed and checked like a title', () => {
+    const state = fresh();
+    const made = ok(applyChange(state, { kind: 'create', item: { type: 'task', title: 'Buy apples', titleZh: ' 买苹果 ' } }, 'mom', clock));
+    expect(made.items[0]).toMatchObject({ title: 'Buy apples', titleZh: '买苹果' });
+    expect(err(applyChange(state, { kind: 'create', item: { type: 'task', title: 'Buy apples', titleZh: '  ' } }, 'mom', clock)).code).toBe('invalid');
+    // A later retitle drops it, as for a seeded one.
+    const edited = ok(applyChange(made.state, { kind: 'edit', itemId: made.items[0].id, version: 1, patch: { title: 'Buy pears' } }, 'mom', clock));
+    expect(edited.items[0].titleZh).toBeUndefined();
+  });
+});

@@ -15,7 +15,7 @@
  * Components that do not render the flag (rules, settings rows) say the word in their text instead.
  */
 import type { A2uiAction, A2uiComponent } from '../types';
-import type { ActionCard, Activity, ExtractedEntry, Family, Item, ItemExplanation, Lang, Member, PendingReminder, PpmaExplanationData, PpmaMemoryData, Preference, Reminder, Rule, RuleRun, ServicesView, SignUpInfo, SkippedExtraction, Why } from '../../server/homemind/types';
+import type { ActionCard, Activity, ExtractedEntry, Family, GroupsView, Item, ItemExplanation, Lang, Member, PendingReminder, PpmaExplanationData, PpmaMemoryData, Preference, Reminder, Rule, RuleRun, ServicesView, SignUpInfo, SkippedExtraction, Why } from '../../server/homemind/types';
 
 export type HomemindLang = Lang;
 export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit' | 'item' | 'services';
@@ -73,6 +73,8 @@ export interface HomemindScreenData {
   demo?: boolean;
   /** T7.3: a parent's confirmation token per pending card, put behind that card's Confirm button. */
   confirmations?: Record<string, { token: string; expiresAt: string }>;
+  /** T7.4: the group claim setting and the sign-ups Homemind looked at (`my-day` and `services`). */
+  groups?: GroupsView;
 }
 
 /** What the bridge sends the browser for every Homemind screen. Same shape as a Fridge2Table turn. */
@@ -587,6 +589,7 @@ function myDay(input: HomemindScreenData): HomemindTurn {
   const children: A2uiComponent[] = [...cards.children];
   const data: Record<string, unknown> = { ...cards.data };
   if (cards.data.cards) children.unshift(text('cards-title', `**${hx(lang, 'cards')}**`));
+  if (input.groups) groupClaimBlocks(input, 'my-day', children, data);
   section(children, data, 'needs', hx(lang, 'needsYou'), needs.map(i => taskRow(i, view, lang, today)));
   section(children, data, 'today', hx(lang, 'today'), todays.map(i => taskRow(i, view, lang, today)), hx(lang, 'nothingToday'));
   section(children, data, 'later', hx(lang, 'comingUp'), later.map(i => taskRow(i, view, lang, today)));
@@ -926,6 +929,17 @@ function activityLine(a: Activity, view: HomemindViewData, lang: HomemindLang): 
     };
     const w = words[a.note ?? ''] ?? words.corrected;
     return lang === 'zh' ? `${who} ${w[1]} ${a.note === 'removed' ? '' : what}`.trim() : `${who} ${w[0]} ${a.note === 'removed' ? '' : what}`.trim();
+  }
+  if (a.kind === 'rule' && !view.rules.some(r => r.id === a.ref) && /^(enabled|disabled|auto|ask)(,|$)/.test(a.note ?? '')) {
+    // T7.4: a group's claim setting. `ref` is the group id.
+    const words: Record<string, [string, string]> = {
+      enabled: ['turned on sign-up claims in the group', '开启了群接龙认领'],
+      disabled: ['turned off sign-up claims in the group', '关闭了群接龙认领'],
+      auto: ['let Homemind post claims on its own (level 4)', '允许 Homemind 自动发送认领（等级 4）'],
+      ask: ['asked to tap each claim first', '设置为每次认领前先确认']
+    };
+    const parts = (a.note ?? '').split(',').map(n => words[n]).filter(Boolean).map(w => (lang === 'zh' ? w[1] : w[0]));
+    return `${who} ${parts.join(lang === 'zh' ? '，' : ', ')} (${hx(lang, 'simulated')})`;
   }
   if (a.kind === 'rule') {
     const rule = view.rules.find(r => r.id === a.ref);
@@ -1637,6 +1651,7 @@ function servicesScreen(input: HomemindScreenData): HomemindTurn {
       actions: [{ id: 'homemind.post-group-message', label: `${sx(lang, 'postNext')} (${group.remaining})`, variant: 'secondary', kind: 'homemind', args: { verb: 'post-group-message' } }]
     });
   }
+  if (input.groups) groupClaimBlocks(input, 'services', children, data);
 
   const pizza = services.pizza;
   const status = pizza.open ? sx(lang, 'pizzaOpen') : sx(lang, 'pizzaClosed');
@@ -1688,6 +1703,177 @@ function servicesScreen(input: HomemindScreenData): HomemindTurn {
     }))
   );
   return turn('services', sx(lang, 'services'), sim, children, data);
+}
+
+// --- group sign-up claims (T7.4) -------------------------------------------------------------------
+
+const G = {
+  title: { en: 'Kindergarten sign-ups', zh: '幼儿园接龙' },
+  settingTitle: { en: 'Homemind in this group', zh: 'Homemind 在这个群' },
+  off: { en: 'Off. Homemind does not sign the family up for anything here.', zh: '已关闭。Homemind 不会在这里替家里认领任何东西。' },
+  on: { en: 'On, approved by {who} on {when}: food only, up to {cap} per claim, posted as {who}.', zh: '已开启，由{who}于 {when} 批准：仅限食物，每次不超过 {cap}，以{who}的身份发送。' },
+  auto: { en: 'Posts a claim on its own (level 4, simulated group only).', zh: '会自动发送认领（等级 4，仅限模拟群）。' },
+  ask: { en: 'Each claim waits for a parent to tap its card.', zh: '每次认领都要等家长在卡片上点一下。' },
+  pausedNote: { en: 'Automatic actions are paused, so nothing is claimed now.', zh: '自动操作已暂停，现在不会认领。' },
+  limits: { en: 'Homemind claims only food to buy, never something a person has to make, and stops when a message is unclear.', zh: 'Homemind 只认领需要购买的食物，不会替家人承诺要动手做的东西；消息不清楚时会停下。' },
+  turnOnAsk: { en: 'Turn on: ask me each time', zh: '开启：每次先问我' },
+  turnOnAuto: { en: 'Turn on: post on its own (level 4)', zh: '开启：自动发送（等级 4）' },
+  turnOff: { en: 'Turn off', zh: '关闭' },
+  toAuto: { en: 'Post on its own (level 4)', zh: '改为自动发送（等级 4）' },
+  toAsk: { en: 'Ask me each time', zh: '改为每次先问我' },
+  parentsOnly: { en: 'Only a parent can change this.', zh: '只有家长可以修改。' },
+  signedUp: { en: 'Signed up', zh: '已认领' },
+  waiting: { en: 'Claim waiting for a parent’s tap (see the card)', zh: '认领等待家长确认（见卡片）' },
+  notPosted: { en: 'not posted', zh: '未发送' },
+  didNot: { en: 'Did not sign up', zh: '没有认领' },
+  postedAs: { en: 'posted by Homemind in {group}', zh: '由 Homemind 发到{group}' },
+  readBy: { en: 'read by fixed rules, not the model', zh: '用固定规则读取，未使用模型' },
+  closes: { en: 'closes', zh: '截止' },
+  changeTo: { en: 'Change to', zh: '改为' },
+  change: { en: 'Change', zh: '改成这个' },
+  changeWaiting: { en: 'Change to {x} waits for a parent’s tap (see the card).', zh: '改为{x}正在等待家长确认（见卡片）。' },
+  pref: { en: 'Saved preference', zh: '已保存的偏好' },
+  because: { en: 'because', zh: '因为' },
+  makes: { en: 'someone has to make it', zh: '需要有人动手做' },
+  about: { en: 'about', zh: '约' },
+  changed: { en: 'changed', zh: '已更改' },
+  unclear: { en: 'the message was unclear', zh: '消息不清楚' },
+  closed: { en: 'the sign-up had closed', zh: '接龙已截止' },
+  nothing: { en: 'nothing left is food Homemind may claim on its own', zh: '剩下的没有 Homemind 可以自行认领的食物' },
+  already: { en: 'the family is already on the list', zh: '家里已经在名单上' },
+  paused: { en: 'automatic actions were paused', zh: '自动操作已暂停' },
+  failed: { en: 'the simulated group did not take the post', zh: '模拟群没有收到' },
+  cardCancelled: { en: 'the card was cancelled, nothing was posted', zh: '卡片已取消，没有发送' },
+  cardExpired: { en: 'nobody tapped before the sign-up closed, nothing was posted', zh: '截止前没有人确认，没有发送' }
+} as const;
+const gx = (lang: HomemindLang, key: keyof typeof G): string => G[key][lang];
+/** A colon in the reader's language. */
+const colon = (lang: HomemindLang) => (lang === 'zh' ? '：' : ': ');
+const fill = (s: string, values: Record<string, string>) => s.replace(/\{(\w+)\}/g, (_, k: string) => values[k] ?? '');
+
+/**
+ * The group's claim setting (Services only) and the sign-ups Homemind looked at: what it took, with
+ * "Why?" and the choices a parent can change to (a saved preference first, with its reason). My day shows
+ * the claims whose party is still ahead, and stops from the last 12 hours.
+ */
+function groupClaimBlocks(input: HomemindScreenData, where: 'my-day' | 'services', children: A2uiComponent[], data: Record<string, unknown>): void {
+  const { lang, view } = input;
+  const groups = input.groups;
+  if (!groups) return;
+  const zone = view.family.timezone;
+  const me = memberOf(view.family, view.memberId);
+  const isParent = me?.role === 'parent';
+  const nowMs = Date.parse(input.now);
+  const sim = hx(lang, 'simulated');
+  const when = (iso: string | undefined) => {
+    const parts = iso ? dateParts(iso, zone) : null;
+    return parts ? `${WEEKDAYS[lang][parts.weekday] ?? ''} ${parts.date.slice(5).replace('-', '/')} ${parts.time}`.trim() : '';
+  };
+
+  if (where === 'services') {
+    for (const p of groups.policies) {
+      const who = nameOf(memberOf(view.family, p.approvedBy), lang);
+      const lines = [`**${gx(lang, 'settingTitle')}** · ${sim}`, ''];
+      if (p.enabled) {
+        lines.push(fill(gx(lang, 'on'), { who, when: when(p.approvedAt), cap: `${p.maxCost} ${p.currency}` }));
+        lines.push(gx(lang, p.level >= 4 ? 'auto' : 'ask'));
+        if (p.paused) lines.push(gx(lang, 'pausedNote'));
+      } else lines.push(gx(lang, 'off'));
+      lines.push(gx(lang, 'limits'));
+      if (!isParent) lines.push(gx(lang, 'parentsOnly'));
+      children.push(text(`group-setting-${p.groupId}`, lines.join('\n\n')));
+      if (isParent) {
+        const a = (key: keyof typeof G, args: Record<string, unknown>, variant: A2uiAction['variant']): A2uiAction => ({ id: `homemind.group-policy:${p.groupId}:${key}`, label: gx(lang, key), variant, kind: 'homemind', args: { verb: 'group-policy', groupId: p.groupId, ...args } });
+        const actions = p.enabled
+          ? [a(p.level >= 4 ? 'toAsk' : 'toAuto', { auto: p.level < 4 }, 'secondary'), a('turnOff', { enabled: false }, 'ghost')]
+          : [a('turnOnAsk', { enabled: true, auto: false }, 'secondary'), a('turnOnAuto', { enabled: true, auto: true }, 'primary')];
+        children.push({ id: `group-setting-actions-${p.groupId}`, component: 'ActionBar', actions });
+      }
+    }
+  }
+
+  const shown = groups.claims
+    .filter(c => {
+      if (where === 'services') return true;
+      if (c.claim.status === 'stopped') return nowMs - Date.parse(c.claim.at) < RECENT_MS;
+      return Date.parse(c.claim.eventStart ?? '') > nowMs;
+    })
+    .slice(0, 3);
+  if (!shown.length) return;
+  const stopWords: Record<string, keyof typeof G> = { unclear: 'unclear', closed: 'closed', nothing_suitable: 'nothing', already_signed_up: 'already', paused: 'paused', failed: 'failed' };
+  const rows: TaskRow[] = [];
+  const after: Array<{ claimId: string; rows: TaskRow[]; note?: string }> = [];
+  for (const c of shown) {
+    const claim = c.claim;
+    const group = lang === 'zh' ? c.groupNameZh : c.groupName;
+    const event = lang === 'zh' ? claim.eventTitleZh ?? claim.eventTitle ?? '' : claim.eventTitle ?? '';
+    const whyAction: A2uiAction = { id: `homemind.why:${claim.whyId}`, label: hx(lang, 'why'), variant: 'secondary', kind: 'homemind', args: { verb: 'why', whyId: claim.whyId } };
+    if (claim.status === 'stopped') {
+      const reason = gx(lang, stopWords[claim.reason ?? 'failed'] ?? 'failed');
+      const problem = claim.reason === 'unclear' ? (lang === 'zh' ? claim.problemZh : claim.problem) : '';
+      rows.push({ id: `claim-${claim.id}`, title: `${gx(lang, 'didNot')}${colon(lang)}${reason}`, meta: [problem, group, gx(lang, 'readBy')].filter(Boolean).join(' · '), ownerLabel: '', state: '', tone: 'warning', simulated: true, actions: [whyAction] });
+      continue;
+    }
+    const choice = c.choice ? (lang === 'zh' ? c.choice.label : `${c.choice.label} (${c.choice.en})`) : '';
+    if (claim.status === 'waiting') {
+      const ended = c.cardStatus === 'cancelled' ? 'cardCancelled' : c.cardStatus === 'expired' ? 'cardExpired' : undefined;
+      rows.push({
+        id: `claim-${claim.id}`,
+        title: `${choice} · ${event}`,
+        meta: [ended ? `${gx(lang, 'notPosted')}${colon(lang)}${gx(lang, ended)}` : gx(lang, 'waiting'), when(claim.eventStart), group].filter(Boolean).join(' · '),
+        ownerLabel: '',
+        state: '',
+        tone: ended ? 'muted' : 'accent',
+        simulated: true,
+        actions: [whyAction]
+      });
+      continue;
+    }
+    const changedNote = (claim.changes ?? []).some(ch => ch.status === 'posted') ? gx(lang, 'changed') : '';
+    rows.push({
+      id: `claim-${claim.id}`,
+      title: `${gx(lang, 'signedUp')}${colon(lang)}${choice} · ${event}`,
+      meta: [when(claim.eventStart), claim.deadline ? `${gx(lang, 'closes')} ${when(claim.deadline)}` : '', fill(gx(lang, 'postedAs'), { group }), changedNote, gx(lang, 'readBy')].filter(Boolean).join(' · '),
+      ownerLabel: '',
+      state: '',
+      tone: 'success',
+      simulated: true,
+      actions: [whyAction]
+    });
+    if (c.changeWaiting) {
+      after.push({ claimId: claim.id, rows: [], note: fill(gx(lang, 'changeWaiting'), { x: c.changeWaiting.label }) });
+    } else if (c.alternatives.length) {
+      after.push({
+        claimId: claim.id,
+        rows: c.alternatives.map(alt => {
+          const pref = alt.preferences[0];
+          const reason = pref ? (lang === 'zh' ? pref.reasonZh ?? pref.reason : pref.reason) : undefined;
+          const prefText = pref ? `${gx(lang, 'pref')}${colon(lang)}“${lang === 'zh' ? pref.textZh ?? pref.text : pref.text}”${reason ? ` ${gx(lang, 'because')} ${reason}` : ''}` : '';
+          return {
+            id: `alt-${claim.id}-${alt.key}`,
+            title: lang === 'zh' ? alt.label : `${alt.label} (${alt.en})`,
+            meta: [prefText, alt.effort === 'make' ? gx(lang, 'makes') : '', `${gx(lang, 'about')} ${alt.cost} ${alt.currency}`].filter(Boolean).join(' · '),
+            ownerLabel: '',
+            state: '',
+            tone: pref ? 'accent' : 'muted',
+            simulated: true,
+            actions: isParent ? [{ id: `homemind.group-change:${claim.id}:${alt.key}`, label: gx(lang, 'change'), variant: pref ? 'primary' : 'secondary', kind: 'homemind', args: { verb: 'group-change', claimId: claim.id, option: alt.key } }] : []
+          } satisfies TaskRow;
+        })
+      });
+    }
+  }
+  children.push(taskList('group-claims', gx(lang, 'title'), '/groupClaims'));
+  data.groupClaims = rows;
+  for (const block of after) {
+    if (block.note) {
+      children.push(text(`group-change-note-${block.claimId}`, block.note));
+      continue;
+    }
+    const id = `groupAlt-${block.claimId}`;
+    children.push(taskList(`group-alt-${block.claimId}`, gx(lang, 'changeTo'), `/${id}`));
+    data[id] = block.rows;
+  }
 }
 
 // --- public API -------------------------------------------------------------------------------------

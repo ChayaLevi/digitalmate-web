@@ -65,6 +65,8 @@ export interface NewItem extends ItemFields {
   source?: ItemSource;
   /** Create as `proposed`, waiting for approval. Forced for screenshot, email, group and PPMA sources. */
   proposed?: boolean;
+  /** T7.4: a Chinese title for an item Homemind itself words (a group claim's preparations). Not from clients. */
+  titleZh?: string;
 }
 
 export type Change =
@@ -443,6 +445,11 @@ function planCreate(state: HomemindState, input: NewItem, actor: string, clock: 
   const ownership = checkOwnership(state, actor, filled, input.ownership);
   if ('ok' in ownership) return ownership;
   const item: Item = { ...filled, ownership };
+  if (input.titleZh !== undefined) {
+    const titleZh = typeof input.titleZh === 'string' ? input.titleZh.trim() : '';
+    if (!titleZh || titleZh.length > LIMITS.title) return invalid(`titleZh must be 1 to ${LIMITS.title} characters`);
+    item.titleZh = titleZh;
+  }
 
   return { next: new Map([[id, item]]), kind: 'create', itemId: id, what: proposed ? 'Proposed an item' : 'Added an item' };
 }

@@ -306,7 +306,8 @@ export type ActivityKind =
   /** T7.1: an action card was executed, failed, cancelled or expired (actions.ts). `ref` is the card id,
    * `note` is that outcome. No Undo: what an adapter did outside cannot be taken back from here. */
   | 'action'
-  /** T7.3: a standing rule was created, turned on or off. `ref` is the rule id, `note` is `created`, `enabled` or `disabled`. No Undo. */
+  /** T7.3: a standing rule was created, turned on or off. `ref` is the rule id, `note` is `created`, `enabled` or `disabled`. No Undo.
+   * T7.4: also a group's claim setting (`ref` is the group id, `note` `enabled`, `disabled`, `auto` or `ask`). */
   | 'rule';
 
 export interface Activity {
@@ -406,6 +407,125 @@ export interface HomemindState {
   services?: ServicesState;
   /** T7.3: what the standing rules did, newest last (rules.ts keeps at most 100). Absent means none. */
   ruleRuns?: RuleRun[];
+  /** T7.4: per group, whether Homemind may claim food in its sign-ups. Absent (the seed): off everywhere. */
+  groupPolicies?: GroupClaimPolicy[];
+  /** T7.4: every sign-up Homemind looked at, claimed or stopped on, newest last. */
+  groupClaims?: GroupClaim[];
+}
+
+// --- group sign-up claims (T7.4, groupClaims.ts) ---------------------------------------------------------
+
+/**
+ * What Homemind may do in one group's sign-ups (接龙). **Off by default.** A parent turns it on, which is
+ * the first-time approval of exactly these limits: food only, at most `maxCost` per claim, posted as that
+ * parent. Whether a claim posts on its own or waits for a tap is the autonomy level of the `group` area.
+ */
+export interface GroupClaimPolicy {
+  groupId: string;
+  enabled: boolean;
+  /** The parent who turned it on (the approval), and when. Claims are posted as this parent. */
+  approvedBy?: string;
+  approvedAt?: string;
+  /** Estimated cost cap per claim. */
+  maxCost: number;
+  currency: string;
+}
+
+/** Why a sign-up got no claim. `failed`: the simulated group did not take the post. */
+export type GroupClaimStop = 'unclear' | 'closed' | 'nothing_suitable' | 'already_signed_up' | 'paused' | 'failed';
+
+/** One choice on a sign-up list, as written in the message. `key` names a food Homemind knows. */
+export interface SignUpOption {
+  label: string;
+  key?: string;
+  /** Who already wrote their name next to it. */
+  takenBy?: string;
+}
+
+/** A correction of a claim ("Change"): from one option key to another. */
+export interface GroupClaimChange {
+  at: string;
+  by: string;
+  from: string;
+  to: string;
+  cardId: string;
+  status: 'waiting' | 'posted' | 'failed';
+}
+
+/**
+ * T7.4: one sign-up message Homemind looked at. `waiting`: the claim card waits for a parent's tap.
+ * `claimed`: posted in the group, with the event and preparations on the board. `stopped`: nothing
+ * posted, `reason` says why. The sign-up is read by fixed rules (not the model), and kept here so the
+ * screen can show what was read.
+ */
+export interface GroupClaim {
+  id: string;
+  groupId: string;
+  messageId: string;
+  /** The message's version when it was read (T7.5 can compare). */
+  messageVersion: number;
+  at: string;
+  status: 'waiting' | 'claimed' | 'stopped';
+  reason?: GroupClaimStop;
+  /** For `unclear`: what could not be read, in plain English and Chinese. */
+  problem?: string;
+  problemZh?: string;
+  topic?: string;
+  options?: SignUpOption[];
+  eventTitle?: string;
+  eventTitleZh?: string;
+  eventStart?: string;
+  /** The sign-up closes then (from "周三晚上8点前"). */
+  deadline?: string;
+  children?: number;
+  /** The option key claimed (the current one, after a change). */
+  choice?: string;
+  asMemberId?: string;
+  cardId?: string;
+  eventId?: string;
+  preparationIds?: string[];
+  changes?: GroupClaimChange[];
+  whyId: string;
+}
+
+/** A sign-up choice as screens show it: the words as written, Homemind's English name, its estimate and effort. */
+export interface SignUpChoiceView {
+  key: string;
+  label: string;
+  en: string;
+  cost: number;
+  currency: string;
+  /** `make`: someone has to bake or cook it. Homemind never claims those on its own. */
+  effort: 'buy' | 'make';
+}
+
+/** T7.4: what the group screens show, computed by groupClaims.ts (plain data; the surfaces word it). */
+export interface GroupsView {
+  policies: Array<{
+    groupId: string;
+    name: string;
+    nameZh: string;
+    enabled: boolean;
+    approvedBy?: string;
+    approvedAt?: string;
+    maxCost: number;
+    currency: string;
+    /** The `group` area's autonomy level: 4 posts a claim on its own, below 4 a parent taps its card. */
+    level: AutonomyLevel;
+    paused: boolean;
+  }>;
+  claims: Array<{
+    claim: GroupClaim;
+    groupName: string;
+    groupNameZh: string;
+    choice?: SignUpChoiceView;
+    /** What a parent may change to now (free, food, under the cap, no hard preference against it), preferred first. */
+    alternatives: Array<SignUpChoiceView & { preferences: Array<Pick<Preference, 'id' | 'text' | 'textZh' | 'reason' | 'reasonZh'>> }>;
+    /** The claim card's state, while the claim is not posted. */
+    cardStatus?: ActionCard['status'];
+    /** A change waits for a parent's tap on its card. */
+    changeWaiting?: { to: string; label: string };
+  }>;
 }
 
 // --- simulated services (T7.2, fakes.ts) ---------------------------------------------------------------
@@ -556,9 +676,10 @@ export type PpmaStatus = 'off' | 'connecting' | 'ok' | 'offline';
 /**
  * `assigned` and `open` come from a person's change (alerts.ts). The rest come from reminders.ts:
  * `reminder` to the recipients, `escalation` to the next person, `backup` (to parents: the backup
- * contact was messaged), `batch` (several small updates as one alert).
+ * contact was messaged), `batch` (several small updates as one alert). `group` (T7.4, groupClaims.ts):
+ * Homemind claimed or changed a sign-up in a simulated group; a notice to everyone who sees the event.
  */
-export type AlertKind = 'assigned' | 'open' | 'reminder' | 'escalation' | 'backup' | 'batch';
+export type AlertKind = 'assigned' | 'open' | 'reminder' | 'escalation' | 'backup' | 'batch' | 'group';
 
 /** One line of a batched alert. */
 export interface AlertBatchEntry {
@@ -607,6 +728,11 @@ export interface HomemindAlert {
   simulated?: boolean;
   /** `batch`: the small updates held together. `itemId` is the first one's. */
   entries?: AlertBatchEntry[];
+  /** `group` (T7.4): Homemind signed the family up in a simulated group. What it took, and what it was before a change. */
+  groupChoice?: string;
+  groupChoiceZh?: string;
+  groupFrom?: string;
+  groupFromZh?: string;
 }
 
 /** A reminder that reached a member and is still waiting for an answer, for the reminder buttons on board rows (T4.2). */

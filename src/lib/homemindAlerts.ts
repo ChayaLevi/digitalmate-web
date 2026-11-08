@@ -51,6 +51,15 @@ export function alertText(alert: HomemindAlert, lang: Lang): string {
     const label = alert.simulated ? t(lang, ' (Simulated)', '（模拟）') : '';
     return t(lang, `${contact} was sent a short message to get in touch.${label}`, `已给${contact}发了一条简短消息，请其联系家里。${label}`);
   }
+  if (alert.kind === 'group') {
+    // T7.4: Homemind signed the family up in a simulated group (or changed it). Always labelled simulated.
+    const title = alertTitle(alert, lang);
+    const choice = (lang === 'zh' ? alert.groupChoiceZh : alert.groupChoice) ?? '';
+    const from = lang === 'zh' ? alert.groupFromZh : alert.groupFrom;
+    return from
+      ? t(lang, `Sign-up changed from ${from} to ${choice}: ${title}. (Simulated group)`, `接龙已从${from}改为${choice}：${title}。（模拟群）`)
+      : t(lang, `Homemind signed the family up for ${choice}: ${title}. (Simulated group)`, `Homemind 已替家里认领${choice}：${title}。（模拟群）`);
+  }
   if (alert.sensitive || !alert.title) return t(lang, GENERIC.en, GENERIC.zh);
   const title = alertTitle(alert, lang);
   const at = alert.time;
@@ -88,6 +97,7 @@ export function alertButtons(alert: HomemindAlert, lang: Lang): AlertButton[] {
     case 'escalation':
       return [alert.ask === 'confirm' ? b('take', "I'll take it", '我来') : b('claim', "I'll take it", '我来'), b('ack', 'Got it', '知道了'), open];
     case 'backup':
+    case 'group':
       return [open, dismiss];
     case 'batch':
       return [dismiss];
@@ -113,12 +123,13 @@ export function stillRelevant(alert: HomemindAlert, item: Item | null, memberId:
     case 'escalation':
       return !confirmed;
     case 'backup':
+    case 'group':
       return true;
   }
 }
 
 /** Notices only tell; they never push out an alert that asks for an answer. */
-const isNotice = (alert: HomemindAlert) => alert.kind === 'batch' || alert.kind === 'backup';
+const isNotice = (alert: HomemindAlert) => alert.kind === 'batch' || alert.kind === 'backup' || alert.kind === 'group';
 
 /**
  * The list after a new alert arrives: one alert that asks something per item (the newest), plus

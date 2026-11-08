@@ -24,6 +24,7 @@ import type { DemoClock } from './homemind/clock';
 import { applyChange } from './homemind/core';
 import type { CoreEvent } from './homemind/core';
 import { alertsForChange } from './homemind/alerts';
+import type { AlertDelivery } from './homemind/alerts';
 import { activeReminderFor, pendingRemindersFor, respondToReminder, tickReminders } from './homemind/reminders';
 import type { ReminderResponse, TickResult } from './homemind/reminders';
 import { startScheduler, stopScheduler } from './homemind/scheduler';
@@ -35,6 +36,7 @@ import { cancelCard, executeAction, expireCards, issueConfirmation } from './hom
 import type { ActionErrorCode, AdapterRegistry } from './homemind/actions';
 import { applySettings, parseSettingsPatch } from './homemind/settings';
 import { applyRuleRequest, parseRuleBody, prepareRuleNow, runRules } from './homemind/rules';
+import { afterGroupCard, applyGroupPolicy, considerSignUps, groupAutoAllowed, groupsView, parseGroupPolicyBody, requestGroupChange } from './homemind/groupClaims';
 import { KINDERGARTEN_GROUP, createSimulatedAdapters, postNextGroupMessage, servicesViewFor } from './homemind/fakes';
 import { createLlmClient, llmConfigFromEnv, llmStatus } from './homemind/llm';
 import type { LlmClient } from './homemind/llm';
@@ -50,7 +52,7 @@ import { groupMessageReport, handlePpmaCommand, preferenceReport, reminderReport
 import type { PpmaReport } from './homemind/ppmaMap';
 import type { LoadSource } from './homemind/store';
 import { ID_PATTERN } from './homemind/types';
-import type { HomemindState, Item, Lang, Member, PpmaStatus, StreamMessage } from './homemind/types';
+import type { GroupClaim, HomemindState, Item, Lang, Member, PpmaStatus, StreamMessage } from './homemind/types';
 import { redactItem, searchItems, viewFor } from './homemind/visibility';
 import { isSameOrigin } from './orbit';
 import { chatTurn, screenTurn } from '../src/lib/homemindSurfaces';
@@ -296,10 +298,11 @@ export function setHomemindHeartbeatMs(ms: number | undefined): void {
  * reminders follow the change in the same step (a confirmation closes its reminder for everyone), and
  * the change's own alerts go through quiet hours and batching with them.
  */
-async function commit(rt: Runtime, state: HomemindState, events: readonly CoreEvent[] = [], actorId?: string): Promise<void> {
+async function commit(rt: Runtime, state: HomemindState, events: readonly CoreEvent[] = [], actorId?: string, extraAlerts: readonly AlertDelivery[] = []): Promise<void> {
   const before = rt.state;
   const now = rt.clock.now();
-  const alerts = actorId ? alertsForChange(before, state, events, actorId, new Date(now).toISOString()) : [];
+  // `extraAlerts`: notices Homemind itself makes with the change (T7.4: "signed up in the group").
+  const alerts = [...(actorId ? alertsForChange(before, state, events, actorId, new Date(now).toISOString()) : []), ...extraAlerts];
   const ticked = tickReminders(state, now, alerts);
   rt.state = ticked.state;
   await rt.store.save(ticked.state);
@@ -438,6 +441,8 @@ async function confirmAction(ctx: Ctx): Promise<void> {
     { kind: 'tap', memberId: ctx.member.id, token: body.token as string | undefined },
     { adapters: adaptersOf(rt), key: actionKey(secret() as string), now: () => rt.clock.now() }
   );
+  // T7.4: a group claim or correction that ran puts its party and preparations on the board.
+  if (result.ok || result.code === 'action_failed') await afterGroupAction(rt, ctx.params[0]);
   if (result.ok) return json(ctx.response, 200, { ok: true, card: result.card, activityId: result.activity.id });
   if (result.code === 'action_failed') return fail(ctx.response, 502, 'action_failed', result.message, { card: result.card, activityId: result.activity.id });
   // "This changed. Here is the latest": the card as it is now, when the member may see it.
@@ -453,6 +458,44 @@ async function cancelAction(ctx: Ctx): Promise<void> {
   await commitCards(ctx.rt, result.state);
   json(ctx.response, 200, { ok: true, card: result.card, activityId: result.activity.id });
 }
+
+// --- group sign-up claims (T7.4) ----------------------------------------------------------------------
+
+/**
+ * After a group card ran (a claim or a correction, by a tap or at level 4): the party and preparations go
+ * on the board as one committed change, with the family's notice. Nothing for any other card.
+ */
+async function afterGroupAction(rt: Runtime, cardId: string): Promise<void> {
+  const card = rt.state.actionCards.find(c => c.id === cardId);
+  if (!card) return;
+  const done = afterGroupCard(rt.state, card, rt.clock.now(), rt.clock);
+  if (!done) return;
+  await commit(rt, done.state, done.events, undefined, done.alerts);
+  rt.hub.broadcast({ event: 'services.changed', data: {} });
+}
+
+/** Runs a waiting group card on its own (autonomy level 4). The guard in actions.ts decides; a refusal leaves it waiting. */
+async function autoRunGroupCard(rt: Runtime, cardId: string): Promise<void> {
+  const key = secret();
+  if (!key || !groupAutoAllowed(rt.state)) return;
+  await executeAction({ get: () => rt.state, set: state => commitCards(rt, state) }, cardId, { kind: 'auto' }, { adapters: adaptersOf(rt), key: actionKey(key), now: () => rt.clock.now() });
+  await afterGroupAction(rt, cardId);
+}
+
+/**
+ * New sign-ups in a group whose claims are on: record what was read, prepare the claim card, and post it
+ * at once when the group is set to post on its own. Returns the claims as they are afterwards.
+ */
+async function runGroupClaims(rt: Runtime): Promise<GroupClaim[]> {
+  const step = considerSignUps(rt.state, rt.clock.now(), adaptersOf(rt));
+  if (!step.changed) return [];
+  await commitCards(rt, step.state);
+  rt.hub.broadcast({ event: 'services.changed', data: {} });
+  for (const claim of step.claims) if (claim.status === 'waiting' && claim.cardId) await autoRunGroupCard(rt, claim.cardId);
+  return step.claims.map(c => (rt.state.groupClaims ?? []).find(x => x.id === c.id) ?? c);
+}
+
+const claimSummary = (c: GroupClaim) => ({ id: c.id, status: c.status, ...(c.reason ? { reason: c.reason } : {}), ...(c.choice ? { choice: c.choice } : {}) });
 
 // --- requests -----------------------------------------------------------------------------------------
 
@@ -859,6 +902,24 @@ async function screenshotHandler(ctx: Ctx, image: string, text: string): Promise
   );
 }
 
+/** `POST /rules {action: 'group-claims', groupId, enabled?, auto?}` (T7.4): parents only. */
+async function groupPolicyHandler(ctx: Ctx, body: Record<string, unknown>): Promise<void> {
+  const parsed = parseGroupPolicyBody(body);
+  if (!parsed.ok) throw new HttpError(400, 'invalid', parsed.message);
+  const { rt, member } = ctx;
+  const result = applyGroupPolicy(rt.state, parsed.value, member.id, rt.clock.now());
+  if (!result.ok) return fail(ctx.response, result.status, result.code, result.message);
+  if (result.changed) {
+    await commitCards(rt, result.state);
+    // The group area's autonomy level is a family setting too.
+    rt.hub.broadcast({ event: 'settings.changed', data: {} });
+    rt.hub.broadcast({ event: 'services.changed', data: {} });
+  }
+  // A sign-up posted before the claims were turned on is looked at now.
+  const claims = result.policy.enabled ? await runGroupClaims(rt) : [];
+  json(ctx.response, 200, { ok: true, changed: result.changed, policy: result.policy, claims: claims.map(claimSummary), ...(result.activityId ? { activityId: result.activityId } : {}) });
+}
+
 // --- handlers -----------------------------------------------------------------------------------------
 
 const MEMBER_VIEW = (m: Member) => ({ id: m.id, name: m.name, nameZh: m.nameZh, role: m.role, hasAccount: m.hasAccount, lang: m.lang });
@@ -950,6 +1011,8 @@ const routes: Route[] = [
         ...(ppmaMemory ? { ppmaMemory } : {}),
         // The simulated services (T7.2); the inbox is this member's own mailbox only.
         ...(name === 'services' ? { services: servicesViewFor(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()), demo: demo() } : {}),
+        // T7.4: the group's claim setting and what Homemind signed up for (family-wide).
+        ...(name === 'services' || name === 'my-day' ? { groups: groupsView(ctx.rt.state) } : {}),
         ...(name === 'rules' ? { demo: demo() } : {}),
         confirmations
       });
@@ -1069,7 +1132,9 @@ const routes: Route[] = [
     auth: true,
     // Create a weekly pizza rule, or turn one on or off. Every rule here spends money, so parents only.
     handler: async ctx => {
-      const parsed = parseRuleBody(await readBody(ctx.request));
+      const body = await readBody(ctx.request);
+      if (body.action === 'group-claims') return groupPolicyHandler(ctx, body);
+      const parsed = parseRuleBody(body);
       if (!parsed.ok) throw new HttpError(400, 'invalid', parsed.message);
       const { rt, member } = ctx;
       const result = applyRuleRequest(rt.state, parsed.value, member.id, rt.clock.now());
@@ -1080,6 +1145,25 @@ const routes: Route[] = [
         await applyRules(rt);
       }
       json(ctx.response, 200, { ok: true, changed: result.changed, rule: result.rule, ...(result.activityId ? { activityId: result.activityId } : {}) });
+    }
+  },
+  {
+    method: 'POST',
+    pattern: /^\/group-claims\/([a-z0-9][a-z0-9_-]{0,63})\/change$/,
+    auth: true,
+    // T7.4: "Change" on a claim: a correction is posted in the simulated group (at level 4 at once, else after a tap).
+    handler: async ctx => {
+      const body = pick(await readBody(ctx.request), ['option'], 'change');
+      const option = idOf(body.option, 'option');
+      const { rt } = ctx;
+      const result = requestGroupChange(rt.state, ctx.params[0], option, ctx.member.id, rt.clock.now(), adaptersOf(rt));
+      if (!result.ok) return fail(ctx.response, result.status, result.code, result.message);
+      await commitCards(rt, result.state);
+      rt.hub.broadcast({ event: 'services.changed', data: {} });
+      await autoRunGroupCard(rt, result.card.id);
+      const claim = (rt.state.groupClaims ?? []).find(c => c.id === result.claim.id) ?? result.claim;
+      const card = rt.state.actionCards.find(c => c.id === result.card.id) ?? result.card;
+      json(ctx.response, 200, { ok: true, claim: claimSummary(claim), card: { id: card.id, status: card.status }, posted: card.status === 'executed' });
     }
   },
   {
@@ -1139,7 +1223,9 @@ const routes: Route[] = [
       await rt.store.save(posted.state);
       rt.hub.broadcast({ event: 'services.changed', data: {} });
       reportToPpma(rt, [groupMessageReport(posted.message, KINDERGARTEN_GROUP)]);
-      json(ctx.response, 200, { ok: true, message: posted.message, remaining: posted.remaining });
+      // T7.4: a sign-up in a group whose claims are on is read, and claimed or stopped on, at once.
+      const claims = await runGroupClaims(rt);
+      json(ctx.response, 200, { ok: true, message: posted.message, remaining: posted.remaining, claims: claims.map(claimSummary) });
     }
   },
   {

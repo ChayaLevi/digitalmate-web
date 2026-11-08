@@ -163,7 +163,8 @@ describe('Scene 4: availability on the screens', () => {
     const openRow = (fam.data.open as Array<{ id: string; meta: string }>).find(r => r.id === 'pickup-tuesday')!;
     expect(openRow.meta).toContain('Mom is unavailable (Wedding)');
     const zh = parse(screenTurn('family', input(s1, 'dad', 'zh')).jsonl);
-    expect(JSON.stringify(zh.data)).toContain('妈妈那时没空（Wedding）');
+    // Since T7.4 the core keeps a created item's `titleZh`, so the Chinese screen names the event in Chinese.
+    expect(JSON.stringify(zh.data)).toContain('妈妈那时没空（婚礼）');
   });
 
   it('puts the wedding on the calendar with who is unavailable', () => {

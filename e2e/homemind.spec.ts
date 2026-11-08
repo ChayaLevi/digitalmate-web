@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { APIRequestContext, Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { addDays, localParts, zonedToUtc } from '../server/homemind/clock';
 
 // T3.2: the Family tab against the Homemind-enabled dev server (playwright.config.ts, port 5176).
 // The tests share one state file, so they run one after the other and each starts from a reset.
@@ -876,6 +877,96 @@ test('Scene 4: the wedding marks Mom away, her pickup is flagged, the Friday piz
     await expect(family(mom)).toContainText('Friday pizza night: order: done (simulated)');
     // Nobody tapped the babysitter card, so nothing was sent.
     expect((await debugState(request)).actionCards.find(c => c.adapter === 'babysitter' && c.status === 'pending')).toBeTruthy();
+  } finally {
+    await momContext.close();
+    await dadContext.close();
+  }
+});
+
+// T7.4: Scene 2 as scripted: a 接龙 sign-up arrives in the simulated group, Homemind claims apples and tells
+// the family, "Change" switches to cake from the saved preference (with its reason), and the preparations follow.
+test('Scene 2: a 接龙 sign-up arrives, Homemind claims apples and alerts the family, Change switches to cake from the saved preference, preparations follow', async ({ browser, request }) => {
+  const token = await momToken(request);
+  // Start on the coming Monday 10:00 in the family's zone, so Thursday's party and Wednesday's deadline are ahead.
+  const state = (await (await request.get(`${BASE}/api/homemind/debug/state`)).json()) as { family: { timezone: string }; clockOffsetMs: number };
+  const zone = state.family.timezone;
+  const today = localParts(Date.now() + state.clockOffsetMs, zone).date;
+  let monday = 0;
+  for (let d = 1; d <= 8 && !monday; d++) {
+    const date = addDays(today, d);
+    if (new Date(`${date}T12:00:00Z`).getUTCDay() === 1) monday = zonedToUtc(date, '10:00', zone);
+  }
+  await jumpTo(request, token, monday);
+
+  const momContext = await browser.newContext();
+  const dadContext = await browser.newContext();
+  try {
+    const mom = await momContext.newPage();
+    const dad = await dadContext.newPage();
+    await openFamily(mom, 'en', 'mom');
+    await openFamily(dad, 'zh', 'dad');
+    await expect(family(mom)).toHaveAttribute('data-member', 'mom');
+    await expect(dad.locator('[data-stream="live"]')).toBeVisible();
+    const momSurface = mom.locator('.a2ui-surface');
+
+    // 1. Off by default. Mom turns it on for the group: food only, posted on its own (level 4, simulated group).
+    await family(mom).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'Services', exact: true }).click();
+    await expect(momSurface).toContainText('Off. Homemind does not sign the family up for anything here.');
+    await momSurface.getByRole('button', { name: 'Turn on: post on its own (level 4)' }).click();
+    await expect(momSurface).toContainText('On, approved by Mom');
+    await expect(momSurface).toContainText('Posts a claim on its own (level 4, simulated group only).');
+
+    // 2. The teacher's message, then the 接龙 sign-up, arrive in the simulated group. Homemind claims apples there.
+    await momSurface.getByRole('button', { name: /^Post next group message \(demo\) \(3\)/ }).click();
+    await expect(momSurface).toContainText('各位家长好');
+    await momSurface.getByRole('button', { name: /^Post next group message \(demo\) \(2\)/ }).click();
+    await expect(momSurface).toContainText('3. 诺娅妈妈 苹果');
+    await expect(momSurface).toContainText('posted by Homemind · claim');
+
+    // 3. The family is told: Dad's window gets the notice without a reload, labelled simulated.
+    const dadNotice = dad.locator('.hm-alert[data-kind="group"]');
+    await expect(dadNotice).toContainText('Homemind 已替家里认领苹果：幼儿园秋季美食派对。（模拟群）');
+
+    // 4. My day: what was signed up for, read by fixed rules, and the choices to change to. Cake first, with the reason.
+    await family(mom).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'My day', exact: true }).click();
+    const claimRow = mom.locator('[data-task-id="claim-claim-grp-msg-2"]');
+    await expect(claimRow).toContainText('Signed up: 苹果 (apples) · Kindergarten autumn food party');
+    await expect(claimRow).toContainText('read by fixed rules, not the model');
+    await expect(claimRow.locator('.hm-sim-badge')).toHaveText('Simulated');
+    const cakeRow = mom.locator('[data-task-id="alt-claim-grp-msg-2-cake"]');
+    await expect(cakeRow).toContainText('Saved preference: “For kindergarten parties, bake a cake” because Noa enjoys baking it with us the most');
+    await expect(cakeRow).toContainText('someone has to make it');
+    await expect(mom.locator('.hm-task', { hasText: 'Buy apples for the kindergarten party (8 children)' })).toHaveAttribute('data-state', 'open');
+    await claimRow.getByRole('button', { name: /^Why\?/ }).click();
+    await expect(family(mom)).toContainText('fixed rules, not the model');
+    await expect(family(mom)).toContainText('(Source: a Homemind rule)');
+    await noOverflow(mom);
+    expect(await seriousIssues(mom)).toEqual([]);
+    await mom.screenshot({ path: test.info().outputPath('scene2-claim-en.png'), fullPage: true });
+
+    // 5. Mom taps Change on cake: a correction is posted, apples leave the board, the cake preparations arrive.
+    await cakeRow.getByRole('button', { name: /^Change/ }).click();
+    await expect(family(mom)).toContainText('Change sent to the simulated group.');
+    await expect(claimRow).toContainText('Signed up: 蛋糕 (cake)');
+    await expect(claimRow).toContainText('changed');
+    await expect(mom.locator('.hm-task', { hasText: 'Make the cake for the party (8 children)' })).toHaveAttribute('data-state', 'open');
+    await expect(mom.locator('.hm-task', { hasText: 'Buy apples for the kindergarten party' })).toHaveCount(0);
+    await expect(dad.locator('.hm-alert[data-kind="group"]').first()).toContainText('接龙已从苹果改为蛋糕');
+
+    // 6. Dad's board in Chinese: the new preparations ask "Who's taking this?".
+    await family(dad).getByRole('navigation', { name: '家庭页面' }).getByRole('button', { name: '我的一天', exact: true }).click();
+    await expect(dad.locator('[data-task-id="claim-claim-grp-msg-2"]')).toContainText('已认领：蛋糕 · 幼儿园秋季美食派对');
+    const dadBake = dad.locator('.hm-task', { hasText: '为派对做蛋糕（8个小朋友）' });
+    await expect(dadBake).toHaveAttribute('data-state', 'open');
+    await expect(dadBake).toContainText('谁来负责？');
+    await noOverflow(dad);
+    expect(await seriousIssues(dad)).toEqual([]);
+    await dad.screenshot({ path: test.info().outputPath('scene2-change-zh.png'), fullPage: true });
+
+    // The correction is in the simulated group, and the apples preparations were removed (kept for Undo).
+    const after = (await (await request.get(`${BASE}/api/homemind/debug/state`)).json()) as { services: { group: { messages: Array<{ text: string; replyKind?: string }> } }; items: Array<{ title: string; status: string }> };
+    expect(after.services.group.messages.at(-1)).toMatchObject({ replyKind: 'correction', text: '更正：诺娅妈妈认领改为蛋糕（原来是苹果）' });
+    expect(after.items.filter(i => i.title.startsWith('Buy apples')).map(i => i.status)).toEqual(['cancelled']);
   } finally {
     await momContext.close();
     await dadContext.close();

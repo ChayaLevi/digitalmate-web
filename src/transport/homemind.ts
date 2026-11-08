@@ -235,6 +235,19 @@ export async function runHomemindAction(action: A2uiAction, token: string): Prom
     const result = await call<MutationResult>('/api/homemind/preferences', { method: 'POST', token, body: JSON.stringify({ id: args.preferenceId, remove: true }) });
     return { kind: 'mutation', result, verb };
   }
+  if (verb === 'group-policy') {
+    // T7.4: turn sign-up claims in a group on or off, or choose whether they post on their own. Parents only.
+    const body: Record<string, unknown> = { action: 'group-claims', groupId: args.groupId };
+    if (typeof args.enabled === 'boolean') body.enabled = args.enabled;
+    if (typeof args.auto === 'boolean') body.auto = args.auto;
+    const result = await call<MutationResult>('/api/homemind/rules', { method: 'POST', token, body: JSON.stringify(body) });
+    return { kind: 'mutation', result, verb };
+  }
+  if (verb === 'group-change') {
+    // T7.4: "Change" on a claim: a correction in the simulated group. Parents only; the server checks the choice.
+    const result = await call<MutationResult>(`/api/homemind/group-claims/${id(args.claimId)}/change`, { method: 'POST', token, body: JSON.stringify({ option: args.option }) });
+    return { kind: 'mutation', result, verb };
+  }
   if (verb === 'post-group-message') {
     // Demo only (`HOMEMIND_DEMO=1`): the next sample message arrives in the simulated kindergarten group.
     const result = await call<MutationResult>('/api/homemind/demo/post-group-message', { method: 'POST', token, body: '{}' });

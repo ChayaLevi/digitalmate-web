@@ -164,3 +164,30 @@ describe('the client', () => {
     expect(applyItemChange([openAlert], 'pickup-today', { ...mine, ownership: { state: 'assigned', ownerId: 'mom', confirmed: true } }, 'dad')).toEqual([]);
   });
 });
+
+describe('group sign-up notices (T7.4)', () => {
+  const group = (over: Partial<HomemindAlert> = {}) =>
+    alert({ id: 'claim-1.claimed.group', kind: 'group', byId: 'homemind', byName: 'Homemind', title: 'Kindergarten autumn food party', titleZh: '幼儿园秋季美食派对', simulated: true, groupChoice: 'apples', groupChoiceZh: '苹果', ...over });
+
+  it('says what Homemind signed up for, labelled simulated, in both languages', () => {
+    expect(alertText(group(), 'en')).toBe('Homemind signed the family up for apples: Kindergarten autumn food party. (Simulated group)');
+    expect(alertText(group(), 'zh')).toBe('Homemind 已替家里认领苹果：幼儿园秋季美食派对。（模拟群）');
+    expect(alertText(group({ groupFrom: 'apples', groupFromZh: '苹果', groupChoice: 'cake', groupChoiceZh: '蛋糕' }), 'zh')).toBe('接龙已从苹果改为蛋糕：幼儿园秋季美食派对。（模拟群）');
+  });
+
+  it('is a notice: Open and Dismiss, it stays, and it never pushes out an alert that asks for an answer', () => {
+    expect(alertButtons(group(), 'en').map(b => b.verb)).toEqual(['open', 'dismiss']);
+    expect(stillRelevant(group(), item(state(), 'pickup-today'), 'mom')).toBe(true);
+    expect(stillRelevant(group(), null, 'mom')).toBe(false);
+    const asks = alert();
+    const list = addAlert([asks], group({ itemId: asks.itemId }));
+    expect(list.map(a => a.kind)).toEqual(['group', 'assigned']);
+  });
+
+  it('the stream parser keeps a group notice only with what was chosen and the simulated label', () => {
+    expect(toAlert({ ...group() } as unknown as Record<string, unknown>)).toMatchObject({ kind: 'group', groupChoice: 'apples', groupChoiceZh: '苹果', simulated: true });
+    expect(toAlert({ ...group(), simulated: undefined } as unknown as Record<string, unknown>)).toBeNull();
+    expect(toAlert({ ...group(), groupChoice: undefined } as unknown as Record<string, unknown>)).toBeNull();
+    expect(toAlert({ ...alert(), groupChoice: 'apples' } as unknown as Record<string, unknown>)).not.toHaveProperty('groupChoice');
+  });
+});

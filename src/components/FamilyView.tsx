@@ -491,6 +491,10 @@ export function FamilyView({
             ? tr('Cancelled. Nothing happened.', '已取消，什么都没发生。')
           : verb === 'rule-toggle'
             ? tr('Rule updated.', '规则已更新。')
+          : verb === 'group-policy'
+            ? tr('Group setting saved.', '群设置已保存。')
+          : verb === 'group-change'
+            ? tr('Change sent to the simulated group. See the sign-up and the new preparations.', '更改已发到模拟群。请看接龙和新的准备事项。')
           : verb === 'run-rule'
             ? tr('The rule looked at the calendar. See the result here and on My day.', '规则已查看日程。结果见此处和“我的一天”。')
           : verb === 'remove-preference'

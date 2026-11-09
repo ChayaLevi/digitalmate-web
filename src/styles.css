@@ -7253,8 +7253,8 @@ a {
 .hm-open:focus-visible { text-decoration-color: currentColor; }
 
 .hm-family { display: flex; flex-direction: column; gap: 10px; padding-bottom: 16px; min-width: 0; }
-.hm-subnav { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 4px; scrollbar-width: none; }
-.hm-subnav::-webkit-scrollbar { display: none; }
+/* Wraps instead of scrolling sideways: a hidden scroll gave no sign that Services, Activity and Settings exist. */
+.hm-subnav { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 4px; }
 .hm-subnav button {
   flex: 0 0 auto;
   min-height: 34px;

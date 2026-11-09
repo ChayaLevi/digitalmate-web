@@ -197,6 +197,14 @@ for (const lang of ['en', 'zh'] as const) {
     await expect(family(page)).toHaveAttribute('data-member', 'mom');
     const names = lang === 'zh' ? ['我的一天', '家庭', '日历', '搜索', '规则', '记忆', '服务', '动态', '设置', '+ 添加'] : ['My day', 'Family', 'Calendar', 'Search', 'Rules', 'Memory', 'Services', 'Activity', 'Settings', '+ Add'];
     const nav = family(page).getByRole('navigation', { name: lang === 'zh' ? '家庭页面' : 'Family screens' });
+    // Every screen button is in view without sideways scrolling: a hidden scroll hid the last ones.
+    const navBox = await nav.boundingBox();
+    expect(navBox).not.toBeNull();
+    for (const name of names) {
+      const box = await nav.getByRole('button', { name, exact: true }).boundingBox();
+      expect(box, name).not.toBeNull();
+      expect(box!.x + box!.width, name).toBeLessThanOrEqual(navBox!.x + navBox!.width + 1);
+    }
     for (const name of names) {
       await nav.getByRole('button', { name, exact: true }).click();
       await expect(nav.getByRole('button', { name, exact: true })).toHaveAttribute('aria-current', 'page');

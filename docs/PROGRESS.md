@@ -425,6 +425,14 @@ Template (copy for each task):
 - Manual check:
 ```
 
+### Fix: Family screen buttons wrap instead of a hidden sideways scroll (2026-11-09)
+**Built:** `src/styles.css` `.hm-subnav` wraps (`flex-wrap: wrap`) instead of `overflow-x: auto` with a hidden scrollbar. At 390 px the strip showed only half of "Memory", with no sign that Services, Activity, Settings and + Add exist. Now it takes 2 to 3 rows. `e2e/homemind.spec.ts` (the 390 px test): every screen button must lie inside the strip's width.
+**Test results:** `npm test` 920 passed, 1 skipped (one earlier run had 1 failure, gone in the next 2 runs: the known load-sensitive tests); `npx tsc --noEmit` clean; `npm run test:e2e` **68 passed** (11.2 min). Screenshot at 390 px checked by eye.
+**How to verify:**
+- Commands: `npx playwright test e2e/homemind.spec.ts -g "390 px"`
+- Expected output: 2 passed.
+- Manual check: `npm run dev`, Family tab at 390 px: all nine screens and "+ Add" are visible without scrolling.
+
 ### T8.1 A day gone wrong: done (2026-11-09)
 **Built:**
 - `server/homemind/situations.ts` (new): `planSituation`, `startSituation`, `applySuggestions` (one or `'all'`), `dismissSuggestion`, `undoSuggestion`, `situationsView`, `situationViewFor`, `PICKUP_PATTERN`.

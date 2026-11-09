@@ -142,14 +142,15 @@ const T = {
   memory: { en: 'What we know', zh: '我们了解的' },
   activity: { en: 'Activity', zh: '动态' },
   settings: { en: 'Settings', zh: '设置' },
-  needsYou: { en: 'Needs your answer', zh: '等你回复' },
   today: { en: 'Today', zh: '今天' },
   comingUp: { en: 'Coming up', zh: '接下来' },
   nothingToday: { en: 'Nothing for you today.', zh: '今天没有需要你处理的事。' },
+  waitingElsewhen: { en: 'Still waiting: no date or not this week', zh: '仍在等待：没有日期或不在本周' },
   nothingHere: { en: 'Nothing here yet.', zh: '这里还没有内容。' },
   cards: { en: 'Waiting for your tap', zh: '等你点一下' },
   whoTakes: { en: "Who's taking this?", zh: '谁来负责？' },
   noOwner: { en: 'No owner yet', zh: '还没有负责人' },
+  ownerNobody: { en: 'Nobody (an event can have only participants)', zh: '不指定（活动可以只有参与者）' },
   proposed: { en: 'Proposed', zh: '待确认' },
   critical: { en: 'Important', zh: '重要' },
   parentsOnly: { en: 'Parents only', zh: '仅限家长' },
@@ -359,18 +360,35 @@ function whenLabel(item: Item, today: string, zone: string, lang: HomemindLang):
 
 // --- item rows --------------------------------------------------------------------------------------
 
-const toneOf = (item: Item): TaskTone =>
-  item.status === 'done' ? 'success' : item.status === 'proposed' ? 'accent' : item.importance === 'critical' ? 'danger' : item.ownership.state === 'assigned' ? 'muted' : 'warning';
+/**
+ * Whether a live item is waiting for someone to take it. An event nobody was asked about (a wedding,
+ * a class party) has participants, not an owner; only an important one (a child's pickup) needs one.
+ * The same line reminders draw (`askFor` in server/homemind/reminders.ts). Tasks and preparations
+ * always need someone.
+ */
+export function needsOwner(item: Item): boolean {
+  if (item.status !== 'open') return false;
+  const o = item.ownership;
+  if (o.state === 'open') return true;
+  return o.state === 'none' && (item.type !== 'event' || item.importance === 'critical');
+}
 
-function stateOf(item: Item): TaskState {
+/** An open event with nobody to own it and nobody asked: it shows who it is for instead. */
+const participantsOnly = (item: Item) => item.status === 'open' && item.ownership.state === 'none' && !needsOwner(item);
+
+const toneOf = (item: Item): TaskTone =>
+  item.status === 'done' ? 'success' : item.status === 'proposed' ? 'accent' : item.importance === 'critical' ? 'danger' : item.ownership.state === 'assigned' || participantsOnly(item) ? 'muted' : 'warning';
+
+function stateOf(item: Item): TaskState | '' {
   if (item.status === 'done') return 'done';
   if (item.status === 'proposed') return 'proposed';
   if (item.ownership.state === 'assigned') return item.ownership.confirmed ? 'confirmed' : 'assigned';
-  return 'open';
+  return participantsOnly(item) ? '' : 'open';
 }
 
 function ownerLabelOf(item: Item, view: HomemindViewData, lang: HomemindLang): string {
   const o = item.ownership;
+  if (participantsOnly(item)) return item.forMemberIds.map(id => (id === view.memberId ? hx(lang, 'you') : nameOf(memberOf(view.family, id), lang))).filter(Boolean).join(lang === 'zh' ? '、' : ', ');
   if (o.state === 'assigned') return o.ownerId === view.memberId ? hx(lang, 'you') : nameOf(memberOf(view.family, o.ownerId), lang);
   return o.state === 'open' ? hx(lang, 'whoTakes') : hx(lang, 'noOwner');
 }
@@ -406,8 +424,8 @@ const pendingFor = (item: Item, view: HomemindViewData) => (item.status === 'ope
  * The row's buttons. When a reminder waits for this member, the answers it offers are on the row
  * too, the same ones as on the alert: "I'll take it" (from someone else), "Got it", "Remind me later".
  */
-function itemActions(item: Item, view: HomemindViewData, lang: HomemindLang): A2uiAction[] {
-  const base = boardActions(item, view, lang);
+function itemActions(item: Item, view: HomemindViewData, lang: HomemindLang, offerOwner = false): A2uiAction[] {
+  const base = participantsOnly(item) && !offerOwner ? [] : boardActions(item, view, lang);
   const pending = pendingFor(item, view);
   if (!pending) return base;
   const me = view.memberId;
@@ -452,7 +470,8 @@ function openAction(item: Item, view: HomemindViewData, lang: HomemindLang): A2u
   return { id: `homemind.edit:${item.id}`, label: hx(lang, 'edit'), variant: 'ghost', kind: 'homemind', args: { verb: 'edit', itemId: item.id } };
 }
 
-function taskRow(item: Item, view: HomemindViewData, lang: HomemindLang, today: string): TaskRow {
+/** `offerOwner`: the item's own screen, where an event without an owner can still be given one. */
+function taskRow(item: Item, view: HomemindViewData, lang: HomemindLang, today: string, offerOwner = false): TaskRow {
   const zone = view.family.timezone;
   const meta = [
     whenLabel(item, today, zone, lang),
@@ -474,7 +493,7 @@ function taskRow(item: Item, view: HomemindViewData, lang: HomemindLang, today: 
     state: stateOf(item),
     tone: item.stale ? 'warning' : toneOf(item),
     ...(item.source.simulated ? { simulated: true } : {}),
-    actions: itemActions(item, view, lang),
+    actions: itemActions(item, view, lang, offerOwner),
     ...withOpen(openAction(item, view, lang))
   };
 }
@@ -588,14 +607,31 @@ function myDay(input: HomemindScreenData): HomemindTurn {
   const today = dateParts(input.now, zone)?.date ?? '';
   const weekEnd = addDaysToDate(today, 7);
   const dayOf = (item: Item) => (item.start ? dateParts(item.start, zone)?.date : undefined);
-  const mine = (item: Item) => (item.ownership.state === 'assigned' && item.ownership.ownerId === view.memberId) || item.forMemberIds.includes(view.memberId);
-  const items = view.items.filter(live).sort(byStart);
+  // The last day an item covers: a wedding from Tuesday to Saturday is on each of those days. An end at
+  // midnight belongs to the day before.
+  const lastDayOf = (item: Item) => (item.end && Date.parse(item.end) > Date.parse(item.start ?? '') ? dateParts(new Date(Date.parse(item.end) - 1).toISOString(), zone)?.date : undefined) ?? dayOf(item);
+  const me = memberOf(view.family, view.memberId);
+  const childIds = new Set(view.family.members.filter(m => m.role === 'child').map(m => m.id));
+  const mine = (item: Item) =>
+    (item.ownership.state === 'assigned' && item.ownership.ownerId === view.memberId) ||
+    item.forMemberIds.includes(view.memberId) ||
+    // Not for anyone in particular: it is the whole family's.
+    (item.forMemberIds.length === 0 && item.ownership.state === 'none') ||
+    // A child has no screen of their own: their day is on the parents', until someone owns the item;
+    // then it is on the owner's day.
+    (me?.role === 'parent' && item.ownership.state !== 'assigned' && item.forMemberIds.some(id => childIds.has(id)));
+  // Waiting for someone: to be approved, to be taken, or for this member's "I'm on it".
+  const waiting = (item: Item) =>
+    item.status === 'proposed' || needsOwner(item) || (item.ownership.state === 'assigned' && item.ownership.ownerId === view.memberId && !item.ownership.confirmed);
+  const items = view.items.filter(live).filter(i => waiting(i) || mine(i)).sort(byStart);
 
-  const needs = items.filter(i => i.status === 'proposed' || i.ownership.state !== 'assigned' || (i.ownership.ownerId === view.memberId && !i.ownership.confirmed));
-  const taken = new Set(needs.map(i => i.id));
-  const rest = items.filter(i => !taken.has(i.id) && mine(i));
-  const todays = rest.filter(i => dayOf(i) === today);
-  const later = rest.filter(i => { const d = dayOf(i); return d !== undefined && d > today && d <= weekEnd; });
+  // By day, so Today is really today: what waits for someone sits on its own day, with its buttons.
+  const todays = items.filter(i => { const d = dayOf(i); return d !== undefined && d <= today && (lastDayOf(i) ?? d) >= today; });
+  const shown = new Set(todays.map(i => i.id));
+  const later = items.filter(i => { const d = dayOf(i); return !shown.has(i.id) && d !== undefined && d > today && d <= weekEnd; });
+  for (const i of later) shown.add(i.id);
+  // Still waiting with no date, from an earlier day, or after this week: listed last, never lost.
+  const elsewhen = items.filter(i => !shown.has(i.id) && waiting(i));
 
   const cards = pendingCards(view, lang, input.now, input.confirmations);
   const children: A2uiComponent[] = [];
@@ -606,9 +642,9 @@ function myDay(input: HomemindScreenData): HomemindTurn {
   children.push(...cards.children);
   sourceChangeBlocks(input, children, data);
   if (input.groups) groupClaimBlocks(input, 'my-day', children, data);
-  section(children, data, 'needs', hx(lang, 'needsYou'), needs.map(i => taskRow(i, view, lang, today)));
   section(children, data, 'today', hx(lang, 'today'), todays.map(i => taskRow(i, view, lang, today)), hx(lang, 'nothingToday'));
   section(children, data, 'later', hx(lang, 'comingUp'), later.map(i => taskRow(i, view, lang, today)));
+  section(children, data, 'waiting', hx(lang, 'waitingElsewhen'), elsewhen.map(i => taskRow(i, view, lang, today)));
   children.push({ id: 'actions', component: 'ActionBar', actions: [{ id: 'homemind.add', label: hx(lang, 'add'), variant: 'secondary', kind: 'homemind', args: { verb: 'add' } }] });
   return turn('my-day', hx(lang, 'myDay'), nameOf(memberOf(view.family, view.memberId), lang), children, data);
 }
@@ -618,7 +654,7 @@ function familyScreen(input: HomemindScreenData): HomemindTurn {
   const zone = view.family.timezone;
   const today = dateParts(input.now, zone)?.date ?? '';
   const items = view.items.filter(live).sort(byStart);
-  const open = items.filter(i => i.status === 'open' && i.ownership.state !== 'assigned');
+  const open = items.filter(needsOwner);
   const unconfirmed = items.filter(i => i.status === 'open' && i.ownership.state === 'assigned' && !i.ownership.confirmed);
   const proposed = items.filter(i => i.status === 'proposed');
   const todayCount = items.filter(i => i.start && dateParts(i.start, zone)?.date === today).length;
@@ -1122,7 +1158,7 @@ function editScreen(input: HomemindScreenData): HomemindTurn {
   const data: Record<string, unknown> = {};
   if (item) {
     // The item itself, with its usual buttons (claim, assign, I'm on it...), so ownership is changed here too.
-    const row: TaskRow = taskRow(item, view, lang, today);
+    const row: TaskRow = taskRow(item, view, lang, today, true);
     delete row.open;
     children.push(taskList('this', hx(lang, 'thisItem'), '/this'));
     data.this = [row];
@@ -1167,7 +1203,7 @@ function editScreen(input: HomemindScreenData): HomemindTurn {
       name: 'owner',
       title: hx(lang, 'fOwner'),
       default: 'none',
-      options: [{ value: 'none', label: hx(lang, 'noOwner') }, ...owners.map(m => ({ value: m.id, label: m.id === me.id ? `${nameOf(m, lang)} (${hx(lang, 'you')})` : nameOf(m, lang) }))]
+      options: [{ value: 'none', label: hx(lang, 'ownerNobody') }, ...owners.map(m => ({ value: m.id, label: m.id === me.id ? `${nameOf(m, lang)} (${hx(lang, 'you')})` : nameOf(m, lang) }))]
     });
   }
   children.push({ id: 'f-important', component: 'Toggle', name: 'important', label: hx(lang, 'fImportant'), default: item?.importance === 'critical' });
@@ -1222,7 +1258,7 @@ function itemScreen(input: HomemindScreenData): HomemindTurn {
     ...(item.notes ? [{ label: hx(lang, 'dNotes'), value: item.notes, tone: 'muted' }] : []),
     { label: hx(lang, 'dSeen'), value: item.visibility === 'parents' ? hx(lang, 'parentsOnly') : hx(lang, 'dFamily'), tone: 'muted' }
   ];
-  const row: TaskRow = taskRow(item, view, lang, today);
+  const row: TaskRow = taskRow(item, view, lang, today, true);
   delete row.open;
   const children: A2uiComponent[] = [
     taskList('this', hx(lang, 'thisItem'), '/this'),

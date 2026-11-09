@@ -596,7 +596,12 @@ test('screenshot (T5.3): Mom sends the 接龙 screenshot in chat; proposed items
     await expect(partyRow).toBeVisible();
     await expect(partyRow).toContainText('待确认');
     await partyRow.getByRole('button', { name: /^确认添加/ }).first().dispatchEvent('click'); // see the note on dispatchEvent above
-    await expect(dad.locator('[data-task-id]', { hasText: '秋季水果派对' }).first()).not.toContainText('待确认');
+    // Approved, the party is an event with participants only: it leaves the board's lists; its
+    // preparation is what waits for someone ("谁来负责？").
+    await expect(dad.locator('[data-task-id]', { hasText: '秋季水果派对' })).toHaveCount(0);
+    const fruitRow = dad.locator('[data-task-id]', { hasText: '切好装盒的水果' }).first();
+    await expect(fruitRow).toHaveAttribute('data-state', 'open');
+    await expect(fruitRow).not.toContainText('待确认');
     expect(await seriousIssues(dad)).toEqual([]);
     await dad.screenshot({ path: test.info().outputPath('screenshot-approved-zh.png'), fullPage: true });
 

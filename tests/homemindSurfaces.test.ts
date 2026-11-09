@@ -109,7 +109,7 @@ describe('language', () => {
 describe('My day, Scene 1', () => {
   it("offers 'I'll take it' and 'Assign to Dad' on the open pickup, to Mom", () => {
     const surface = parse(screenTurn('my-day', input(seed(), 'mom', 'en')).jsonl);
-    const rows = (surface.data.needs as Array<{ id: string; ownerLabel: string; state: string; tone: string; meta: string; actions: Array<{ label: string; args: Record<string, unknown> }> }>) ?? [];
+    const rows = (surface.data.today as Array<{ id: string; ownerLabel: string; state: string; tone: string; meta: string; actions: Array<{ label: string; args: Record<string, unknown> }> }>) ?? [];
     const pickup = rows.find(r => r.id === 'pickup-today')!;
     expect(pickup.state).toBe('open');
     expect(pickup.ownerLabel).toBe('No owner yet');
@@ -124,7 +124,7 @@ describe('My day, Scene 1', () => {
     const s0 = seed();
     const s1 = apply(s0, { kind: 'assign', itemId: 'pickup-today', version: item(s0, 'pickup-today').version, ownerId: 'dad' }, 'mom');
     const dad = parse(screenTurn('my-day', input(s1, 'dad', 'en')).jsonl);
-    const dadRow = (dad.data.needs as Array<{ id: string; state: string; ownerLabel: string; actions: Array<{ label: string }> }>).find(r => r.id === 'pickup-today')!;
+    const dadRow = (dad.data.today as Array<{ id: string; state: string; ownerLabel: string; actions: Array<{ label: string }> }>).find(r => r.id === 'pickup-today')!;
     expect(dadRow.state).toBe('assigned');
     expect(dadRow.ownerLabel).toBe('You');
     expect(dadRow.actions.map(a => a.label)).toEqual(["I'm on it", 'Hand off']);
@@ -141,6 +141,99 @@ describe('My day, Scene 1', () => {
     const surface = parse(screenTurn('my-day', input(seed(), 'maya', 'en')).jsonl);
     const all = actionsOf(surface).map(a => a.label);
     expect(all.some(l => l.startsWith('Assign to'))).toBe(false);
+  });
+});
+
+describe('My day by day, and events without an owner', () => {
+  type Row = { id: string; title: string; ownerLabel: string; state: string; tone: string; actions: Array<{ label: string }> };
+  const rows = (surface: A2uiSurface, id: string) => (surface.data[id] as Row[] | undefined) ?? [];
+  const ids = (surface: A2uiSurface, id: string) => rows(surface, id).map(r => r.title);
+  // Shanghai is UTC+8: 16:00 UTC the day before is local midnight.
+  const at = (date: string, hour: number) => new Date(Date.parse(`${date}T00:00:00+08:00`) + hour * 3600_000).toISOString();
+
+  function withItems(): HomemindState {
+    let s = seed();
+    // A wedding from Wednesday (today) to Friday: participants only.
+    s = apply(s, { kind: 'create', item: { type: 'event', title: 'Wedding', start: at('2026-11-04', 12), end: at('2026-11-06', 23), forMemberIds: ['mom', 'dad'] } as never }, 'mom');
+    // A class party for Noa on Friday: participants only, still on a parent's day.
+    s = apply(s, { kind: 'create', item: { type: 'event', title: 'Class party', start: at('2026-11-06', 10), forMemberIds: ['noa'] } as never }, 'dad');
+    // Tasks nobody took yet: today, on Saturday, in two weeks, and with no date.
+    s = apply(s, { kind: 'create', item: { type: 'task', title: 'Sign the form', start: at('2026-11-04', 0), end: at('2026-11-05', 0), allDay: true } as never }, 'mom');
+    s = apply(s, { kind: 'create', item: { type: 'task', title: 'Buy a gift', start: at('2026-11-07', 0), end: at('2026-11-08', 0), allDay: true } as never }, 'mom');
+    s = apply(s, { kind: 'create', item: { type: 'task', title: 'Renew passports', start: at('2026-11-18', 0), end: at('2026-11-19', 0), allDay: true } as never }, 'mom');
+    s = apply(s, { kind: 'create', item: { type: 'task', title: 'Fix the shelf' } as never }, 'mom');
+    return s;
+  }
+
+  it('an event nobody was asked to own shows its participants, not "No owner yet", and has no take or assign buttons', () => {
+    const day = parse(screenTurn('my-day', input(withItems(), 'mom', 'en')).jsonl);
+    const wedding = rows(day, 'today').find(r => r.title === 'Wedding')!;
+    expect(wedding.ownerLabel).toBe('You, Dad');
+    expect(wedding.state).toBe('');
+    expect(wedding.tone).toBe('muted');
+    expect(wedding.actions).toEqual([]);
+    const zh = parse(screenTurn('my-day', input(withItems(), 'mom', 'zh')).jsonl);
+    expect(rows(zh, 'today').find(r => r.title === 'Wedding')!.ownerLabel).toBe('你、爸爸');
+  });
+
+  it("a child's event is on both parents' days until someone owns it, then on the owner's", () => {
+    const s0 = withItems();
+    const party = s0.items.find(i => i.title === 'Class party')!;
+    for (const member of ['mom', 'dad']) expect(ids(parse(screenTurn('my-day', input(s0, member, 'en')).jsonl), 'later')).toContain('Class party');
+    const s1 = apply(s0, { kind: 'assign', itemId: party.id, version: party.version, ownerId: 'dad' }, 'mom');
+    expect(ids(parse(screenTurn('my-day', input(s1, 'dad', 'en')).jsonl), 'later')).toContain('Class party');
+    expect(ids(parse(screenTurn('my-day', input(s1, 'mom', 'en')).jsonl), 'later')).not.toContain('Class party');
+  });
+
+  it('an event for nobody in particular is on everyone\'s day', () => {
+    const s = apply(seed(), { kind: 'create', item: { type: 'event', title: 'Building meeting', start: at('2026-11-04', 19) } as never }, 'mom');
+    for (const member of ['mom', 'dad', 'maya']) {
+      expect(ids(parse(screenTurn('my-day', input(s, member, 'en')).jsonl), 'today')).toContain('Building meeting');
+    }
+  });
+
+  it("the important pickup and a task with no owner still ask who's taking them", () => {
+    const day = parse(screenTurn('my-day', input(withItems(), 'mom', 'en')).jsonl);
+    const pickup = rows(day, 'today').find(r => r.id === 'pickup-today')!;
+    const form = rows(day, 'today').find(r => r.title === 'Sign the form')!;
+    for (const r of [pickup, form]) {
+      expect(r.state).toBe('open');
+      expect(r.actions.map(a => a.label)).toContain("I'll take it");
+    }
+  });
+
+  it('puts each item on its day: Today has today (a multi-day wedding too), Coming up has the week, the rest waits at the end', () => {
+    const day = parse(screenTurn('my-day', input(withItems(), 'mom', 'en')).jsonl);
+    expect(ids(day, 'today')).toEqual(expect.arrayContaining(['Wedding', 'Sign the form', 'Kindergarten pickup']));
+    expect(ids(day, 'today')).not.toContain('Buy a gift');
+    expect(ids(day, 'later')).toEqual(expect.arrayContaining(['Buy a gift', 'Class party']));
+    expect(ids(day, 'later')).not.toContain('Wedding');
+    expect(ids(day, 'waiting')).toEqual(expect.arrayContaining(['Renew passports', 'Fix the shelf']));
+    expect(ids(day, 'waiting')).not.toContain('Buy a gift');
+    expect(day.data.needs).toBeUndefined();
+    // The wedding is still on Thursday's Today.
+    const thursday = parse(screenTurn('my-day', { ...input(withItems(), 'mom', 'en'), now: at('2026-11-05', 9) }).jsonl);
+    expect(ids(thursday, 'today')).toContain('Wedding');
+  });
+
+  it("the Family board's \"Who's taking this?\" leaves out events that need no owner", () => {
+    const fam = parse(screenTurn('family', input(withItems(), 'mom', 'en')).jsonl);
+    const open = (fam.data.open as Row[]).map(r => r.title);
+    expect(open).toEqual(expect.arrayContaining(['Kindergarten pickup', 'Sign the form']));
+    expect(open).not.toContain('Wedding');
+    expect(open).not.toContain('Class party');
+  });
+
+  it("the event's own screen can still give it an owner", () => {
+    const s = withItems();
+    const wedding = s.items.find(i => i.title === 'Wedding')!;
+    const screen = parse(screenTurn('item', input(s, 'mom', 'en', { edit: { itemId: wedding.id } })).jsonl);
+    expect((screen.data.this as Row[])[0].actions.map(a => a.label)).toEqual(expect.arrayContaining(["I'll take it", 'Assign to Dad']));
+  });
+
+  it('the Add form offers "Nobody" as the owner choice', () => {
+    const add = screenTurn('edit', input(seed(), 'mom', 'en', { edit: {} })).jsonl;
+    expect(add).toContain('Nobody (an event can have only participants)');
   });
 });
 

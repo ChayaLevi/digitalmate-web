@@ -444,6 +444,70 @@ export interface HomemindState {
   groupClaims?: GroupClaim[];
   /** T7.5: messages that changed after the family's items, claims or cards were made from them, newest last. */
   sourceChanges?: SourceChange[];
+  /** T8.1: "Noa is sick" and what Homemind suggested for that day, newest last (situations.ts keeps at most 30). */
+  situations?: Situation[];
+}
+
+// --- a day gone wrong (T8.1, situations.ts) ---------------------------------------------------------------
+
+/**
+ * One change Homemind suggests because someone is sick. Nothing happens until a member taps Apply.
+ * `cancel`: not needed that day (a pickup, when the child stays home). `postpone`: the same time a week
+ * later. `skip`: one occurrence of a weekly item. `open`: something the sick member was going to do
+ * becomes "Who's taking this?".
+ */
+export interface SituationProposal {
+  id: string;
+  kind: 'cancel' | 'postpone' | 'skip' | 'open';
+  itemId: string;
+  /** The item's start when the suggestion was made: Apply refuses if it moved since. */
+  start?: string;
+  /** `postpone`: the new times. */
+  newStart?: string;
+  newEnd?: string;
+  /** `skip`: the local date of the occurrence. */
+  date?: string;
+  /** `open`: who could take it (everyone else who could own it). */
+  candidateIds?: string[];
+  status: 'pending' | 'applied' | 'dismissed';
+  /** The core activity of the Apply (its Undo patch), who decided and when. */
+  activityId?: string;
+  by?: string;
+  at?: string;
+}
+
+/**
+ * T8.1: a member reported that someone is sick on a date. Homemind looked at that day on the board and at
+ * who is away, by fixed rules (the model only read the message), and made: a "Stay home with Noa" task
+ * ("Who's taking this?", only the parents who are free), suggestions to approve, and cards that need a
+ * parent's tap (a message to the teacher, or a babysitter when no parent is free). All simulated outside.
+ */
+export interface Situation {
+  id: string;
+  at: string;
+  reportedBy: string;
+  memberId: string;
+  kind: 'sick';
+  /** Local `YYYY-MM-DD`. */
+  date: string;
+  /** The member's own words, as the model summarised them (data, shown as a quote). */
+  summary: string;
+  proposals: SituationProposal[];
+  /** A child: the task someone takes, and the activity that created it (Undo is on the chat card). */
+  stayHomeItemId?: string;
+  stayHomeActivityId?: string;
+  /** Parents with an account who are not marked away that day, and who is away because of which event. */
+  available: string[];
+  away: Array<{ memberId: string; eventId: string; start: string; end: string }>;
+  /** Cards prepared with it: the teacher message, the babysitter draft. */
+  cardIds: string[];
+  whyId: string;
+}
+
+/** T8.1: a situation as one member's screen shows it: only items, cards and reasons that member can see. */
+export interface SituationView {
+  situation: Situation;
+  items: Array<{ id: string; title: string; titleZh?: string; start?: string; type: Item['type']; status: Item['status'] }>;
 }
 
 // --- source changes (T7.5, sourceChanges.ts) -------------------------------------------------------------
@@ -668,6 +732,22 @@ export interface ServicesState {
   group: { id: string; messages: GroupMessage[]; /** How many fixture messages were posted. */ posted: number };
   pizzaOrders: PizzaOrder[];
   babysitterMessages: BabysitterMessage[];
+  /** T8.1: messages to the (simulated) teacher. Absent in older files. */
+  teacherMessages?: TeacherMessage[];
+}
+
+/** T8.1: a message to the simulated class teacher ("Noa stays home today"), with the teacher's canned answer. */
+export interface TeacherMessage {
+  id: string;
+  at: string;
+  teacherId: string;
+  childId: string;
+  date: string;
+  author: string;
+  text: string;
+  reply: string;
+  replyEn: string;
+  simulated: true;
 }
 
 /** A simulated service's card as a screen shows it. Every one carries `simulated: true`. */
@@ -711,6 +791,8 @@ export interface ServicesView {
     days: Array<{ date: string; summary: string; summaryZh: string; low: number; high: number; rainChance: number }>;
     simulated: true;
   };
+  /** T8.1: the class teacher and the messages the family sent (each after a parent's tap). */
+  teacher?: { name: string; nameZh: string; messages: TeacherMessage[]; simulated: true };
 }
 
 export interface HeldAlert {

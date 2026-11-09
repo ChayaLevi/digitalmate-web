@@ -43,7 +43,8 @@ import { createLlmClient, llmConfigFromEnv, llmStatus } from './homemind/llm';
 import type { LlmClient } from './homemind/llm';
 import { isImageDataUrl, MAX_IMAGE_DATA_URL, runExtraction, runIntent, LIMITS as INTENT_LIMITS } from './homemind/intents';
 import { applyExtraction } from './homemind/extraction';
-import { planChat } from './homemind/chat';
+import { chatMayWrite, planChat } from './homemind/chat';
+import { applySuggestions, dismissSuggestion, situationsView, startSituation, undoSuggestion } from './homemind/situations';
 import { applyPreferenceRequest, blockedChange, parsePreferenceBody, preferencesForItem } from './homemind/preferences';
 import type { BlockedChoice, PreferenceRequest, PreferenceResult } from './homemind/preferences';
 import { HomemindStore, dataFileFromEnv } from './homemind/store';
@@ -838,7 +839,7 @@ async function chatHandler(ctx: Ctx): Promise<void> {
     // The state may have changed while the model was thinking: the card is built from the latest view.
     const view = viewFor(rt.state, member.id) ?? before;
     const now = new Date(rt.clock.now()).toISOString();
-    const turn = chatTurn({ lang, now, view, llm, turnId: randomBytes(6).toString('hex'), outcome, reminders: pendingRemindersFor(rt.state, member.id, rt.clock.now()) });
+    const turn = chatTurn({ lang, now, view, llm, turnId: randomBytes(6).toString('hex'), outcome, reminders: pendingRemindersFor(rt.state, member.id, rt.clock.now()), situations: situationsView(rt.state, member.id, rt.clock.now()) });
     json(ctx.response, 200, { ...turn, ok: outcome.kind !== 'failed', outcome: outcome.kind, llm, ms: Date.now() - started, ...extra });
   };
   if (!result.ok) {
@@ -873,6 +874,25 @@ async function chatHandler(ctx: Ctx): Promise<void> {
     }
     case 'missing':
       return answer({ kind: 'missing' }, { intent });
+    case 'situation': {
+      // T8.1: someone is sick. Fixed rules decide what falls through and who could stay home (situations.ts).
+      const started = startSituation(rt.state, member.id, { kind: 'sick', memberId: plan.memberId, date: plan.date, summary: plan.summary }, {
+        now: rt.clock.now(),
+        clock: rt.clock,
+        adapters: adaptersOf(rt),
+        mayWrite: chatMayWrite(rt.state.family)
+      });
+      if (!started.ok) return answer({ kind: 'failed', reason: 'change', code: started.code, message: started.message }, { intent, status: started.status });
+      if (started.created) {
+        await commit(rt, started.state, started.events, member.id);
+        rt.hub.broadcast({ event: 'actions.changed', data: {} });
+      }
+      const undoable = started.created && started.activityId && rt.state.activity.some(a => a.id === started.activityId && a.undo && !a.undone);
+      return answer(
+        { kind: 'situation', situationId: started.situation.id, created: started.created, ...(undoable ? { activityId: started.activityId } : {}) },
+        { intent, situationId: started.situation.id }
+      );
+    }
     case 'write': {
       const isEvent = plan.change.kind === 'create' && plan.change.item.type === 'event';
       const applied = await applyAndCommit(ctx, plan.change, ids => (isEvent ? ids[0] : undefined));
@@ -907,7 +927,7 @@ async function screenshotHandler(ctx: Ctx, image: string, text: string): Promise
     const view = viewFor(rt.state, member.id);
     if (!view) return fail(ctx.response, 404, 'not_found', 'No such member');
     const now = new Date(rt.clock.now()).toISOString();
-    const turn = chatTurn({ lang, now, view, llm, turnId: randomBytes(6).toString('hex'), outcome, reminders: pendingRemindersFor(rt.state, member.id, rt.clock.now()) });
+    const turn = chatTurn({ lang, now, view, llm, turnId: randomBytes(6).toString('hex'), outcome, reminders: pendingRemindersFor(rt.state, member.id, rt.clock.now()), situations: situationsView(rt.state, member.id, rt.clock.now()) });
     json(ctx.response, 200, { ...turn, ok: outcome.kind !== 'failed', outcome: outcome.kind, intent: 'extract', llm, ms: Date.now() - started, ...extra });
   };
   if (!result.ok) {
@@ -1042,6 +1062,8 @@ const routes: Route[] = [
         ...(name === 'services' ? { services: servicesViewFor(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()), demo: demo() } : {}),
         // T7.4: the group's claim setting and what Homemind signed up for (family-wide).
         ...(name === 'services' || name === 'my-day' ? { groups: groupsView(ctx.rt.state), sourceChanges: sourceChangesView(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()) } : {}),
+        // T8.1: "Noa is sick" and what Homemind suggested for that day, limited to what this member can see.
+        ...(name === 'my-day' ? { situations: situationsView(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()) } : {}),
         ...(name === 'rules' ? { demo: demo() } : {}),
         confirmations
       });
@@ -1227,6 +1249,42 @@ const routes: Route[] = [
         change: { id: result.change.id, status: result.change.status },
         ...(result.activityId ? { activityId: result.activityId } : {}),
         ...(card ? { correction: { id: card.id, status: card.status, posted: card.status === 'executed' } } : {})
+      });
+    }
+  },
+  {
+    method: 'POST',
+    pattern: /^\/situations\/([a-z0-9][a-z0-9_-]{0,63})\/(apply|dismiss|undo)$/,
+    auth: true,
+    // T8.1: Apply / Not now on a suggestion made because someone is sick, or its Undo. Anyone with an account
+    // may decide, as for any family item; the core refuses an item the member can't see (404).
+    handler: async ctx => {
+      const body = pick(await readBody(ctx.request), ['proposalId'], 'situation');
+      const { rt, member } = ctx;
+      const [situationId, verb] = ctx.params;
+      const proposalId = body.proposalId === 'all' && verb === 'apply' ? 'all' : idOf(body.proposalId, 'proposalId');
+      const result =
+        verb === 'apply'
+          ? applySuggestions(rt.state, situationId, proposalId, member.id, rt.clock)
+          : verb === 'dismiss'
+            ? dismissSuggestion(rt.state, situationId, proposalId, member.id, rt.clock.now())
+            : undoSuggestion(rt.state, situationId, proposalId, member.id, rt.clock);
+      if (!result.ok) {
+        const current = result.current ? redactItem(rt.state, member.id, result.current) : undefined;
+        return fail(ctx.response, result.status, result.code, result.message, current ? { current } : {});
+      }
+      await commit(rt, result.state, result.events, member.id);
+      rt.hub.broadcast({ event: 'actions.changed', data: {} });
+      const changedIds = [...new Set(result.events.map(e => e.itemId))];
+      json(ctx.response, 200, {
+        ok: true,
+        situation: { id: result.situation.id, proposals: result.situation.proposals.map(p => ({ id: p.id, status: p.status })) },
+        applied: result.applied,
+        failed: result.failed,
+        ...(result.activityIds.length ? { activityId: result.activityIds[result.activityIds.length - 1], activityIds: result.activityIds } : {}),
+        items: itemsById(rt.state, member.id, changedIds),
+        opened: [],
+        conflicts: []
       });
     }
   },

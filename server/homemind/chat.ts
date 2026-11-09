@@ -8,7 +8,8 @@
  *   why      Homemind's own record of an item: who added it, how, who has it, the last change
  *   preference  save a preference (T5.4); at level 1 or paused, a card with a Save button instead
  *   blocked  a preparation or task that a hard preference rules out (T5.4): nothing changes
- *   later    an intent whose task is not built yet (rules T7.3, situations T8.1)
+ *   situation  someone is sick (T8.1): the bridge runs situations.ts (who stays home, what to change)
+ *   later    an intent whose task is not built yet (rules from chat; situations other than "sick")
  *   missing  the item is no longer on the member's board (changed while the model was thinking)
  *
  * Autonomy (CLAUDE.md): at level 2 and up, the family item writes a member asks for apply at once,
@@ -41,6 +42,8 @@ export type ChatPlan =
   | { kind: 'preference'; input: PreferenceInput; save: boolean; reason?: 'level1' | 'paused' }
   | { kind: 'blocked'; intent: 'create_task' | 'add_preparation'; title: string; blocked: BlockedChoice[] }
   | { kind: 'later'; intent: LaterIntent; task: 'T7.3' | 'T8.1' }
+  /** T8.1: who is sick and which day; the bridge plans the rest with fixed rules (situations.ts). */
+  | { kind: 'situation'; memberId: string; date: string; summary: string }
   | { kind: 'missing'; intent: IntentName };
 
 /** Whether chat may change the board on its own (level 2 and up, not paused). */
@@ -148,8 +151,12 @@ export function planChat(view: MemberView, intent: ChatIntent): ChatPlan {
     }
     case 'create_rule':
       return { kind: 'later', intent: 'create_rule', task: 'T7.3' };
-    case 'report_situation':
-      return { kind: 'later', intent: 'report_situation', task: 'T8.1' };
+    case 'report_situation': {
+      // Only "sick" is built. "Noa is sick" names Noa; "I'm sick" names nobody, so it is the member who said it.
+      if (intent.situation !== 'sick') return { kind: 'later', intent: 'report_situation', task: 'T8.1' };
+      const memberId = intent.memberId && view.family.members.some(m => m.id === intent.memberId) ? intent.memberId : view.memberId;
+      return { kind: 'situation', memberId, date: intent.date, summary: intent.summary };
+    }
   }
 }
 

@@ -240,7 +240,8 @@ describe('behind the action guard', () => {
     expect(Object.values(adapters).map(a => [a.id, a.mode, a.area, a.autoAllowed === true])).toEqual([
       ['group-reply', 'simulated', 'group', true],
       ['pizza', 'simulated', 'food', false],
-      ['babysitter', 'simulated', 'childcare', false]
+      ['babysitter', 'simulated', 'childcare', false],
+      ['teacher-message', 'simulated', 'childcare', false]
     ]);
   });
 

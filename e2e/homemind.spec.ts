@@ -1005,3 +1005,95 @@ test('Scene 2: a 接龙 sign-up arrives, Homemind claims apples and alerts the f
     await dadContext.close();
   }
 });
+
+// T8.1: Scene 3 as scripted: "Noa is sick." Homemind shows what falls through that day, asks the free parents
+// who stays home (it never picks), suggests what to cancel or postpone, and drafts a teacher message behind a tap.
+type SceneState = {
+  family: { timezone: string };
+  clockOffsetMs: number;
+  items: Array<{ id: string; start?: string; status: string; ownership: { state: string; ownerId?: string } }>;
+  actionCards: Array<{ id: string; adapter: string; status: string }>;
+  situations?: Array<{ id: string; stayHomeItemId?: string; cardIds: string[] }>;
+};
+
+test('Scene 3: Mom says Noa is sick; Dad sees who could stay home and takes it; Mom applies the suggestions; the teacher message waits for a tap', async ({ browser, request }) => {
+  // The seeded pickup is about two hours ahead of the reset: today, or tomorrow late in the evening.
+  const first = (await (await request.get(`${BASE}/api/homemind/debug/state`)).json()) as SceneState;
+  const zone = first.family.timezone;
+  const today = localParts(Date.now() + first.clockOffsetMs, zone).date;
+  const pickupDay = localParts(Date.parse(first.items.find(i => i.id === 'pickup-today')?.start as string), zone).date;
+  const word = pickupDay === today ? 'today' : 'tomorrow';
+  const weekday = new Date(`${pickupDay}T12:00:00Z`).getUTCDay();
+  const sceneState = async () => (await (await request.get(`${BASE}/api/homemind/debug/state`)).json()) as SceneState;
+
+  const momContext = await browser.newContext();
+  const dadContext = await browser.newContext();
+  try {
+    const mom = await momContext.newPage();
+    const dad = await dadContext.newPage();
+    await openFamily(mom, 'en', 'mom', 'family');
+    await openFamily(dad, 'zh', 'dad');
+    await expect(family(mom)).toHaveAttribute('data-member', 'mom');
+    await expect(dad.locator('[data-stream="live"]')).toBeVisible();
+
+    // 1. Mom tells the Family companion. The card shows what falls through; nothing is cancelled yet.
+    await openChat(mom, 'en');
+    const reply = await chatTo(mom, `Noa is sick ${word}`);
+    await expect(reply).toContainText('Nothing is cancelled or moved until someone taps');
+    await expect(reply).toContainText('Not needed: Noa stays home');
+    await expect(reply).toContainText('Postpone a week');
+    await expect(reply).toContainText('Stay home with Noa');
+    await expect(reply).toContainText('Simulated model');
+    const situation = (await sceneState()).situations?.[0];
+    expect(situation?.stayHomeItemId).toBeTruthy();
+    expect((await sceneState()).items.find(i => i.id === 'pickup-today')?.status).toBe('open');
+
+    // 2. Dad's window, without reloading: the alert and My day ask who stays home; only availability is compared.
+    await expect(dad.locator('.hm-alert', { hasText: '在家照顾诺娅' })).toBeVisible();
+    await expect(family(dad)).toContainText('谁可以留在家');
+    await expect(family(dad)).toContainText('当天没有标记外出');
+    await expect(family(dad)).toContainText('不需要了：诺娅在家');
+    await noOverflow(dad);
+    expect(await seriousIssues(dad)).toEqual([]);
+    await dad.screenshot({ path: test.info().outputPath('scene3-dad-zh.png'), fullPage: true });
+
+    // 3. Dad takes it from his board.
+    const task = dad.locator(`[data-task-id="${situation?.stayHomeItemId}"]`).first();
+    await task.getByRole('button', { name: '我来' }).click();
+    await expect.poll(async () => (await sceneState()).items.find(i => i.id === situation?.stayHomeItemId)?.ownership).toMatchObject({ state: 'assigned', ownerId: 'dad' });
+
+    // 4. Mom, on My day: Apply all. The pickup is not needed, swimming moves a week; each has its own Undo.
+    await mom.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Family' }).click();
+    await expect(family(mom)).toContainText('Who could stay home');
+    await mom.getByRole('button', { name: 'Apply all (2)' }).click();
+    await expect(family(mom)).toContainText('All suggestions applied');
+    await expect.poll(async () => (await sceneState()).items.find(i => i.id === 'pickup-today')?.status).toBe('cancelled');
+    await expect(family(mom)).toContainText('Done by Mom');
+    await expect(family(dad)).toContainText('妈妈已采纳');
+
+    // 5. "Why?" says it was Homemind's rules, not the model and not PPMA.
+    await family(mom).getByRole('button', { name: 'Why?' }).first().click();
+    await expect(family(mom)).toContainText('fixed rules (the model only read the message)');
+    await expect(family(mom)).toContainText('(Source: a Homemind rule)');
+    await noOverflow(mom);
+    expect(await seriousIssues(mom)).toEqual([]);
+    await mom.screenshot({ path: test.info().outputPath('scene3-mom-en.png'), fullPage: true });
+
+    // 6. On a weekday, the teacher message waits for a parent's own tap, then goes to the simulated teacher only.
+    if (weekday >= 1 && weekday <= 5) {
+      const card = mom.locator('.approval-card', { hasText: 'Tell Teacher Wang that Noa stays home' });
+      await expect(card).toContainText('不来幼儿园了');
+      await expect(card.locator('.hm-sim-badge')).toHaveText('Simulated');
+      await card.getByRole('button', { name: 'Confirm' }).click();
+      await expect(family(mom)).toContainText('It went to the simulated service only');
+      await family(mom).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'Services', exact: true }).click();
+      await expect(family(mom)).toContainText('Messages to the class teacher');
+      await expect(family(mom)).toContainText('Wishing a quick recovery');
+    } else {
+      expect(situation?.cardIds).toEqual([]);
+    }
+  } finally {
+    await momContext.close();
+    await dadContext.close();
+  }
+});

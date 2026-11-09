@@ -102,10 +102,12 @@ describe('planChat: answers, explanations and what is not built', () => {
     expect(planChat(view(fresh(), 'mom'), { intent: 'why', itemId: 'nope' })).toEqual({ kind: 'missing', intent: 'why' });
   });
 
-  it('rules and situations wait for their tasks and change nothing', () => {
+  it('rules and situations other than "sick" are not built from chat and change nothing', () => {
     const v = view(fresh(), 'mom');
     expect(planChat(v, { intent: 'create_rule', title: 'x', weekday: 5, time: '18:00', leadMinutes: 30, action: 'x' })).toEqual({ kind: 'later', intent: 'create_rule', task: 'T7.3' });
-    expect(planChat(v, { intent: 'report_situation', situation: 'sick', date: '2026-11-04', summary: 'x' })).toEqual({ kind: 'later', intent: 'report_situation', task: 'T8.1' });
+    expect(planChat(v, { intent: 'report_situation', situation: 'late', date: '2026-11-04', summary: 'x' })).toEqual({ kind: 'later', intent: 'report_situation', task: 'T8.1' });
+    // T8.1: "sick" is planned by the bridge (situations.ts).
+    expect(planChat(v, { intent: 'report_situation', situation: 'sick', date: '2026-11-04', summary: 'x' })).toEqual({ kind: 'situation', memberId: 'mom', date: '2026-11-04', summary: 'x' });
   });
 
   it('explains from the board record: creator, source and the last change', () => {

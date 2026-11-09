@@ -15,7 +15,7 @@
  * Components that do not render the flag (rules, settings rows) say the word in their text instead.
  */
 import type { A2uiAction, A2uiComponent } from '../types';
-import type { ActionCard, Activity, ExtractedEntry, Family, GroupsView, Item, ItemExplanation, Lang, Member, PendingReminder, PpmaExplanationData, PpmaMemoryData, Preference, Reminder, Rule, RuleRun, ServicesView, SignUpInfo, SkippedExtraction, SourceChangeView, Why } from '../../server/homemind/types';
+import type { ActionCard, Activity, ExtractedEntry, Family, GroupsView, Item, ItemExplanation, Lang, Member, PendingReminder, PpmaExplanationData, PpmaMemoryData, Preference, Reminder, Rule, RuleRun, ServicesView, SignUpInfo, SituationView, SkippedExtraction, SourceChangeView, Why } from '../../server/homemind/types';
 
 export type HomemindLang = Lang;
 export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit' | 'item' | 'services';
@@ -77,6 +77,8 @@ export interface HomemindScreenData {
   groups?: GroupsView;
   /** T7.5: messages that changed after the family acted on them, limited by the server to what this member can see. */
   sourceChanges?: SourceChangeView[];
+  /** T8.1: "Noa is sick" and the suggestions for that day (`my-day`), limited by the server to what this member can see. */
+  situations?: SituationView[];
 }
 
 /** What the bridge sends the browser for every Homemind screen. Same shape as a Fridge2Table turn. */
@@ -596,9 +598,12 @@ function myDay(input: HomemindScreenData): HomemindTurn {
   const later = rest.filter(i => { const d = dayOf(i); return d !== undefined && d > today && d <= weekEnd; });
 
   const cards = pendingCards(view, lang, input.now, input.confirmations);
-  const children: A2uiComponent[] = [...cards.children];
+  const children: A2uiComponent[] = [];
   const data: Record<string, unknown> = { ...cards.data };
-  if (cards.data.cards) children.unshift(text('cards-title', `**${hx(lang, 'cards')}**`));
+  // T8.1: a day gone wrong comes first: it changes what the rest of the day looks like.
+  for (const s of input.situations ?? []) situationBlocks(s, view, lang, today, children, data);
+  if (cards.data.cards) children.push(text('cards-title', `**${hx(lang, 'cards')}**`));
+  children.push(...cards.children);
   sourceChangeBlocks(input, children, data);
   if (input.groups) groupClaimBlocks(input, 'my-day', children, data);
   section(children, data, 'needs', hx(lang, 'needsYou'), needs.map(i => taskRow(i, view, lang, today)));
@@ -1271,6 +1276,8 @@ export type ChatOutcome =
   /** T5.4: a hard preference rules this out. Nothing changed. */
   | { kind: 'blocked'; title: string; blocked: Array<{ preference: Preference; term: string }> }
   | { kind: 'later'; intent: 'create_rule' | 'report_situation' }
+  /** T8.1: someone is sick. `created: false`: that member and day were already reported (the same card again). */
+  | { kind: 'situation'; situationId: string; created: boolean; activityId?: string }
   | { kind: 'missing' }
   /** T5.3: a screenshot read by the model. Everything created is proposed. */
   | { kind: 'extracted'; created: ExtractedEntry[]; skipped: SkippedExtraction[]; dropped: number; signUp?: SignUpInfo }
@@ -1287,6 +1294,8 @@ export interface ChatTurnData {
   turnId: string;
   outcome: ChatOutcome;
   reminders?: PendingReminder[];
+  /** T8.1: the member's situations (server-filtered), for a `situation` outcome. */
+  situations?: SituationView[];
 }
 
 const C = {
@@ -1323,7 +1332,10 @@ const C = {
   blockedWhy: { en: 'Hard preferences (allergies, dietary laws) are never overridden. Choose something else, or a parent can change the preference.', zh: '硬性偏好（过敏、饮食禁忌）不会被违反。请换一个选择，或由家长修改这条偏好。' },
   blockedList: { en: 'The preference', zh: '相关偏好' },
   laterRule: { en: 'Standing rules from chat are not built yet. Nothing was set up. A rule will only prepare a card that a parent taps.', zh: '通过对话设置长期规则的功能尚未完成，没有设置任何规则。规则只会准备卡片，由家长点一下确认。' },
-  laterSituation: { en: 'Planning around a situation (who stays home, what to postpone) is not built yet. Nothing was changed.', zh: '根据突发情况重新安排（谁留在家、推迟什么）的功能尚未完成，没有做任何更改。' },
+  laterSituation: { en: 'Only “someone is sick” is built for planning around a situation. Nothing was changed.', zh: '目前只支持“有人生病”的情况重新安排，没有做任何更改。' },
+  sitCreated: { en: 'Sorry to hear that. Here is what changes today and what I suggest. Nothing is cancelled or moved until someone taps.', zh: '听到这个消息很遗憾。下面是今天受影响的安排和建议。有人点按之前，不会取消或移动任何事项。' },
+  sitAgain: { en: 'This was already reported. Here is where it stands.', zh: '这件事已经报告过了，下面是目前的情况。' },
+  sitTaskUndo: { en: 'Undo the stay-home task', zh: '撤销“在家照顾”任务' },
   missing: { en: 'That item is not on your board any more. Nothing was changed.', zh: '这个事项已不在你的看板上，没有做任何更改。' },
   failedModel: { en: 'The model could not read this message. Nothing was changed. Try again, or use the Family tab.', zh: '模型无法理解这条消息，没有做任何更改。请重试，或使用家庭标签页。' },
   failedOff: { en: 'The model is not set up, so chat cannot read messages. The Family tab still works.', zh: '模型未配置，对话无法理解消息。家庭标签页仍可正常使用。' },
@@ -1535,6 +1547,22 @@ export function chatTurn(input: ChatTurnData): HomemindTurn {
     case 'later':
       message = outcome.intent === 'create_rule' ? C.laterRule[lang] : C.laterSituation[lang];
       break;
+    case 'situation': {
+      const v = (input.situations ?? []).find(x => x.situation.id === outcome.situationId);
+      message = outcome.created ? C.sitCreated[lang] : C.sitAgain[lang];
+      if (v) {
+        situationBlocks(v, view, lang, today, children, data);
+        title = situationHeadline(v, view, lang, today);
+      }
+      if (outcome.activityId && v?.situation.stayHomeItemId) {
+        children.push({
+          id: 'actions-undo',
+          component: 'ActionBar',
+          actions: [{ id: `homemind.undo:${outcome.activityId}`, label: C.sitTaskUndo[lang], variant: 'ghost', kind: 'homemind', args: { verb: 'undo', activityId: outcome.activityId, itemId: v.situation.stayHomeItemId } }]
+        });
+      }
+      break;
+    }
     case 'missing':
       message = C.missing[lang];
       break;
@@ -1619,6 +1647,7 @@ const S = {
   lastOrder: { en: 'Last order (simulated)', zh: '最近订单（模拟）' },
   deliveryAt: { en: 'delivery', zh: '送达' },
   sitters: { en: "Babysitters, in the family's order", zh: '保姆（按家庭排序）' },
+  teacher: { en: 'Messages to the class teacher', zh: '发给班主任的消息' },
   freeToday: { en: 'Free today', zh: '今天有空' },
   notToday: { en: 'Not free today', zh: '今天没空' },
   inbox: { en: 'Inbox (approved senders only)', zh: '收件箱（仅白名单发件人）' },
@@ -1707,6 +1736,20 @@ function servicesScreen(input: HomemindScreenData): HomemindTurn {
       meta: s.available ? `${sx(lang, 'freeToday')} ${s.from}–${s.to}` : sx(lang, 'notToday')
     }))
   );
+
+  // T8.1: messages the family sent the (simulated) class teacher, each after a parent's tap, with her canned answer.
+  if (services.teacher?.messages.length) {
+    const teacherName = lang === 'zh' ? services.teacher.nameZh : services.teacher.name;
+    list(
+      'teacher',
+      `${sx(lang, 'teacher')} · ${teacherName}`,
+      services.teacher.messages.map(m => ({
+        title: m.text,
+        subtitle: `${teacherName}: ${lang === 'zh' ? m.reply : m.replyEn}`,
+        meta: timeOf(m.at)
+      }))
+    );
+  }
 
   if (services.inbox.messages.length) {
     list(
@@ -2053,6 +2096,149 @@ function sourceChangeBlocks(input: HomemindScreenData, children: A2uiComponent[]
     children.push(taskList(`stale-items-${b.id}`, scx(lang, 'depends'), `/${key}`));
     data[key] = b.rows;
   }
+}
+
+// --- a day gone wrong (T8.1) -----------------------------------------------------------------------
+
+const SIT = {
+  sickToday: { en: '{who} is sick today', zh: '{who}今天生病了' },
+  sickOn: { en: '{who} is sick on {day}', zh: '{who}{day}生病了' },
+  reported: { en: 'Reported by {who}', zh: '{who}报告' },
+  whoHome: { en: 'Who could stay home', zh: '谁可以留在家' },
+  free: { en: 'Not marked away that day', zh: '当天没有标记外出' },
+  away: { en: 'Away', zh: '外出' },
+  noOneFree: { en: 'No parent is free that day. A babysitter message is ready if one is free (simulated).', zh: '当天没有家长有空。如有保姆有空，已准备好消息（模拟）。' },
+  task: { en: 'Who stays home?', zh: '谁留在家？' },
+  taskNote: { en: 'Homemind does not pick: one of you taps “I’ll take it”.', zh: 'Homemind 不替你们选：请其中一位点“我来”。' },
+  changes: { en: 'What falls through, and what Homemind suggests', zh: '受影响的安排和建议' },
+  nothing: { en: 'Nothing else on the board falls through that day.', zh: '当天看板上没有其他受影响的事项。' },
+  cancel: { en: 'Not needed: {who} stays home', zh: '不需要了：{who}在家' },
+  postpone: { en: 'Postpone a week, to {when}', zh: '推迟一周，改到{when}' },
+  skip: { en: 'Skip this week only', zh: '只跳过这一周' },
+  open: { en: '{who} can’t do it: ask who takes it', zh: '{who}做不了：问问谁来负责' },
+  apply: { en: 'Apply', zh: '采纳' },
+  notNow: { en: 'Not now', zh: '暂不' },
+  applyAll: { en: 'Apply all ({n})', zh: '全部采纳（{n}）' },
+  applied: { en: 'Done by {who}', zh: '{who}已采纳' },
+  dismissed: { en: 'Left as is by {who}', zh: '{who}选择暂不' },
+  gone: { en: 'No longer on the board', zh: '已不在看板上' },
+  undo: { en: 'Undo', zh: '撤销' },
+  cards: { en: 'A message outside the family (simulated) is ready under “Waiting for your tap”: nothing is sent until a parent taps it.', zh: '发给家庭以外的消息（模拟）在“等你点一下”里：家长点一下之前不会发送。' },
+  cardsOther: { en: 'A message outside the family (simulated) waits for a parent’s tap.', zh: '发给家庭以外的消息（模拟）等家长点一下。' },
+  rules: { en: 'Fixed rules over the board; the model only read the message.', zh: '按固定规则查看看板；模型只读了这条消息。' }
+} as const;
+const sit = (lang: HomemindLang, key: keyof typeof SIT, values: Record<string, string> = {}): string => fill(SIT[key][lang], values);
+
+function situationHeadline(v: SituationView, view: HomemindViewData, lang: HomemindLang, today: string): string {
+  const s = v.situation;
+  const who = nameOf(memberOf(view.family, s.memberId), lang);
+  if (s.date === today) return sit(lang, 'sickToday', { who });
+  const wd = new Date(`${s.date}T12:00:00Z`).getUTCDay();
+  const day = `${WEEKDAYS[lang][wd] ?? ''} ${s.date.slice(5).replace('-', '/')}`.trim();
+  return sit(lang, 'sickOn', { who, day });
+}
+
+/**
+ * One situation: the headline and who said it, who could stay home (availability only, never who does
+ * more), the stay-home task with its own "I'll take it", and each suggestion with Apply / Not now (or who
+ * decided, with Undo). Ids carry the situation id, so a chat card and My day never clash.
+ */
+function situationBlocks(v: SituationView, view: HomemindViewData, lang: HomemindLang, today: string, children: A2uiComponent[], data: Record<string, unknown>): void {
+  const s = v.situation;
+  const zone = view.family.timezone;
+  const key = s.id.replace(/[^a-z0-9]/g, '');
+  const me = memberOf(view.family, view.memberId);
+  const sickName = nameOf(memberOf(view.family, s.memberId), lang);
+  const quote = s.summary ? ` · “${plainChatText(s.summary)}”` : '';
+  children.push(text(`sit-head-${key}`, `**${situationHeadline(v, view, lang, today)}**\n\n${sit(lang, 'reported', { who: nameOf(memberOf(view.family, s.reportedBy), lang) })}${quote}`));
+
+  const itemOf = (id: string) => v.items.find(i => i.id === id);
+  const isLive = (id: string) => {
+    const status = itemOf(id)?.status;
+    return status === 'open' || status === 'proposed';
+  };
+  const parents = [...new Set([...s.available, ...s.away.map(a => a.memberId)])];
+  if (parents.length) {
+    const rows = parents.map(id => {
+      const away = s.away.filter(a => a.memberId === id);
+      const value = away.length
+        ? away
+            .map(a => {
+              const ev = itemOf(a.eventId);
+              const from = dateParts(a.start, zone);
+              const to = dateParts(a.end, zone);
+              const span = from && to ? `${from.time}–${to.time}` : '';
+              return [sit(lang, 'away'), span, ev ? (lang === 'zh' ? ev.titleZh ?? ev.title : ev.title) : ''].filter(Boolean).join(' · ');
+            })
+            .join('; ')
+        : sit(lang, 'free');
+      return { label: nameOf(memberOf(view.family, id), lang), value, tone: away.length ? 'accent' : 'success' };
+    });
+    children.push({ id: `sit-home-${key}`, component: 'InfoRows', title: sit(lang, 'whoHome'), dataPath: `/sitHome_${key}` });
+    data[`sitHome_${key}`] = rows;
+    if (!s.available.length) children.push(text(`sit-nofree-${key}`, sit(lang, 'noOneFree')));
+  }
+
+  const task = s.stayHomeItemId ? view.items.find(i => i.id === s.stayHomeItemId && live(i)) : undefined;
+  if (task) {
+    children.push(taskList(`sit-task-${key}`, sit(lang, 'task'), `/sitTask_${key}`));
+    const row = taskRow(task, view, lang, today);
+    data[`sitTask_${key}`] = [task.ownership.state === 'open' ? { ...row, meta: [row.meta, sit(lang, 'taskNote')].filter(Boolean).join(' · ') } : row];
+  }
+
+  const act = (verb: 'apply' | 'dismiss' | 'undo', proposalId: string, label: string, variant: A2uiAction['variant']): A2uiAction => ({
+    id: `homemind.situation:${s.id}:${verb}:${proposalId}`,
+    label,
+    variant,
+    kind: 'homemind',
+    args: { verb: 'situation', situationId: s.id, action: verb, proposalId }
+  });
+  const rows: TaskRow[] = s.proposals.map(p => {
+    const item = itemOf(p.itemId);
+    const title = item ? (lang === 'zh' ? item.titleZh ?? item.title : item.title) : '';
+    const when = item?.start && p.kind !== 'skip' ? localWhen(p.start ?? item.start, zone, lang) : '';
+    const what =
+      p.kind === 'cancel'
+        ? sit(lang, 'cancel', { who: sickName })
+        : p.kind === 'postpone'
+          ? sit(lang, 'postpone', { when: localWhen(p.newStart, zone, lang) })
+          : p.kind === 'skip'
+            ? sit(lang, 'skip')
+            : sit(lang, 'open', { who: sickName });
+    const who = nameOf(memberOf(view.family, p.by), lang);
+    let status = '';
+    let actions: A2uiAction[] = [];
+    if (p.status === 'pending') {
+      if (isLive(p.itemId)) actions = [act('apply', p.id, sit(lang, 'apply'), 'primary'), act('dismiss', p.id, sit(lang, 'notNow'), 'ghost')];
+      else status = sit(lang, 'gone');
+    } else {
+      status = p.status === 'applied' ? sit(lang, 'applied', { who }) : sit(lang, 'dismissed', { who });
+      actions = [act('undo', p.id, sit(lang, 'undo'), 'secondary')];
+    }
+    return {
+      id: `sit-${key}-${p.id}`,
+      title,
+      meta: [when, what, status].filter(Boolean).join(' · '),
+      ownerLabel: '',
+      state: '',
+      tone: p.status === 'pending' && isLive(p.itemId) ? 'warning' : 'muted',
+      actions
+    };
+  });
+  if (rows.length) {
+    children.push(taskList(`sit-changes-${key}`, sit(lang, 'changes'), `/sitChanges_${key}`));
+    data[`sitChanges_${key}`] = rows;
+  } else {
+    children.push(text(`sit-nothing-${key}`, sit(lang, 'nothing')));
+  }
+  const pending = s.proposals.filter(p => p.status === 'pending' && isLive(p.itemId));
+  const bar: A2uiAction[] = [];
+  if (pending.length > 1) bar.push(act('apply', 'all', sit(lang, 'applyAll', { n: String(pending.length) }), 'primary'));
+  bar.push({ id: `homemind.why:${s.whyId}`, label: hx(lang, 'why'), variant: 'secondary', kind: 'homemind', args: { verb: 'why', whyId: s.whyId } });
+  children.push({ id: `sit-actions-${key}`, component: 'ActionBar', actions: bar });
+  const cardWaiting = s.cardIds.some(id => view.actionCards.some(c => c.id === id && c.status === 'pending'));
+  const notes = [sit(lang, 'rules'), cardWaiting ? sit(lang, me?.role === 'parent' ? 'cards' : 'cardsOther') : ''].filter(Boolean);
+  children.push(text(`sit-note-${key}`, notes.join(' ')));
 }
 
 // --- public API -------------------------------------------------------------------------------------

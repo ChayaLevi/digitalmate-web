@@ -264,6 +264,7 @@ Reply with ONE JSON object, no prose. "intent" is one of:
    hard = allergies, dietary laws, medical; soft = likes and habits. scope: where it applies, as short English words joined by "-" (e.g. "kindergarten-party", "school-lunch"), or null for everywhere.
 {"intent":"create_rule","title":string,"weekday":0-6 (0 = Sunday),"time":"HH:MM","leadMinutes":number,"action":string}
 {"intent":"report_situation","situation":"sick"|"away"|"late"|"other","memberId":member id|null,"date":"YYYY-MM-DD","summary":string}
+   memberId: who it is about ("Noa is sick" = Noa), or null for the member writing. date: the day it is about (today unless the MESSAGE says another day). summary: the MESSAGE in a few words.
 {"intent":"why","itemId":item id}
 Titles in the language the member wrote in. "visibility":"parents" only if the member asks to keep it from the children.`;
   const user = `${dataBlock('BOARD', boardContext(input.view, input.now))}\n\n${dataBlock('MESSAGE', input.text.slice(0, LIMITS.message))}\n\nReply with the JSON object for the MESSAGE.`;

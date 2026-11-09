@@ -14,7 +14,7 @@
  */
 import type { ActionAdapter, AdapterRegistry } from './actions';
 import { addDays, localParts, toIso, zonedToUtc } from './clock';
-import type { BabysitterMessage, GroupMessage, HomemindState, Member, PizzaOrder, ServicesState, ServicesView } from './types';
+import type { BabysitterMessage, GroupMessage, HomemindState, Member, PizzaOrder, ServicesState, ServicesView, TeacherMessage } from './types';
 import { ID_PATTERN } from './types';
 
 const MINUTE = 60_000;
@@ -27,7 +27,7 @@ const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 export const SIMULATED_LABEL = { en: 'Simulated', zh: '模拟' } as const;
 
 /** Adapter ids. `pizza` matches the seeded Friday rule's template. */
-export const ADAPTER_IDS = { groupReply: 'group-reply', pizza: 'pizza', babysitter: 'babysitter' } as const;
+export const ADAPTER_IDS = { groupReply: 'group-reply', pizza: 'pizza', babysitter: 'babysitter', teacher: 'teacher-message' } as const;
 
 // --- kindergarten group ----------------------------------------------------------------------------------
 
@@ -224,6 +224,33 @@ export function draftBabysitterMessage(sitterId: string, date: string, from: str
     : `Hi ${name}, could you babysit on ${month}/${day} from ${from} to ${to}? Thank you!`;
 }
 
+// --- class teacher (T8.1) ---------------------------------------------------------------------------------
+
+/** The simulated class teacher. Her answer to a "stays home today" message is canned. */
+export const TEACHER = {
+  id: 'teacher-wang',
+  name: 'Teacher Wang',
+  nameZh: '王老师',
+  reply: '收到，谢谢告知！祝孩子早日康复。',
+  replyEn: 'Got it, thank you for letting me know. Wishing a quick recovery.'
+} as const;
+
+/**
+ * The message Homemind drafts for the teacher when a child stays home sick: that the child is unwell and
+ * stays home that day, nothing more (no symptoms, nothing about the parents). Always Chinese: the teacher's
+ * language; screens show the English next to it.
+ */
+export function draftTeacherMessage(child: { name: string; nameZh?: string }, authorZh: string, date: string, today: string): { zh: string; en: string } {
+  const childNameZh = child.nameZh ?? child.name;
+  const [, month, day] = date.split('-').map(Number);
+  const when = date === today ? '今天' : `${month}月${day}日`;
+  const whenEn = date === today ? 'today' : `on ${month}/${day}`;
+  return {
+    zh: `${TEACHER.nameZh}您好！${childNameZh}${when}身体不舒服，在家休息，不来幼儿园了。谢谢！——${authorZh}`,
+    en: `Hello ${TEACHER.name}, ${child.name} is unwell and stays home ${whenEn}, not at kindergarten. Thank you!`
+  };
+}
+
 // --- inbox -----------------------------------------------------------------------------------------------
 
 export const APPROVED_SENDERS = [
@@ -345,7 +372,8 @@ export function servicesViewFor(state: HomemindState, memberId: string, now: num
       simulated: true
     },
     inbox: { approvedSenders: APPROVED_SENDERS.map(s => ({ ...s })), messages: inboxFor(memberId, now), simulated: true },
-    weather: { days: weatherFor(now, zone), simulated: true }
+    weather: { days: weatherFor(now, zone), simulated: true },
+    teacher: { name: TEACHER.name, nameZh: TEACHER.nameZh, messages: services.teacherMessages ?? [], simulated: true }
   };
 }
 
@@ -500,9 +528,56 @@ function babysitterAdapter(deps: ServicesDeps): ActionAdapter {
   };
 }
 
+/**
+ * T8.1: sends the drafted "stays home today" message to the simulated teacher, as the parent named in the
+ * payload. A message outside the family: always a parent's tap, never at level 4 on its own.
+ */
+function teacherAdapter(deps: ServicesDeps): ActionAdapter {
+  return {
+    id: ADAPTER_IDS.teacher,
+    mode: 'simulated',
+    area: 'childcare',
+    autoAllowed: false,
+    validate(payload) {
+      const extra = extraKeys(payload, ['teacherId', 'childId', 'date', 'text', 'asMemberId']);
+      if (extra) return extra;
+      if (payload.teacherId !== TEACHER.id) return 'Unknown teacher';
+      if (typeof payload.childId !== 'string' || !ID_PATTERN.test(payload.childId)) return 'childId is a member id';
+      if (typeof payload.date !== 'string' || !DATE.test(payload.date)) return 'date is YYYY-MM-DD';
+      if (!cleanText(payload.text, 300)) return 'text is 1 to 300 characters';
+      if (typeof payload.asMemberId !== 'string' || !ID_PATTERN.test(payload.asMemberId)) return 'asMemberId is a member id';
+      return null;
+    },
+    async execute(payload, signal) {
+      const stop = aborted(signal);
+      if (stop) return stop;
+      const state = deps.get();
+      const services = servicesOf(state);
+      const member = state.family.members.find(m => m.id === payload.asMemberId && m.role === 'parent' && m.hasAccount);
+      if (!member) return { ok: false, error: 'Only a parent can message the teacher' };
+      if (!state.family.members.some(m => m.id === payload.childId && m.role === 'child')) return { ok: false, error: 'Unknown child' };
+      const list = services.teacherMessages ?? [];
+      const message: TeacherMessage = {
+        id: nextId('tch', list),
+        at: toIso(deps.now()),
+        teacherId: TEACHER.id,
+        childId: payload.childId as string,
+        date: payload.date as string,
+        author: groupAuthorFor(state, member).authorZh,
+        text: cleanText(payload.text, 300) as string,
+        reply: TEACHER.reply,
+        replyEn: TEACHER.replyEn,
+        simulated: true
+      };
+      deps.set(withServices(state, { ...services, teacherMessages: [...list, message] }));
+      return { ok: true, result: { messageId: message.id, simulated: true } };
+    }
+  };
+}
+
 /** The demo's adapters. All simulated: the demo has no real adapter. */
 export function createSimulatedAdapters(deps: ServicesDeps): AdapterRegistry {
-  const list = [groupReplyAdapter(deps), pizzaAdapter(deps), babysitterAdapter(deps)];
+  const list = [groupReplyAdapter(deps), pizzaAdapter(deps), babysitterAdapter(deps), teacherAdapter(deps)];
   return Object.freeze(Object.fromEntries(list.map(a => [a.id, a])));
 }
 

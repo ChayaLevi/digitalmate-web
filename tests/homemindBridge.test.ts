@@ -98,6 +98,7 @@ describe('the flag', () => {
     // T7.5's routes too.
     expect((await fetch(`${base}/api/homemind/demo/update-group-message`, { method: 'POST', body: '{}' })).status).toBe(FALLTHROUGH);
     expect((await fetch(`${base}/api/homemind/source-changes/src-x-1/apply`, { method: 'POST', body: '{}' })).status).toBe(FALLTHROUGH);
+    expect((await fetch(`${base}/api/homemind/situations/sit-x-1/apply`, { method: 'POST', body: '{"proposalId":"p1"}' })).status).toBe(FALLTHROUGH);
     process.env.HOMEMIND_ENABLED = '0';
     expect((await fetch(`${base}/api/homemind/health`)).status).toBe(FALLTHROUGH);
   });
@@ -695,9 +696,9 @@ describe('POST /chat (T5.2)', () => {
     expect((await mom.send('POST', '/items/pickup-today/assign', { version: pickup.version, ownerId: 'dad' })).status).toBe(200);
   });
 
-  it('situations say they are not built yet', async () => {
+  it('"Noa is sick" plans the day (T8.1; tests/homemindSituationsBridge.test.ts covers the rest)', async () => {
     const mom = as(await login('mom'));
-    expect(await chat(mom, 'Noa is sick today')).toMatchObject({ outcome: 'later', intent: 'report_situation', task: 'T8.1' });
+    expect(await chat(mom, 'Noa is sick today')).toMatchObject({ outcome: 'situation', intent: 'report_situation' });
   });
 
   it('checks the body, the origin and the session', async () => {

@@ -495,6 +495,14 @@ export function FamilyView({
                 : args.action === 'discard'
                   ? tr('Discarded. Undo is on the card.', '已舍弃，卡片上可以撤销。')
                   : tr('Undone. The change waits for a decision again.', '已撤销，这项更改重新等待决定。')
+          : verb === 'situation'
+            ? args.action === 'apply'
+              ? args.proposalId === 'all'
+                ? tr('All suggestions applied. Each has its own Undo.', '已全部采纳，每一项都可以单独撤销。')
+                : tr('Applied. Undo is on the row.', '已采纳，可以在这一行撤销。')
+              : args.action === 'dismiss'
+                ? tr('Left as it is. Undo is on the row.', '保持原样，可以在这一行撤销。')
+                : tr('Undone. The suggestion waits again.', '已撤销，这条建议重新等待决定。')
           : verb === 'confirm-card'
             ? tr('Done. It went to the simulated service only.', '已完成，只发送到模拟服务。')
           : verb === 'cancel-card'

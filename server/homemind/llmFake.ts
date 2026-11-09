@@ -241,6 +241,21 @@ function fakeIntent(today: Today, board: Board, text: string, lang: 'en' | 'zh')
     if (!item || parts.length < 2) return ask(which);
     return { intent: 'split_item', itemId: item.id, parts: parts.slice(0, 4).map(title => ({ title: title.slice(0, 80), due: null })) };
   }
+  // "Delete the library books task" / "把还书删掉": the board's Remove, with Undo.
+  if (/\b(delete|remove|cancel)\b|删除|删掉|取消|不用了/.test(t)) {
+    const item = findItem(board, text);
+    return item ? { intent: 'delete_item', itemId: item.id } : ask(which);
+  }
+  // "Move the piano lesson to Friday 18:00" / "把钢琴课改到周五": a new day, a new time, or both.
+  if (/\b(move|reschedule|postpone)\b|改到|挪到|推迟到|换到/.test(t)) {
+    const item = findItem(board, text);
+    if (!item) return ask(which);
+    const was = item.start ? local(today, item.start) : undefined;
+    const day = dayIn(today, text) ?? was?.date;
+    const time = timeIn(text) ?? was?.time ?? '09:00';
+    if (!day || (day === was?.date && time === was?.time)) return ask(zh ? '要改到什么时候？' : 'When should it move to?');
+    return { intent: 'update_item', itemId: item.id, title: null, start: at(today, day, time) };
+  }
   if (/\bbring\b|\bprepare\b|\bpack\b|准备|带上|要带/.test(t)) {
     const event = findItem(board, text, i => i.type === 'event');
     if (event) {

@@ -1259,7 +1259,15 @@ export default function App() {
               />
             )
           ) : tab === 'family' && homemind ? (
-            <FamilyView health={homemind} incoming={homemindAction} onIncomingHandled={() => setHomemindAction(null)} />
+            <FamilyView
+              health={homemind}
+              incoming={homemindAction}
+              onIncomingHandled={() => setHomemindAction(null)}
+              onOpenChat={() => {
+                setActivePersona('family');
+                setTab('chat');
+              }}
+            />
           ) : (
             <DiscoveryView
               cards={allCards}

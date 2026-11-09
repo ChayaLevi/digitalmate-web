@@ -923,8 +923,8 @@ async function chatHandler(ctx: Ctx): Promise<void> {
       }
       if (!applied.ok) return answer({ kind: 'failed', reason: 'change', code: applied.code, message: applied.message }, { intent, status: applied.status });
       const itemId = 'itemId' in plan.change ? plan.change.itemId : applied.changedIds[0];
-      // A split: the other parts are shown too.
-      const alsoIds = plan.change.kind === 'split' ? applied.changedIds.filter(id => id !== itemId) : [];
+      // A split: the other parts are shown too. A removal: the preparations that went with the event.
+      const alsoIds = plan.change.kind === 'split' || plan.change.kind === 'cancel' ? applied.changedIds.filter(id => id !== itemId) : [];
       // Undo, as on the board: the member made this change, so they may undo it.
       const undoable = rt.state.activity.some(a => a.id === applied.activityId && a.undo && !a.undone);
       return answer(

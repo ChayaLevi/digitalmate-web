@@ -38,6 +38,7 @@ export const INTENT_NAMES = [
   'mark_done',
   'update_item',
   'split_item',
+  'delete_item',
   'add_preference',
   'create_rule',
   'report_situation',
@@ -71,6 +72,8 @@ export type ChatIntent =
   | { intent: 'update_item'; itemId: string; title?: string; start?: string }
   /** A task or preparation that is really several: the first part replaces it. */
   | { intent: 'split_item'; itemId: string; parts: Array<{ title: string; due?: string }> }
+  /** Take an item off the board (an event takes its preparations with it). It has Undo, like any board write. */
+  | { intent: 'delete_item'; itemId: string }
   | { intent: 'add_preference'; text: string; reason?: string; aboutMemberId?: string; strength: 'hard' | 'soft'; scope?: string }
   /** A standing rule is never live from chat: the caller turns this into a card that needs a tap. */
   | { intent: 'create_rule'; title: string; weekday: number; time: string; leadMinutes: number; action: string }
@@ -299,9 +302,11 @@ Reply with ONE JSON object, no prose. "intent" is one of:
 {"intent":"claim","itemId":item id}            (the member takes it themselves)
 {"intent":"mark_done","itemId":item id}
 {"intent":"update_item","itemId":item id,"title":string|null,"start":ISO|null}
-   reword an item (title) or move its time (start: a task's or preparation's due, an event's start). null = unchanged.
+   reword an item (title) or move its time ("move", "reschedule", "change to", "改到", "推迟"; start: a task's or preparation's due, an event's start; an event keeps its length). null = unchanged.
 {"intent":"split_item","itemId":task or preparation id,"parts":[{"title":string,"due":ISO|null}]}
    one item that is really 2 to 4 things. The first part replaces the item, the others are new items beside it. due null = the item's own.
+{"intent":"delete_item","itemId":item id}
+   take an item off the board ("delete", "remove", "cancel", "it's off", "删除", "取消", "不用了"). An event's preparations go with it. The member can undo it.
 {"intent":"add_preference","text":string,"reason":string|null,"aboutMemberId":member id|null,"strength":"hard"|"soft","scope":string|null}
    text: the preference itself, without the reason. reason: the member's own words after "because"/"因为", copied as written (never a reason from the BOARD), or null.
    hard = allergies, dietary laws, medical; soft = likes and habits. scope: where it applies, as short English words joined by "-" (e.g. "kindergarten-party", "school-lunch"), or null for everywhere.
@@ -527,6 +532,7 @@ export function validateIntent(raw: unknown, ctx: IntentContext): Validation<Cha
       break;
     case 'claim':
     case 'mark_done':
+    case 'delete_item':
     case 'why':
       value = { intent: name, itemId: c.id(raw.itemId, 'itemId', items) };
       break;

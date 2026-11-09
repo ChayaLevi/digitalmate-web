@@ -7268,6 +7268,8 @@ a {
   cursor: pointer;
 }
 .hm-subnav button[aria-current='page'] { background: var(--accent-deep); border-color: var(--accent-deep); color: #fff; }
+/* Not a Family screen: it leaves for the Chat tab, so it looks like a link-style pill. */
+.hm-subnav .hm-subnav-chat { border-style: dashed; color: var(--accent-deep); }
 .hm-who { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--text); }
 .hm-who strong { color: var(--ink); }
 .hm-who button, .hm-notice button {

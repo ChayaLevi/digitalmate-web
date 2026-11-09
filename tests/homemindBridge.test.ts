@@ -602,6 +602,33 @@ describe('POST /chat (T5.2)', () => {
     expect((await item(dad, 'pickup-today')).ownership.state).toBe('none');
   });
 
+  it('removes an event from chat with its preparation, and Undo brings both back', async () => {
+    const mom = as(await login('mom'));
+    const reply = await chat(mom, "Cancel the family dinner at Grandma's");
+    expect(reply).toMatchObject({ ok: true, outcome: 'written', intent: 'delete_item' });
+    expect(reply.message).toContain('Removed from the board: “Family dinner at Grandma\'s”.');
+    expect(reply.message).toContain('Its 1 preparation(s) were removed with it.');
+    const after = await debugState();
+    expect(after.items.find(i => i.id === 'family-dinner')?.status).toBe('cancelled');
+    expect(after.items.find(i => i.id === 'family-dinner-flowers')?.status).toBe('cancelled');
+    expect((await mom.send('POST', '/items/family-dinner/undo', { activityId: reply.activityId })).status).toBe(200);
+    const back = await debugState();
+    expect(back.items.find(i => i.id === 'family-dinner')?.status).toBe('open');
+    expect(back.items.find(i => i.id === 'family-dinner-flowers')?.status).toBe('open');
+  });
+
+  it('moves an event from chat, keeping its length, in Chinese too', async () => {
+    const mom = as(await login('mom'));
+    const before = (await debugState()).items.find(i => i.id === 'piano-tomorrow')!;
+    const reply = await chat(mom, '把玛雅的钢琴课改到周五下午6点', 'zh');
+    expect(reply).toMatchObject({ ok: true, outcome: 'written', intent: 'update_item' });
+    expect(reply.message).toContain('已更新：“玛雅的钢琴课”');
+    const moved = (await debugState()).items.find(i => i.id === 'piano-tomorrow')!;
+    expect(moved.start).not.toBe(before.start);
+    expect(new Date(moved.start!).getUTCDay()).toBe(5); // 18:00 in Shanghai is 10:00 UTC, the same day
+    expect(Date.parse(moved.end!) - Date.parse(moved.start!)).toBe(Date.parse(before.end!) - Date.parse(before.start!));
+  });
+
   it('answers a question from the board, and adds a task from chat with a chat source', async () => {
     const mom = as(await login('mom'));
     const answer = await chat(mom, "What's on today?");

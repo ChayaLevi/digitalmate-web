@@ -110,9 +110,12 @@ function demoMemberFromUrl(): string | null {
 export function FamilyView({
   health,
   incoming,
-  onIncomingHandled
+  onIncomingHandled,
+  onOpenChat
 }: {
   health: HomemindHealth;
+  /** Opens the chat with the Family companion, where the board can be changed in words. */
+  onOpenChat?: () => void;
   /** A Homemind button tapped outside this tab (for example on a chat card), to carry out here. */
   incoming?: A2uiAction | null;
   onIncomingHandled?: () => void;
@@ -667,6 +670,11 @@ export function FamilyView({
         <button type="button" aria-current={nav.screen === 'edit' && !nav.params.id ? 'page' : undefined} onClick={() => go({ screen: 'edit', params: {} })}>
           + {tr('Add', '添加')}
         </button>
+        {onOpenChat ? (
+          <button type="button" className="hm-subnav-chat" onClick={onOpenChat}>
+            {tr('Chat with Homemind', '和 Homemind 聊天')}
+          </button>
+        ) : null}
       </nav>
       {health.demo && clock ? (
         <div className="hm-demo-clock" data-demo-clock={new Date(clock.now + (tickAt - clock.heardAt)).toISOString()} data-offset={clock.offsetMs}>

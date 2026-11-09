@@ -554,6 +554,25 @@ test('chat (T5.2): Mom asks, adds, reassigns and asks why; Dad sees it live; Und
   }
 });
 
+test('chat: "Chat with Homemind" on Family opens the chat with the Family companion; a task is removed in words and Undo brings it back', async ({ page, request }) => {
+  // No companion chosen beforehand: the button picks the Family one.
+  await openFamily(page, 'en', 'mom');
+  await expect(family(page)).toHaveAttribute('data-member', 'mom');
+  await expect(page.locator('[data-task-id="library-books"]').first()).toBeVisible();
+  await family(page).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'Chat with Homemind' }).click();
+  await expect(page.getByRole('button', { name: 'Companion: Family companion' })).toBeVisible();
+  const removed = await chatTo(page, 'Delete the library books task');
+  await expect(removed).toContainText('Removed from the board: “Return the library books”.');
+  await expect(removed).toContainText('Simulated model');
+  expect(await seriousIssues(page)).toEqual([]);
+  const status = async () => ((await (await request.get(`${BASE}/api/homemind/debug/state`)).json()) as { items: Array<{ id: string; status: string }> }).items.find(i => i.id === 'library-books')?.status;
+  expect(await status()).toBe('cancelled');
+  // Undo on the chat card: the Family tab runs it, and the task is back on the board.
+  await removed.getByRole('button', { name: 'Undo' }).click();
+  await expect(family(page)).toBeVisible();
+  await expect(page.locator('[data-task-id="library-books"]').first()).toBeVisible();
+});
+
 test('chat (T5.2): a teen asking about a Parents-only item gets no trace of it', async ({ page }) => {
   await openFamily(page, 'en', 'maya', 'family');
   await expect(family(page)).toHaveAttribute('data-member', 'maya');

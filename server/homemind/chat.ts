@@ -8,7 +8,7 @@
  *   why      Homemind's own record of an item: who added it, how, who has it, the last change
  *   preference  save a preference (T5.4); at level 1 or paused, a card with a Save button instead
  *   blocked  a preparation or task that a hard preference rules out (T5.4): nothing changes
- *   held     an edit or a split at autonomy level 1, or paused: nothing changes, the board can do it
+ *   held     an edit, a split or a removal at autonomy level 1, or paused: nothing changes, the board can do it
  *   situation  someone is sick (T8.1): the bridge runs situations.ts (who stays home, what to change)
  *   later    an intent whose task is not built yet (rules from chat; situations other than "sick")
  *   missing  the item is no longer on the member's board (changed while the model was thinking)
@@ -31,7 +31,7 @@ import type { Family, ItemExplanation, ItemSource } from './types';
 /** A timed event the model gave no end for lasts this long. */
 export const DEFAULT_EVENT_MINUTES = 60;
 
-export type WriteIntent = 'create_event' | 'create_task' | 'add_preparation' | 'assign' | 'claim' | 'mark_done' | 'update_item' | 'split_item';
+export type WriteIntent = 'create_event' | 'create_task' | 'add_preparation' | 'assign' | 'claim' | 'mark_done' | 'update_item' | 'split_item' | 'delete_item';
 export type LaterIntent = 'create_rule' | 'report_situation';
 
 export type ChatPlan =
@@ -42,8 +42,8 @@ export type ChatPlan =
   /** `save: false`: level 1 or paused, so the member gets a Save button instead. */
   | { kind: 'preference'; input: PreferenceInput; save: boolean; reason?: 'level1' | 'paused' }
   | { kind: 'blocked'; intent: 'create_task' | 'add_preparation'; title: string; blocked: BlockedChoice[] }
-  /** An edit or a split at level 1, or paused: nothing changes. */
-  | { kind: 'held'; intent: 'update_item' | 'split_item'; itemId: string; reason: 'level1' | 'paused' }
+  /** An edit, a split or a removal at level 1, or paused: nothing changes. */
+  | { kind: 'held'; intent: 'update_item' | 'split_item' | 'delete_item'; itemId: string; reason: 'level1' | 'paused' }
   | { kind: 'later'; intent: LaterIntent; task: 'T7.3' | 'T8.1' }
   /** T8.1: who is sick and which day; the bridge plans the rest with fixed rules (situations.ts). */
   | { kind: 'situation'; memberId: string; date: string; summary: string }
@@ -166,6 +166,14 @@ export function planChat(view: MemberView, intent: ChatIntent): ChatPlan {
       if (!mayWrite) return { kind: 'held', intent: 'split_item', itemId: item.id, reason };
       const parts = intent.parts.map(p => ({ title: p.title, ...(p.due ? { start: p.due } : {}) }));
       return { kind: 'write', intent: 'split_item', change: { kind: 'split', itemId: item.id, version: item.version, parts, source: chatSource(name) }, proposed: false };
+    }
+
+    case 'delete_item': {
+      // The board's Remove: the item (and an event's preparations) is cancelled, with Undo.
+      const item = find(intent.itemId);
+      if (!item) return { kind: 'missing', intent: intent.intent };
+      if (!mayWrite) return { kind: 'held', intent: 'delete_item', itemId: item.id, reason };
+      return { kind: 'write', intent: 'delete_item', change: { kind: 'cancel', itemId: item.id, version: item.version }, proposed: false };
     }
 
     case 'why': {

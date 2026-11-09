@@ -1294,7 +1294,7 @@ export type ChatOutcome =
   | { kind: 'answer'; answer: string; itemIds: string[] }
   | {
       kind: 'written';
-      intent: 'create_event' | 'create_task' | 'add_preparation' | 'assign' | 'claim' | 'mark_done' | 'update_item' | 'split_item';
+      intent: 'create_event' | 'create_task' | 'add_preparation' | 'assign' | 'claim' | 'mark_done' | 'update_item' | 'split_item' | 'delete_item';
       itemId: string;
       /** A split: the new parts beside `itemId`. */
       alsoIds?: string[];
@@ -1314,7 +1314,7 @@ export type ChatOutcome =
   /** T5.4: a hard preference rules this out. Nothing changed. */
   | { kind: 'blocked'; title: string; blocked: Array<{ preference: Preference; term: string }> }
   /** An edit or a split at level 1, or paused: nothing changed. */
-  | { kind: 'held'; intent: 'update_item' | 'split_item'; itemId: string; reason: 'level1' | 'paused' }
+  | { kind: 'held'; intent: 'update_item' | 'split_item' | 'delete_item'; itemId: string; reason: 'level1' | 'paused' }
   | { kind: 'later'; intent: 'create_rule' | 'report_situation' }
   /** T8.1: someone is sick. `created: false`: that member and day were already reported (the same card again). */
   | { kind: 'situation'; situationId: string; created: boolean; activityId?: string }
@@ -1345,6 +1345,8 @@ const C = {
   claimed: { en: (t: string) => `“${t}” is yours now.`, zh: (t: string) => `“${t}”现在由你负责。` },
   doneMsg: { en: (t: string) => `Marked done: “${t}”.`, zh: (t: string) => `已标记完成：“${t}”。` },
   updated: { en: (t: string) => `Updated: “${t}”.`, zh: (t: string) => `已更新：“${t}”。` },
+  removed: { en: (t: string) => `Removed from the board: “${t}”.`, zh: (t: string) => `已从看板移除：“${t}”。` },
+  removedPreps: { en: (n: number) => `Its ${n} preparation(s) were removed with it.`, zh: (n: number) => `它的 ${n} 项准备也一起移除了。` },
   noOwnerHint: { en: 'Nobody has it yet, so nobody will be reminded. Take it or assign it.', zh: '目前还没有人负责，所以不会有人收到提醒。请认领或指派。' },
   splitMsg: { en: (titles: string[]) => `Split into ${titles.length}: ${titles.map(t => `“${t}”`).join(', ')}.`, zh: (titles: string[]) => `已拆分为 ${titles.length} 项：${titles.map(t => `“${t}”`).join('、')}。` },
   heldLevel1: { en: 'Autonomy is set to “Suggests”, so nothing was changed. You can edit it on the board:', zh: '自主程度设为“仅建议”，所以没有做任何更改。你可以在看板上修改：' },
@@ -1500,6 +1502,11 @@ export function chatTurn(input: ChatTurnData): HomemindTurn {
       else if (outcome.intent === 'claim') parts.push(C.claimed[lang](t));
       else if (outcome.intent === 'mark_done') parts.push(C.doneMsg[lang](t));
       else if (outcome.intent === 'update_item') parts.push(C.updated[lang](t));
+      else if (outcome.intent === 'delete_item') {
+        parts.push(C.removed[lang](t));
+        const preps = view.items.filter(i => i.parentEventId === outcome.itemId && i.status === 'cancelled' && (outcome.alsoIds ?? []).includes(i.id)).length;
+        if (preps) parts.push(C.removedPreps[lang](preps));
+      }
       else if (outcome.intent === 'split_item') parts.push(C.splitMsg[lang]([t, ...(outcome.alsoIds ?? []).map(titleById)].filter(Boolean)));
       else parts.push(`${outcome.proposed ? C.proposedAdd[lang] : C.added[lang]} “${t}”`);
       if (outcome.opened.length) parts.push(C.opened[lang](outcome.opened.length));

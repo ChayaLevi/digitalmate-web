@@ -186,3 +186,74 @@ describe('intents: follow-ups', () => {
     expect(String(requests[0].user)).toContain('Homemind: Should I change it to a treat for 30 girls?');
   });
 });
+
+describe('chat: remove and move (delete_item)', () => {
+  it('removes like the board: an event takes its preparations, and one Undo brings them back', () => {
+    const state = fresh();
+    const done = run(state, { intent: 'delete_item', itemId: 'family-dinner' });
+    expect(done.plan).toMatchObject({ kind: 'write', intent: 'delete_item', change: { kind: 'cancel', itemId: 'family-dinner' } });
+    expect(done.state.items.find(i => i.id === 'family-dinner')?.status).toBe('cancelled');
+    expect(done.state.items.find(i => i.id === 'family-dinner-flowers')?.status).toBe('cancelled');
+    const last = done.state.activity[done.state.activity.length - 1];
+    const undone = apply(done.state, { kind: 'undo', activityId: last.id });
+    expect(undone.items.find(i => i.id === 'family-dinner')?.status).toBe('open');
+    expect(undone.items.find(i => i.id === 'family-dinner-flowers')?.status).toBe('open');
+  });
+
+  it('holds at level 1 and while paused, and never reaches an item the member cannot see', () => {
+    const state = fresh();
+    const level1 = { ...state, family: { ...state.family, autonomy: { default: 1 as const } } };
+    expect(planChat(view(level1, 'mom'), { intent: 'delete_item', itemId: 'library-books' })).toEqual({ kind: 'held', intent: 'delete_item', itemId: 'library-books', reason: 'level1' });
+    const paused = { ...state, family: { ...state.family, paused: true } };
+    expect(planChat(view(paused, 'mom'), { intent: 'delete_item', itemId: 'library-books' })).toMatchObject({ kind: 'held', reason: 'paused' });
+    // The counselor meeting is Parents only: Maya's view has no such item.
+    expect(planChat(view(state, 'maya'), { intent: 'delete_item', itemId: 'counselor-meeting' })).toEqual({ kind: 'missing', intent: 'delete_item' });
+    // Already removed: nothing to remove.
+    const gone = run(state, { intent: 'delete_item', itemId: 'library-books' }).state;
+    expect(planChat(view(gone, 'mom'), { intent: 'delete_item', itemId: 'library-books' })).toEqual({ kind: 'missing', intent: 'delete_item' });
+  });
+
+  it('validates delete_item: an id from the board only', () => {
+    const ctx = intentContextFor(view(fresh(), 'maya'), NOW);
+    expect(validateIntent({ intent: 'delete_item', itemId: 'library-books' }, ctx)).toEqual({ ok: true, value: { intent: 'delete_item', itemId: 'library-books' } });
+    expect(validateIntent({ intent: 'delete_item', itemId: 'counselor-meeting' }, ctx).ok).toBe(false);
+    expect(validateIntent({ intent: 'delete_item' }, ctx).ok).toBe(false);
+  });
+
+  it('the prompt offers delete_item and says how to move', () => {
+    const prompt = intentPrompt({ view: view(fresh(), 'mom'), now: NOW, lang: 'en', text: 'hi' });
+    expect(prompt.system).toContain('{"intent":"delete_item","itemId":item id}');
+    expect(prompt.system).toContain('"reschedule"');
+  });
+
+  it('the card says what was removed, in both languages, with Undo; held says nothing changed', () => {
+    const done = run(fresh(), { intent: 'delete_item', itemId: 'family-dinner' }).state;
+    const activityId = done.activity[done.activity.length - 1].id;
+    const outcome = { kind: 'written' as const, intent: 'delete_item' as const, itemId: 'family-dinner', alsoIds: ['family-dinner-flowers'], proposed: false, opened: [], conflicts: 0, activityId };
+    const en = chatTurn({ lang: 'en', now: new Date(NOW).toISOString(), view: view(done, 'mom'), llm: 'live', turnId: 't1', outcome });
+    expect(en.message).toBe("Removed from the board: “Family dinner at Grandma's”. Its 1 preparation(s) were removed with it. You can undo it.");
+    expect(en.jsonl).toContain(`homemind.undo:${activityId}`);
+    const zh = chatTurn({ lang: 'zh', now: new Date(NOW).toISOString(), view: view(done, 'mom'), llm: 'live', turnId: 't2', outcome });
+    expect(zh.message).toContain('已从看板移除：“去奶奶家吃饭”。');
+    expect(zh.message).toContain('它的 1 项准备也一起移除了。');
+    const held = chatTurn({ lang: 'en', now: new Date(NOW).toISOString(), view: view(fresh(), 'mom'), llm: 'live', turnId: 't3', outcome: { kind: 'held', intent: 'delete_item', itemId: 'library-books', reason: 'level1' } });
+    expect(held.message).toContain('nothing was changed');
+  });
+
+  it('the simulated model removes and moves an item it can find, and asks when it cannot', async () => {
+    const fake = createLlmClient(llmConfigFromEnv({ HOMEMIND_LLM: 'fake' }));
+    const v = view(fresh(), 'mom');
+    const intent = async (text: string, lang: 'en' | 'zh' = 'en') => {
+      const result = await runIntent(fake, { view: v, now: NOW, lang, text });
+      if (!result.ok) throw new Error(result.message);
+      return result.value;
+    };
+    expect(await intent('Delete the library books task')).toEqual({ intent: 'delete_item', itemId: 'library-books' });
+    expect(await intent('把还图书馆的书删掉', 'zh')).toEqual({ intent: 'delete_item', itemId: 'library-books' });
+    // Friday 2026-11-06, 18:00 in Shanghai.
+    expect(await intent("Move Maya's piano lesson to Friday 18:00")).toEqual({ intent: 'update_item', itemId: 'piano-tomorrow', start: '2026-11-06T10:00:00.000Z' });
+    // Only a new day: the time stays (17:00).
+    expect(await intent("Reschedule Maya's piano lesson to Friday")).toEqual({ intent: 'update_item', itemId: 'piano-tomorrow', start: '2026-11-06T09:00:00.000Z' });
+    expect((await intent('Delete the spaceship launch')).intent).toBe('ask');
+  });
+});

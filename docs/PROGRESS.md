@@ -463,7 +463,7 @@ Template (copy for each task):
 **Not done or not verified:** chat edits cover title and time only (not who it is for, notes, Important or Parents only; those stay in the form). Going back to the Chat tab opens its home screen, not the last card ("Continue last chat" does): base app behaviour, not changed.
 **How to verify:**
 - Commands: `npx vitest run tests/homemindChatFollowUp.test.ts` ; `npx playwright test e2e/homemind.spec.ts -g "Chat with Homemind"`
-- Expected output: 23 passed; 1 passed.
+- Expected output: 17 passed; 1 passed.
 - Manual check: `npm run dev`, Family as Mom, tap "Chat with Homemind": the chat opens with "Family companion". Write "Delete the library books task": the card says "Removed from the board" with Undo. Write "Move Maya's piano lesson to Friday 18:00": the card says "Updated". Tap Undo on the first card: the task is back on My day.
 
 ### Fix: events without an owner, and My day by day (2026-11-09)

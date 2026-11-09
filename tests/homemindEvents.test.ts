@@ -464,7 +464,10 @@ describe('the stream over HTTP', () => {
     expect(await dad.next(m => m.event === 'alert', 300)).toBeNull();
     const full = (await (await fetch(`${base}/api/homemind/debug/state`)).json()) as HomemindState;
     // The tick planned the reminders the seed calls for (no change was made, so only the loop did it).
-    expect(full.reminders.map(r => r.itemId).sort()).toEqual(['pickup-today', 'swim-today']);
+    // The seed is laid out from the real time, so on some afternoons Tuesday's pickup is inside the
+    // 26-hour horizon too: only today's two are certain.
+    expect(full.reminders.map(r => r.itemId)).toEqual(expect.arrayContaining(['pickup-today', 'swim-today']));
+    expect(full.reminders.every(r => ['pickup-today', 'swim-today', 'pickup-tuesday'].includes(r.itemId))).toBe(true);
     resetHomemindRuntime();
     expect(schedulerRunning()).toBe(false);
   });

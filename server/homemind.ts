@@ -42,6 +42,7 @@ import { detectSourceChanges, resolveSourceChange, sourceChangesView, undoSource
 import { createLlmClient, llmConfigFromEnv, llmStatus } from './homemind/llm';
 import type { LlmClient } from './homemind/llm';
 import { isImageDataUrl, MAX_IMAGE_DATA_URL, runExtraction, runIntent, LIMITS as INTENT_LIMITS } from './homemind/intents';
+import type { ChatLine } from './homemind/intents';
 import { applyExtraction } from './homemind/extraction';
 import { chatMayWrite, planChat } from './homemind/chat';
 import { applySuggestions, dismissSuggestion, situationsView, startSituation, undoSuggestion } from './homemind/situations';
@@ -183,6 +184,9 @@ interface Runtime {
   ppma?: PpmaClient;
   /** The simulated services' adapters (T7.2), bound to this runtime's state and clock. */
   adapters?: AdapterRegistry;
+  /** Each member's recent chat lines, in memory only, so "yes" or "no, I meant..." reaches the model with
+   * what it answers. Never shared between members; dropped after a quiet spell and on a demo reset. */
+  chats?: Map<string, { lines: ChatLine[]; at: number }>;
 }
 
 interface Holder {
@@ -813,6 +817,21 @@ async function savePreference(ctx: Ctx, request: PreferenceRequest): Promise<Pre
   return result;
 }
 
+/** A conversation quiet for this long starts over. Real time: a demo clock jump does not end it. */
+const CHAT_MEMORY_MS = 20 * 60 * 1000;
+
+function recentChat(rt: Runtime, memberId: string): ChatLine[] {
+  const entry = rt.chats?.get(memberId);
+  if (!entry || Date.now() - entry.at > CHAT_MEMORY_MS) return [];
+  return entry.lines;
+}
+
+function rememberChat(rt: Runtime, memberId: string, lines: ChatLine[]): void {
+  rt.chats ??= new Map();
+  const kept = [...recentChat(rt, memberId), ...lines.filter(l => l.text.trim())].slice(-INTENT_LIMITS.recentLines);
+  rt.chats.set(memberId, { lines: kept, at: Date.now() });
+}
+
 /**
  * `POST /chat {text}`: one chat message. The model reads it against the member's own view and returns
  * one validated intent (intents.ts); `planChat` decides what that does under the family's autonomy;
@@ -834,12 +853,13 @@ async function chatHandler(ctx: Ctx): Promise<void> {
   if (!before) return fail(ctx.response, 404, 'not_found', 'No such member');
 
   const started = Date.now();
-  const result = await runIntent(llmOf(rt), { view: before, now: rt.clock.now(), lang, text });
+  const result = await runIntent(llmOf(rt), { view: before, now: rt.clock.now(), lang, text, recent: recentChat(rt, member.id) });
   const answer = async (outcome: ChatOutcome, extra: Record<string, unknown> = {}) => {
     // The state may have changed while the model was thinking: the card is built from the latest view.
     const view = viewFor(rt.state, member.id) ?? before;
     const now = new Date(rt.clock.now()).toISOString();
     const turn = chatTurn({ lang, now, view, llm, turnId: randomBytes(6).toString('hex'), outcome, reminders: pendingRemindersFor(rt.state, member.id, rt.clock.now()), situations: situationsView(rt.state, member.id, rt.clock.now()) });
+    rememberChat(rt, member.id, [{ from: 'member', text }, { from: 'homemind', text: turn.message }]);
     json(ctx.response, 200, { ...turn, ok: outcome.kind !== 'failed', outcome: outcome.kind, llm, ms: Date.now() - started, ...extra });
   };
   if (!result.ok) {
@@ -862,6 +882,8 @@ async function chatHandler(ctx: Ctx): Promise<void> {
       return answer({ kind: 'later', intent: plan.intent }, { intent, task: plan.task });
     case 'blocked':
       return answer({ kind: 'blocked', title: plan.title, blocked: plan.blocked }, { intent });
+    case 'held':
+      return answer({ kind: 'held', intent: plan.intent, itemId: plan.itemId, reason: plan.reason }, { intent });
     case 'preference': {
       if (!plan.save) return answer({ kind: 'preference-suggest', input: plan.input, reason: plan.reason ?? 'level1' }, { intent });
       const saved = await savePreference(ctx, { op: 'save', input: plan.input });
@@ -901,10 +923,12 @@ async function chatHandler(ctx: Ctx): Promise<void> {
       }
       if (!applied.ok) return answer({ kind: 'failed', reason: 'change', code: applied.code, message: applied.message }, { intent, status: applied.status });
       const itemId = 'itemId' in plan.change ? plan.change.itemId : applied.changedIds[0];
+      // A split: the other parts are shown too.
+      const alsoIds = plan.change.kind === 'split' ? applied.changedIds.filter(id => id !== itemId) : [];
       // Undo, as on the board: the member made this change, so they may undo it.
       const undoable = rt.state.activity.some(a => a.id === applied.activityId && a.undo && !a.undone);
       return answer(
-        { kind: 'written', intent: plan.intent, itemId, proposed: plan.proposed, ...(undoable ? { activityId: applied.activityId } : {}), opened: applied.opened, conflicts: applied.conflicts.length },
+        { kind: 'written', intent: plan.intent, itemId, ...(alsoIds.length ? { alsoIds } : {}), proposed: plan.proposed, ...(undoable ? { activityId: applied.activityId } : {}), opened: applied.opened, conflicts: applied.conflicts.length },
         { intent, activityId: applied.activityId, items: applied.items }
       );
     }
@@ -1396,6 +1420,7 @@ const routes: Route[] = [
       await readBody(ctx.request);
       const state = await ctx.rt.store.reset();
       ctx.rt.state = state;
+      ctx.rt.chats?.clear();
       ctx.rt.clock.setOffset(state.clockOffsetMs);
       ctx.rt.hub.broadcast({ event: 'demo.reset', data: {} });
       json(ctx.response, 200, { ok: true });

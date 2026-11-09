@@ -233,6 +233,14 @@ function fakeIntent(today: Today, board: Board, text: string, lang: 'en' | 'zh')
     if (item && member) return { intent: 'assign', itemId: item.id, memberId: member.id };
     return ask(which);
   }
+  // "Split <item> into A and B" / "把<item>拆成A和B": the first part replaces the item.
+  const split = /\bsplit\b(.*?)\binto\b(.+)$/i.exec(text) ?? /(?:拆分|拆成|分成)(.+)$/.exec(text);
+  if (split) {
+    const item = findItem(board, text, i => i.type !== 'event');
+    const parts = (split[2] ?? split[1]).split(/\s+and\s+|[,，、和]/).map(p => p.trim().replace(/[.。]$/, '')).filter(Boolean);
+    if (!item || parts.length < 2) return ask(which);
+    return { intent: 'split_item', itemId: item.id, parts: parts.slice(0, 4).map(title => ({ title: title.slice(0, 80), due: null })) };
+  }
   if (/\bbring\b|\bprepare\b|\bpack\b|准备|带上|要带/.test(t)) {
     const event = findItem(board, text, i => i.type === 'event');
     if (event) {

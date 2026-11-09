@@ -87,6 +87,15 @@ export interface SourceUpdate {
   cancel?: boolean;
 }
 
+export interface SplitPart {
+  title: string;
+  /** The part's due time. Absent: the original item's. */
+  start?: string;
+}
+
+/** A split makes 2 to this many items. */
+export const MAX_SPLIT_PARTS = 4;
+
 /** The actor of what Homemind does on its own. Only a `source_sync` change accepts it. */
 const HOMEMIND = 'homemind';
 
@@ -108,6 +117,9 @@ export type Change =
   | { kind: 'cancel_occurrence'; itemId: string; version: number; date: string }
   | { kind: 'approve'; itemId: string; version: number }
   | { kind: 'dismiss'; itemId: string; version: number }
+  /** One task or preparation that is really several: the first part replaces it, the others are new
+   * items beside it (same event, owner and visibility). One Activity, so one Undo puts it back. */
+  | { kind: 'split'; itemId: string; version: number; parts: SplitPart[]; source?: ItemSource }
   /** T7.5: several items at once, one Activity (`kind: 'source'`), so one Undo restores them all. */
   | { kind: 'source_sync'; changeId: string; note: 'marked' | 'applied' | 'kept' | 'discarded' | 'synced'; updates: SourceUpdate[] }
   /** `viaSource`: undo a `source` activity. Only sourceChanges.ts sets it, so the source change's own record follows. */
@@ -375,7 +387,9 @@ export function applyChange(state: HomemindState, change: Change, actor: string,
         ? planUndo(state, change.activityId, actor, change.viaSource === true)
         : change.kind === 'source_sync'
           ? planSourceSync(state, change, actor)
-          : planItemChange(state, change, actor);
+          : change.kind === 'split'
+            ? planSplit(state, change, actor, clock)
+            : planItemChange(state, change, actor);
   if ('ok' in draft) return draft;
   return commit(state, draft, actor, clock);
 }
@@ -495,7 +509,57 @@ function pickFields(input: ItemPatch): ItemPatch {
   return out as ItemPatch;
 }
 
-type ItemChange = Exclude<Change, { kind: 'create' } | { kind: 'undo' } | { kind: 'source_sync' }>;
+type ItemChange = Exclude<Change, { kind: 'create' } | { kind: 'undo' } | { kind: 'source_sync' } | { kind: 'split' }>;
+
+function planSplit(state: HomemindState, change: Extract<Change, { kind: 'split' }>, actor: string, clock: Clock): Draft | ChangeError {
+  const item = typeof change.itemId === 'string' ? state.items.find(i => i.id === change.itemId) : undefined;
+  if (!item || !canSee(state, actor, item)) return notFound();
+  if (!Number.isInteger(change.version)) return invalid('version is required');
+  if (change.version !== item.version) return fail(409, 'stale', 'this changed; here is the latest', item);
+  if (item.status === 'cancelled') return fail(409, 'conflict', 'this item was removed', item);
+  if (item.status === 'done') return fail(409, 'conflict', 'this is already done', item);
+  if (item.type === 'event') return invalid('only a task or a preparation can be split');
+  if (!Array.isArray(change.parts) || change.parts.length < 2 || change.parts.length > MAX_SPLIT_PARTS) return invalid(`a split makes 2 to ${MAX_SPLIT_PARTS} items`);
+  const [first, ...rest] = change.parts;
+  const edited = withFields(state, actor, item, pickFields({ title: first?.title ?? '', ...(first?.start ? { start: first.start } : {}) }));
+  if ('ok' in edited) return edited;
+  const next = new Map<string, Item | null>([[item.id, edited]]);
+  // The new parts keep the owner: whoever had the whole thing has each part. "Who's taking this?" stays open.
+  const ownership: Ownership | undefined =
+    item.ownership.state === 'assigned'
+      ? { state: 'assigned', ownerId: item.ownership.ownerId, confirmed: false }
+      : item.ownership.state === 'open'
+        ? { state: 'open', candidateIds: item.ownership.candidateIds }
+        : undefined;
+  let working = state;
+  for (const part of rest) {
+    const start = part?.start ?? item.start;
+    const draft = planCreate(
+      working,
+      {
+        type: item.type,
+        ...(item.parentEventId ? { parentEventId: item.parentEventId } : {}),
+        title: part?.title ?? '',
+        ...(start ? { start } : {}),
+        forMemberIds: item.forMemberIds,
+        visibility: item.visibility,
+        sensitive: item.sensitive,
+        importance: item.importance,
+        ...(ownership ? { ownership } : {}),
+        source: change.source ?? item.source,
+        ...(item.status === 'proposed' ? { proposed: true } : {})
+      },
+      actor,
+      clock
+    );
+    if ('ok' in draft) return draft;
+    for (const [id, created] of draft.next) {
+      next.set(id, created);
+      if (created) working = { ...working, items: [...working.items, created] };
+    }
+  }
+  return { next, kind: 'edit', itemId: item.id, what: `Split into ${change.parts.length} items` };
+}
 
 const SOURCE_WHAT: Record<Extract<Change, { kind: 'source_sync' }>['note'], string> = {
   marked: 'Marked items whose message changed',

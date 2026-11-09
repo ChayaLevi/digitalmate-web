@@ -686,6 +686,35 @@ describe('POST /chat (T5.2)', () => {
     expect((await debugState()).items).toEqual(before.items);
   });
 
+  it('the model sees the member’s own recent chat, so "YES" means what was offered; never another member’s', async () => {
+    const requests: LlmRequest[] = [];
+    const replies = [
+      '{"intent":"ask","answer":"Should I rename it to Treat for 30 girls?","itemIds":["library-books"]}',
+      '{"intent":"update_item","itemId":"library-books","title":"Treat for 30 girls","start":null}',
+      '{"intent":"ask","answer":"Nothing else today.","itemIds":[]}'
+    ];
+    setHomemindLlmForTests({
+      mode: 'live',
+      status: 'live',
+      complete: async request => {
+        requests.push(request);
+        return { ok: true, content: replies.shift() ?? '{}', ms: 1 };
+      }
+    });
+    const mom = as(await login('mom'));
+    const dad = as(await login('dad'));
+    expect((await chat(mom, 'The books are really a treat for 30 girls')).outcome).toBe('answer');
+    const yes = await chat(mom, 'YES');
+    expect(yes).toMatchObject({ outcome: 'written', intent: 'update_item' });
+    expect(yes.message).toContain('Updated: “Treat for 30 girls”');
+    expect(String(requests[1].user)).toContain('<<<BEGIN RECENT CHAT>>>\nMember: The books are really a treat for 30 girls\nHomemind: Should I rename it to Treat for 30 girls?');
+    expect((await debugState()).items.find(i => i.id === 'library-books')?.title).toBe('Treat for 30 girls');
+    // Dad's chat starts empty: Mom's lines are hers.
+    await chat(dad, 'Anything else?');
+    expect(String(requests[2].user)).not.toContain('RECENT CHAT');
+    expect(String(requests[2].user)).not.toContain('30 girls?');
+  });
+
   it('the model being down is an error card; the board keeps working', async () => {
     setHomemindLlmForTests({ mode: 'live', status: 'live', complete: async () => ({ ok: false, code: 'network', message: 'down', ms: 1 }) });
     const mom = as(await login('mom'));

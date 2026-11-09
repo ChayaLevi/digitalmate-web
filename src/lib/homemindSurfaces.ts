@@ -1294,8 +1294,10 @@ export type ChatOutcome =
   | { kind: 'answer'; answer: string; itemIds: string[] }
   | {
       kind: 'written';
-      intent: 'create_event' | 'create_task' | 'add_preparation' | 'assign' | 'claim' | 'mark_done';
+      intent: 'create_event' | 'create_task' | 'add_preparation' | 'assign' | 'claim' | 'mark_done' | 'update_item' | 'split_item';
       itemId: string;
+      /** A split: the new parts beside `itemId`. */
+      alsoIds?: string[];
       proposed: boolean;
       /** Set when this member may undo it. */
       activityId?: string;
@@ -1311,6 +1313,8 @@ export type ChatOutcome =
   | { kind: 'preference-suggest'; input: { text: string; reason?: string; aboutMemberId?: string; strength: 'hard' | 'soft'; scope?: string }; reason: 'level1' | 'paused' }
   /** T5.4: a hard preference rules this out. Nothing changed. */
   | { kind: 'blocked'; title: string; blocked: Array<{ preference: Preference; term: string }> }
+  /** An edit or a split at level 1, or paused: nothing changed. */
+  | { kind: 'held'; intent: 'update_item' | 'split_item'; itemId: string; reason: 'level1' | 'paused' }
   | { kind: 'later'; intent: 'create_rule' | 'report_situation' }
   /** T8.1: someone is sick. `created: false`: that member and day were already reported (the same card again). */
   | { kind: 'situation'; situationId: string; created: boolean; activityId?: string }
@@ -1340,6 +1344,11 @@ const C = {
   assigned: { en: (t: string, who: string) => `Assigned “${t}” to ${who}. ${who} still needs to confirm.`, zh: (t: string, who: string) => `已把“${t}”分配给${who}，还需要${who}确认。` },
   claimed: { en: (t: string) => `“${t}” is yours now.`, zh: (t: string) => `“${t}”现在由你负责。` },
   doneMsg: { en: (t: string) => `Marked done: “${t}”.`, zh: (t: string) => `已标记完成：“${t}”。` },
+  updated: { en: (t: string) => `Updated: “${t}”.`, zh: (t: string) => `已更新：“${t}”。` },
+  noOwnerHint: { en: 'Nobody has it yet, so nobody will be reminded. Take it or assign it.', zh: '目前还没有人负责，所以不会有人收到提醒。请认领或指派。' },
+  splitMsg: { en: (titles: string[]) => `Split into ${titles.length}: ${titles.map(t => `“${t}”`).join(', ')}.`, zh: (titles: string[]) => `已拆分为 ${titles.length} 项：${titles.map(t => `“${t}”`).join('、')}。` },
+  heldLevel1: { en: 'Autonomy is set to “Suggests”, so nothing was changed. You can edit it on the board:', zh: '自主程度设为“仅建议”，所以没有做任何更改。你可以在看板上修改：' },
+  heldPaused: { en: 'Automatic actions are paused, so nothing was changed. You can edit it on the board:', zh: '自动操作已暂停，所以没有做任何更改。你可以在看板上修改：' },
   undoHint: { en: 'You can undo it.', zh: '可以撤销。' },
   opened: { en: (n: number) => `${n} item(s) clash with it and are now “Who's taking this?”.`, zh: (n: number) => `有 ${n} 个事项与它冲突，现在标记为“谁来负责？”。` },
   conflicts: { en: (n: number) => `${n} item(s) clash with it. See the Family tab to decide who takes them.`, zh: (n: number) => `有 ${n} 个事项与它冲突，请到家庭标签页决定由谁负责。` },
@@ -1490,12 +1499,18 @@ export function chatTurn(input: ChatTurnData): HomemindTurn {
       if (outcome.intent === 'assign') parts.push(C.assigned[lang](t, owner));
       else if (outcome.intent === 'claim') parts.push(C.claimed[lang](t));
       else if (outcome.intent === 'mark_done') parts.push(C.doneMsg[lang](t));
+      else if (outcome.intent === 'update_item') parts.push(C.updated[lang](t));
+      else if (outcome.intent === 'split_item') parts.push(C.splitMsg[lang]([t, ...(outcome.alsoIds ?? []).map(titleById)].filter(Boolean)));
       else parts.push(`${outcome.proposed ? C.proposedAdd[lang] : C.added[lang]} “${t}”`);
       if (outcome.opened.length) parts.push(C.opened[lang](outcome.opened.length));
       else if (outcome.conflicts) parts.push(C.conflicts[lang](outcome.conflicts));
+      // An edit or a split often sets a time "for a reminder": say plainly when no one would get one.
+      if ((outcome.intent === 'update_item' || outcome.intent === 'split_item') && [outcome.itemId, ...(outcome.alsoIds ?? [])].some(id => view.items.some(i => i.id === id && i.type !== 'event' && i.ownership.state === 'none'))) {
+        parts.push(C.noOwnerHint[lang]);
+      }
       if (outcome.activityId) parts.push(C.undoHint[lang]);
       message = parts.join(' ');
-      const rows = rowsFor([outcome.itemId, ...outcome.opened]);
+      const rows = rowsFor([outcome.itemId, ...(outcome.alsoIds ?? []), ...outcome.opened]);
       if (rows.length) {
         children.push(taskList('rows', hx(lang, 'thisItem'), '/rows'));
         data.rows = rows;
@@ -1567,6 +1582,18 @@ export function chatTurn(input: ChatTurnData): HomemindTurn {
         actions: [{ id: 'homemind.save-preference', label: C.prefSave[lang], variant: 'primary', kind: 'homemind', args: { verb: 'save-preference', ...outcome.input } }]
       });
       title = C.prefTitle[lang];
+      break;
+    }
+    case 'held': {
+      message = outcome.reason === 'paused' ? C.heldPaused[lang] : C.heldLevel1[lang];
+      const rows = rowsFor([outcome.itemId]);
+      if (rows.length) {
+        children.push(taskList('rows', hx(lang, 'thisItem'), '/rows'));
+        data.rows = rows;
+        title = titleById(outcome.itemId) || title;
+      } else {
+        message = C.missing[lang];
+      }
       break;
     }
     case 'blocked': {

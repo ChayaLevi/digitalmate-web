@@ -15,10 +15,10 @@
  * Components that do not render the flag (rules, settings rows) say the word in their text instead.
  */
 import type { A2uiAction, A2uiComponent } from '../types';
-import type { ActionCard, Activity, ExtractedEntry, Family, GroupsView, Item, ItemExplanation, Lang, Member, PendingReminder, PpmaExplanationData, PpmaMemoryData, Preference, Reminder, Rule, RuleRun, ServicesView, SignUpInfo, SituationView, SkippedExtraction, SourceChangeView, Why } from '../../server/homemind/types';
+import type { ActionCard, Activity, ExtractedEntry, Family, GroupMessage, GroupsView, Item, ItemExplanation, Lang, Member, MessageJudgment, PendingReminder, PpmaExplanationData, PpmaMemoryData, Preference, Reminder, Rule, RuleRun, ServicesView, SignUpInfo, SituationView, SkippedExtraction, SourceChangeView, SummaryView, Why } from '../../server/homemind/types';
 
 export type HomemindLang = Lang;
-export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit' | 'item' | 'services';
+export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit' | 'item' | 'services' | 'summary';
 
 /** What the Add and edit screen opens: an existing item, a new preparation under an event, or a new item.
  * The `item` screen (the short summary after a save) uses `itemId` only. */
@@ -79,6 +79,12 @@ export interface HomemindScreenData {
   sourceChanges?: SourceChangeView[];
   /** T8.1: "Noa is sick" and the suggestions for that day (`my-day`), limited by the server to what this member can see. */
   situations?: SituationView[];
+  /** T8.2, the `summary` screen: the evening summary or the week ahead, built by the server from this member's view. */
+  summary?: SummaryView;
+  /** T8.2 (`my-day`, `services`, parents only): how soon each group message is shown, and why. */
+  judgments?: MessageJudgment[];
+  /** T8.2, the `memory` screen (`?id=`): the saved preference to correct, in a small form. */
+  correctPreferenceId?: string;
 }
 
 /** What the bridge sends the browser for every Homemind screen. Same shape as a Fridge2Table turn. */
@@ -642,6 +648,7 @@ function myDay(input: HomemindScreenData): HomemindTurn {
   children.push(...cards.children);
   sourceChangeBlocks(input, children, data);
   if (input.groups) groupClaimBlocks(input, 'my-day', children, data);
+  heldMessagesBlock(input, children);
   section(children, data, 'today', hx(lang, 'today'), todays.map(i => taskRow(i, view, lang, today)), hx(lang, 'nothingToday'));
   section(children, data, 'later', hx(lang, 'comingUp'), later.map(i => taskRow(i, view, lang, today)));
   section(children, data, 'waiting', hx(lang, 'waitingElsewhen'), elsewhen.map(i => taskRow(i, view, lang, today)));
@@ -857,6 +864,17 @@ const M = {
     zh: '这些保存在 Homemind 自己的看板上，决定它的建议。删除一条也会通知 PPMA。'
   },
   remove: { en: 'Remove', zh: '删除' },
+  correct: { en: 'Correct', zh: '更正' },
+  correctTitle: { en: 'Correct a saved preference', zh: '更正一条已保存的偏好' },
+  correctNote: {
+    en: 'Write it the way it is true now. The next suggestions use the corrected words; the old ones are kept in Activity for Undo.',
+    zh: '按现在的实际情况写。之后的建议会用更正后的内容；原来的内容记在“动态”里，可以撤销。'
+  },
+  correctText: { en: 'What Homemind should remember', zh: 'Homemind 应该记住的内容' },
+  correctReason: { en: 'Why (optional)', zh: '原因（可不填）' },
+  correctSave: { en: 'Save the correction', zh: '保存更正' },
+  correctCancel: { en: 'Cancel', zh: '取消' },
+  correctGone: { en: 'That preference is no longer saved.', zh: '这条偏好已经不在了。' },
   whyPpmaTitle: { en: 'Why is this suggested?', zh: '为什么会有这个建议？' },
   ppmaReason: { en: 'PPMA’s reason', zh: 'PPMA 的理由' },
   considered: { en: 'Saved preferences considered', zh: '参考的已保存偏好' },
@@ -926,6 +944,27 @@ function memoryScreen(input: HomemindScreenData): HomemindTurn {
       } else if (mem.state === 'ready') children.push(text('ppma-empty', `**${M.ppmaTitle[lang]}**\n\n${M.empty[lang]}`));
     }
   }
+  // T8.2 (Scene 5): correct one saved preference. A soft one by anyone with an account, a hard one by a parent.
+  if (input.correctPreferenceId) {
+    const p = view.preferences.find(x => x.id === input.correctPreferenceId);
+    if (!p || (p.strength === 'hard' && !isParent)) {
+      children.push(text('correct-gone', M.correctGone[lang]));
+    } else {
+      const field = (name: string, label: string, value: string): A2uiComponent => ({ id: `f-${name}`, component: 'TextField', name, label, default: value, maxLength: 200 });
+      children.push(text('correct-title', `**${M.correctTitle[lang]}**\n\n${M.correctNote[lang]}`));
+      children.push(field('prefText', M.correctText[lang], lang === 'zh' && p.textZh ? p.textZh : p.text));
+      children.push(field('prefReason', M.correctReason[lang], (lang === 'zh' && p.reasonZh ? p.reasonZh : p.reason) ?? ''));
+      children.push({
+        id: 'correct-actions',
+        component: 'ActionBar',
+        actions: [
+          { id: `homemind.correct-preference:${p.id}`, label: M.correctSave[lang], variant: 'primary', kind: 'homemind', args: { verb: 'correct-preference', preferenceId: p.id, strength: p.strength, ...(p.aboutMemberId ? { aboutMemberId: p.aboutMemberId } : {}), ...(p.scope ? { scope: p.scope } : {}) } },
+          { id: 'homemind.back', label: M.correctCancel[lang], variant: 'ghost', kind: 'homemind', args: { verb: 'back' } }
+        ]
+      });
+    }
+    return turn('memory', hx(lang, 'memory'), undefined, children, data);
+  }
   if (view.preferences.length) {
     children.push(text('prefs-note', M.savedNote[lang]));
     children.push(taskList('prefs', M.saved[lang], '/prefs'));
@@ -940,7 +979,11 @@ function memoryScreen(input: HomemindScreenData): HomemindTurn {
         state: '',
         tone: p.strength === 'hard' ? 'accent' : 'muted',
         actions: canRemove
-          ? [{ id: `homemind.remove-preference:${p.id}`, label: M.remove[lang], variant: 'ghost', kind: 'homemind', args: { verb: 'remove-preference', preferenceId: p.id } } as A2uiAction]
+          ? [
+              // T8.2: correct it in a small form (Scene 5); the next suggestions use the new words.
+              { id: `homemind.open-correct-preference:${p.id}`, label: M.correct[lang], variant: 'secondary', kind: 'homemind', args: { verb: 'open-correct-preference', preferenceId: p.id } } as A2uiAction,
+              { id: `homemind.remove-preference:${p.id}`, label: M.remove[lang], variant: 'ghost', kind: 'homemind', args: { verb: 'remove-preference', preferenceId: p.id } } as A2uiAction
+            ]
           : []
       } satisfies TaskRow;
     });
@@ -1765,7 +1808,16 @@ function servicesScreen(input: HomemindScreenData): HomemindTurn {
       group.messages.map(m => ({
         title: lang === 'zh' ? m.authorZh ?? m.author : m.author,
         subtitle: m.text,
-        meta: [timeOf(m.at), m.editedAt ? `${sx(lang, 'edited')} ${timeOf(m.editedAt)}` : '', m.from === 'family' ? sx(lang, 'fromFamily') : '', m.replyKind ? sx(lang, m.replyKind) : ''].filter(Boolean).join(' · ')
+        meta: [
+          timeOf(m.at),
+          m.editedAt ? `${sx(lang, 'edited')} ${timeOf(m.editedAt)}` : '',
+          m.from === 'family' ? sx(lang, 'fromFamily') : '',
+          m.replyKind ? sx(lang, m.replyKind) : '',
+          // T8.2: how soon Homemind showed it, and why (parents only). The first version's judgment.
+          judgmentLine(input.judgments?.find(j => j.messageId === m.id), zone, lang)
+        ]
+          .filter(Boolean)
+          .join(' · ')
       }))
     );
   } else children.push(text('group-empty', `**${groupTitle}** · ${sim}\n\n${sx(lang, 'groupEmpty')}`));
@@ -2311,6 +2363,159 @@ function situationBlocks(v: SituationView, view: HomemindViewData, lang: Homemin
   children.push(text(`sit-note-${key}`, notes.join(' ')));
 }
 
+// --- judgment and summaries (T8.2) ------------------------------------------------------------------
+
+const SUM = {
+  daily: { en: 'Evening summary', zh: '晚间摘要' },
+  weekly: { en: 'The week ahead', zh: '下周概览' },
+  tonight: { en: 'Tonight', zh: '今晚' },
+  weekAhead: { en: 'Week ahead', zh: '下周' },
+  sentAt: { en: 'Sent at {time}, {day}.', zh: '已于{day} {time}送达。' },
+  preview: { en: 'Preview: it goes out at {time} tonight.', zh: '预览：今晚 {time} 送达。' },
+  previewWeek: { en: 'Preview: the week ahead goes out on {day} at {time}.', zh: '预览：下周概览将于{day} {time}送达。' },
+  covers: { en: 'Covers {from} to {to}.', zh: '涵盖{from}至{to}。' },
+  toDo: { en: 'What you need to do', zh: '你需要做的事' },
+  toDoEmpty: { en: 'Nothing for you in this period.', zh: '这段时间没有需要你做的事。' },
+  whyOwner: { en: 'Yours', zh: '你负责' },
+  whyUnconfirmed: { en: 'Given to you: please confirm', zh: '交给你了：请确认' },
+  whyAsked: { en: 'You could take it', zh: '你可以负责' },
+  whyUnanswered: { en: 'A reminder got no answer', zh: '提醒还没有回应' },
+  away: { en: 'Who is away', zh: '谁不在' },
+  everyone: { en: 'For everyone', zh: '全家知道就好' },
+  everyoneEmpty: { en: 'No other events in this period.', zh: '这段时间没有其他活动。' },
+  messages: { en: 'Messages that waited for this summary', zh: '等到摘要再看的消息' },
+  messagesPreview: { en: 'Messages waiting for tonight', zh: '等到今晚再看的消息' },
+  held: { en: "Waiting for tonight's summary", zh: '等今晚的摘要' },
+  heldNote: { en: 'No alert was sent for these.', zh: '这些消息没有发提醒。' },
+  rule: { en: 'Decided by a Homemind rule (fixed words in the message), not by the model.', zh: '由 Homemind 规则（消息里的固定词语）决定，不是由模型决定。' },
+  note: { en: 'Homemind helps, but it can miss things.', zh: 'Homemind 会帮忙，但也可能遗漏。' },
+  inSummary: { en: 'Went out in the evening summary', zh: '已放入晚间摘要' },
+  urgent: { en: 'Shown at once: it says “{quote}”', zh: '立即提醒：消息里写着“{quote}”' },
+  signUp: { en: 'Shown now: a sign-up (“{quote}”) has a deadline', zh: '现在提醒：接龙（“{quote}”）有截止时间' },
+  soon: { en: 'Shown now: it is about “{quote}”', zh: '现在提醒：和“{quote}”有关' },
+  notUrgent: { en: 'Waits for the evening summary ({time}): the sender wrote “{quote}” (not urgent)', zh: '等到晚间摘要（{time}）：发消息的人写了“{quote}”（不着急）' },
+  nextWeek: { en: 'Waits for the evening summary ({time}): it is about “{quote}”, not the next few days', zh: '等到晚间摘要（{time}）：说的是“{quote}”，不是这几天的事' },
+  noDate: { en: 'Waits for the evening summary ({time}): no date and nothing asked for today', zh: '等到晚间摘要（{time}）：没有日期，也不用今天处理' }
+} as const;
+
+const sum = (lang: HomemindLang, key: keyof typeof SUM, values: Record<string, string> = {}): string => fill(SUM[key][lang], values);
+
+/** "Waits for the evening summary (20:00): the sender wrote “不着急” (not urgent)", or why it was shown now. */
+export function judgmentLine(j: MessageJudgment | undefined, zone: string, lang: HomemindLang): string {
+  if (!j) return '';
+  if (j.tier === 'summary' && j.deliveredIn) return sum(lang, 'inSummary');
+  const quote = j.quote ?? '';
+  const time = (j.summaryAt ? dateParts(j.summaryAt, zone)?.time : undefined) ?? '20:00';
+  switch (j.reason) {
+    case 'urgent-words':
+      return sum(lang, 'urgent', { quote });
+    case 'sign-up':
+      return sum(lang, 'signUp', { quote });
+    case 'soon':
+      return sum(lang, 'soon', { quote });
+    case 'not-urgent':
+      return sum(lang, 'notUrgent', { quote, time });
+    case 'next-week':
+      return sum(lang, 'nextWeek', { quote, time });
+    case 'no-date':
+      return sum(lang, 'noDate', { time });
+  }
+}
+
+const authorOf = (m: GroupMessage, lang: HomemindLang) => (lang === 'zh' ? m.authorZh ?? m.author : m.author);
+const oneLine = (value: string) => value.replace(/\s+/g, ' ').trim();
+
+/** My day (parents): the group messages that wait for tonight's summary, each with its reason. No alert went out for them. */
+function heldMessagesBlock(input: HomemindScreenData, children: A2uiComponent[]): void {
+  const { lang, view } = input;
+  const waiting = (input.judgments ?? []).filter(j => j.tier === 'summary' && !j.deliveredIn);
+  if (!waiting.length) return;
+  const messages = input.services?.group.messages ?? [];
+  const zone = view.family.timezone;
+  const lines = waiting.map(j => {
+    const m = messages.find(x => x.id === j.messageId);
+    const lead = m ? `${authorOf(m, lang)}${lang === 'zh' ? '：' : ': '}“${oneLine(m.text)}” ` : '';
+    return `- ${lead}${judgmentLine(j, zone, lang)}`;
+  });
+  children.push(text('held-messages', `**${sum(lang, 'held')}** · ${hx(lang, 'simulated')}\n\n${lines.join('\n')}\n\n${sum(lang, 'heldNote')} ${sum(lang, 'rule')}`));
+}
+
+function shortDate(date: string, lang: HomemindLang): string {
+  return `${WEEKDAYS[lang][weekdayOfDate(date)] ?? ''} ${date.slice(5).replace('-', '/')}`.trim();
+}
+
+const WHY_LABEL: Record<SummaryView['toDo'][number]['why'], keyof typeof SUM> = { owner: 'whyOwner', unconfirmed: 'whyUnconfirmed', asked: 'whyAsked', unanswered: 'whyUnanswered' };
+
+function summaryScreen(input: HomemindScreenData): HomemindTurn {
+  const { lang, view } = input;
+  const zone = view.family.timezone;
+  const today = dateParts(input.now, zone)?.date ?? '';
+  const me = memberOf(view.family, view.memberId);
+  const children: A2uiComponent[] = [];
+  const data: Record<string, unknown> = {};
+  const v = input.summary;
+  const weekly = v?.kind === 'weekly';
+  children.push({
+    id: 'period',
+    component: 'ActionBar',
+    actions: [
+      { id: 'homemind.summary-period:day', label: sum(lang, 'tonight'), variant: weekly ? 'secondary' : 'primary', kind: 'homemind', args: { verb: 'summary-period', period: 'day' } },
+      { id: 'homemind.summary-period:week', label: sum(lang, 'weekAhead'), variant: weekly ? 'primary' : 'secondary', kind: 'homemind', args: { verb: 'summary-period', period: 'week' } }
+    ]
+  });
+  const title = sum(lang, weekly ? 'weekly' : 'daily');
+  if (!v) {
+    children.push(text('empty', hx(lang, 'nothingHere')));
+    return turn('summary', title, nameOf(me, lang), children, data);
+  }
+  const at = dateParts(v.deliveredAt ?? v.scheduledAt, zone);
+  const day = at ? (at.date === today ? hx(lang, 'today') : shortDate(at.date, lang)) : '';
+  const status = v.deliveredAt ? sum(lang, 'sentAt', { time: at?.time ?? '', day }) : sum(lang, weekly ? 'previewWeek' : 'preview', { time: at?.time ?? '20:00', day });
+  children.push(text('status', `${status} ${sum(lang, 'covers', { from: shortDate(v.from, lang), to: shortDate(v.to, lang) })}`));
+
+  // 1. What you need to do, first.
+  const toDoRows: TaskRow[] = [];
+  for (const entry of v.toDo) {
+    const item = view.items.find(i => i.id === entry.itemId);
+    if (!item) continue;
+    const row = taskRow(item, view, lang, today);
+    toDoRows.push({ ...row, meta: [sum(lang, WHY_LABEL[entry.why]), row.meta].filter(Boolean).join(' · '), tone: entry.why === 'owner' ? row.tone : 'warning' });
+  }
+  section(children, data, 'todo', sum(lang, 'toDo'), toDoRows, sum(lang, 'toDoEmpty'));
+
+  // 2. Who is away, from events this member can see.
+  const awayLines = v.away.flatMap(a => {
+    const event = view.items.find(i => i.id === a.eventId);
+    const who = nameOf(memberOf(view.family, a.memberId), lang);
+    if (!event || !who) return [];
+    const last = dateParts(new Date(Date.parse(a.end) - 1).toISOString(), zone)?.date ?? a.date;
+    const span = last > a.date ? `${shortDate(a.date, lang)} – ${shortDate(last, lang)}` : shortDate(a.date, lang);
+    return [`- ${who}${lang === 'zh' ? '：' : ': '}${titleOf(event, lang)} (${span})`];
+  });
+  if (awayLines.length) children.push(text('away', `**${sum(lang, 'away')}**\n\n${awayLines.join('\n')}`));
+
+  // 3. General events, for everyone to know.
+  const everyoneRows = v.everyone.flatMap(e => {
+    const item = view.items.find(i => i.id === e.itemId);
+    return item ? [taskRow(item, view, lang, today)] : [];
+  });
+  section(children, data, 'everyone', sum(lang, 'everyone'), everyoneRows, sum(lang, 'everyoneEmpty'));
+
+  // 4. Parents: the group messages that waited, each with the reason it waited.
+  if (v.messages.length) {
+    children.push({ id: 'messages', component: 'List', title: sum(lang, v.deliveredAt ? 'messages' : 'messagesPreview'), dataPath: '/messages' });
+    data.messages = v.messages.map(({ judgment, message }) => ({
+      title: authorOf(message, lang),
+      subtitle: message.text,
+      meta: judgmentLine({ ...judgment, deliveredIn: undefined }, zone, lang),
+      simulated: true
+    }));
+    children.push(text('messages-rule', sum(lang, 'rule')));
+  }
+  children.push(text('note', sum(lang, 'note')));
+  return turn('summary', title, nameOf(me, lang), children, data);
+}
+
 // --- public API -------------------------------------------------------------------------------------
 
 const SCREEN_BUILDERS: Record<HomemindScreenName, (input: HomemindScreenData) => HomemindTurn> = {
@@ -2324,7 +2529,8 @@ const SCREEN_BUILDERS: Record<HomemindScreenName, (input: HomemindScreenData) =>
   settings: settingsScreen,
   edit: editScreen,
   item: itemScreen,
-  services: servicesScreen
+  services: servicesScreen,
+  summary: summaryScreen
 };
 
 /** One screen as a turn. */

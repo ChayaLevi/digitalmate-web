@@ -135,6 +135,8 @@ export interface ScreenParams {
   q?: string;
   id?: string;
   parent?: string;
+  /** T8.2: `week` for the week ahead on the summary screen. */
+  period?: string;
 }
 
 export async function fetchHomemindScreen(token: string, name: HomemindScreenName, lang: Language, params: ScreenParams = {}): Promise<HomemindScreen> {
@@ -222,7 +224,7 @@ export async function runHomemindAction(action: A2uiAction, token: string): Prom
     const body =
       verb === 'undo-preference'
         ? { undo: args.activityId }
-        : Object.fromEntries(['text', 'reason', 'aboutMemberId', 'strength', 'scope'].filter(k => args[k] !== undefined).map(k => [k, args[k]]));
+        : Object.fromEntries(['id', 'text', 'reason', 'aboutMemberId', 'strength', 'scope'].filter(k => args[k] !== undefined).map(k => [k, args[k]]));
     const result = await call<MutationResult>('/api/homemind/preferences', { method: 'POST', token, body: JSON.stringify(body) });
     return { kind: 'mutation', result, verb };
   }

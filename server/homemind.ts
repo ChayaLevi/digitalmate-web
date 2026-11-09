@@ -46,6 +46,8 @@ import type { ChatLine } from './homemind/intents';
 import { applyExtraction } from './homemind/extraction';
 import { chatMayWrite, planChat } from './homemind/chat';
 import { applySuggestions, dismissSuggestion, situationsView, startSituation, undoSuggestion } from './homemind/situations';
+import { judgeMessage } from './homemind/judgment';
+import { summaryFor, tickSummaries } from './homemind/summary';
 import { applyPreferenceRequest, blockedChange, parsePreferenceBody, preferencesForItem } from './homemind/preferences';
 import type { BlockedChoice, PreferenceRequest, PreferenceResult } from './homemind/preferences';
 import { HomemindStore, dataFileFromEnv } from './homemind/store';
@@ -72,7 +74,7 @@ const CONFLICT_HORIZON_MS = 90 * 24 * 60 * 60 * 1000;
 /** The demo clock jumps at most a week at a time. */
 const MAX_JUMP_MINUTES = 7 * 24 * 60;
 
-const SCREENS = ['my-day', 'family', 'calendar', 'search', 'rules', 'memory', 'activity', 'settings', 'edit', 'item', 'services'] as const;
+const SCREENS = ['my-day', 'family', 'calendar', 'search', 'rules', 'memory', 'activity', 'settings', 'edit', 'item', 'services', 'summary'] as const;
 type Screen = (typeof SCREENS)[number];
 
 /** Verbs on `POST /items/:id/:verb` that map straight to a core change. `ack` is the core's `confirm`. */
@@ -354,8 +356,12 @@ async function tickNow(rt: Runtime): Promise<TickResult> {
     rt.state = expired.state;
     rt.hub.broadcast({ event: 'actions.changed', data: {} });
   }
-  const ticked = tickReminders(rt.state, rt.clock.now());
-  if (expired.expired.length && !ticked.changed) await rt.store.save(rt.state);
+  // T8.2: the evening summary goes out when a tick crosses 20:00; its notices are routed like any alert.
+  const summaries = tickSummaries(rt.state, rt.clock.now());
+  if (summaries.changed) rt.state = summaries.state;
+  if (summaries.sent) rt.hub.broadcast({ event: 'services.changed', data: {} });
+  const ticked = tickReminders(rt.state, rt.clock.now(), summaries.deliveries);
+  if ((expired.expired.length || summaries.changed) && !ticked.changed) await rt.store.save(rt.state);
   if (!ticked.changed && ticked.deliveries.length === 0 && ticked.closed.length === 0) return ticked;
   rt.state = ticked.state;
   await rt.store.save(ticked.state);
@@ -1084,11 +1090,19 @@ const routes: Route[] = [
         ...(ppmaMemory ? { ppmaMemory } : {}),
         // The simulated services (T7.2); the inbox is this member's own mailbox only.
         ...(name === 'services' ? { services: servicesViewFor(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()), demo: demo() } : {}),
+        // T8.2: My day lists the group messages that wait for tonight's summary (parents), so it needs the group too.
+        ...(name === 'my-day' && isParent && (ctx.rt.state.messageJudgments ?? []).some(j => j.tier === 'summary' && !j.deliveredIn) ? { services: servicesViewFor(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()) } : {}),
         // T7.4: the group's claim setting and what Homemind signed up for (family-wide).
         ...(name === 'services' || name === 'my-day' ? { groups: groupsView(ctx.rt.state), sourceChanges: sourceChangesView(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()) } : {}),
         // T8.1: "Noa is sick" and what Homemind suggested for that day, limited to what this member can see.
         ...(name === 'my-day' ? { situations: situationsView(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()) } : {}),
         ...(name === 'rules' ? { demo: demo() } : {}),
+        // T8.2: the memory screen's correction form for one saved preference (`?id=`, checked like any id).
+        ...(name === 'memory' && ctx.url.searchParams.get('id') ? { correctPreferenceId: idOf(ctx.url.searchParams.get('id') as string, 'id') } : {}),
+        // T8.2: the evening summary or the week ahead (`?period=week`), from this member's view only.
+        ...(name === 'summary' ? { summary: summaryFor(ctx.rt.state, ctx.member.id, ctx.url.searchParams.get('period') === 'week' ? 'weekly' : 'daily', ctx.rt.clock.now()) ?? undefined } : {}),
+        // T8.2: how soon each group message is shown, and why (the group is the parents': parents only).
+        ...((name === 'services' || name === 'my-day') && isParent ? { judgments: ctx.rt.state.messageJudgments ?? [] } : {}),
         confirmations
       });
       // The surface is what screens render. `view` stays for the client's forms (ids, versions).
@@ -1371,7 +1385,17 @@ const routes: Route[] = [
       reportToPpma(rt, [groupMessageReport(posted.message, KINDERGARTEN_GROUP)]);
       // T7.4: a sign-up in a group whose claims are on is read, and claimed or stopped on, at once.
       const claims = await runGroupClaims(rt);
-      json(ctx.response, 200, { ok: true, message: posted.message, remaining: posted.remaining, claims: claims.map(claimSummary) });
+      // T8.2: how soon the family should see it, and why. A sign-up Homemind just claimed already sent its own notice.
+      const handled = claims.some(c => c.messageId === posted.message.id && c.status === 'claimed');
+      const judged = judgeMessage(rt.state, posted.message, KINDERGARTEN_GROUP.id, rt.clock.now(), handled);
+      if (judged) await commit(rt, judged.state, [], undefined, judged.deliveries);
+      json(ctx.response, 200, {
+        ok: true,
+        message: posted.message,
+        remaining: posted.remaining,
+        claims: claims.map(claimSummary),
+        ...(judged ? { judgment: { tier: judged.judgment.tier, reason: judged.judgment.reason, ...(judged.judgment.summaryAt ? { summaryAt: judged.judgment.summaryAt } : {}) } } : {})
+      });
     }
   },
   {

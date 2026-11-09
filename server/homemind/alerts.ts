@@ -16,6 +16,13 @@ export interface AlertDelivery {
   alert: HomemindAlert;
 }
 
+/**
+ * T8.2: `message` (a group message to see now) and `summary` (the evening summary went out) are not
+ * about a board item: their `itemId` is the message or summary id. Whoever makes them picks the
+ * recipients; they are never batched with item updates.
+ */
+export const isItemlessAlert = (alert: Pick<HomemindAlert, 'kind'>): boolean => alert.kind === 'message' || alert.kind === 'summary';
+
 function hasAccount(state: HomemindState, memberId: string): boolean {
   return state.family.members.some(m => m.id === memberId && m.hasAccount);
 }

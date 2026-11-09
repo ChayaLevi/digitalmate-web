@@ -47,6 +47,7 @@ interface Notice {
 
 const TABS: Array<{ screen: HomemindScreenName; en: string; zh: string }> = [
   { screen: 'my-day', en: 'My day', zh: '我的一天' },
+  { screen: 'summary', en: 'Summary', zh: '摘要' },
   { screen: 'family', en: 'Family', zh: '家庭' },
   { screen: 'calendar', en: 'Calendar', zh: '日历' },
   { screen: 'search', en: 'Search', zh: '搜索' },
@@ -453,6 +454,30 @@ export function FamilyView({
     if (verb === 'add') return go({ screen: 'edit', params: { parent: str(args.parentEventId) } });
     if (verb === 'edit') return go({ screen: 'edit', params: { id: str(args.itemId) } });
     if (verb === 'back') return back();
+    // T8.2: correct a saved preference (Scene 5): the Memory tab's small form.
+    if (verb === 'open-correct-preference') return go({ screen: 'memory', params: { id: str(args.preferenceId) } });
+    if (verb === 'correct-preference') {
+      const { values } = surface ? formValues(surface, form) : { values: {} as Record<string, unknown> };
+      const textValue = String(values.prefText ?? '').trim();
+      const reasonValue = String(values.prefReason ?? '').trim();
+      if (!textValue) return setNotice({ text: tr('Write what Homemind should remember.', '请写下 Homemind 应该记住的内容。'), tone: 'error' });
+      setBusy(true);
+      try {
+        await runHomemindAction(
+          { ...action, args: { verb: 'save-preference', id: args.preferenceId, text: textValue, ...(reasonValue ? { reason: reasonValue } : {}), strength: args.strength, ...(args.aboutMemberId ? { aboutMemberId: args.aboutMemberId } : {}), ...(args.scope ? { scope: args.scope } : {}) } },
+          session.token
+        );
+        back(true);
+        setNotice({ text: tr('Preference corrected. The next suggestions use it.', '偏好已更正，之后的建议会按它来。'), tone: 'info' });
+      } catch (error) {
+        setNotice({ text: describe(error), tone: 'error' });
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    // T8.2: the evening summary or the week ahead.
+    if (verb === 'summary-period') return go({ screen: 'summary', params: args.period === 'week' ? { period: 'week' } : {} }, { replace: nav.screen === 'summary' });
     if (verb === 'search') {
       const q = String(form.q ?? (surface ? formValues(surface, {}).values.q : '') ?? '').trim();
       return go({ screen: 'search', params: { q } }, { replace: nav.screen === 'search' });
@@ -562,6 +587,9 @@ export function FamilyView({
   const onAlertButton = (alert: HomemindAlert, verb: AlertVerb) => {
     setAlerts(list => list.filter(a => a.id !== alert.id));
     if (verb === 'dismiss') return;
+    // T8.2: a group message opens the group on Services; the evening summary opens the summary.
+    if (verb === 'open' && alert.kind === 'message') return go({ screen: 'services', params: {} });
+    if (verb === 'open' && alert.kind === 'summary') return go({ screen: 'summary', params: {} });
     if (verb === 'open') return go({ screen: 'item', params: { id: alert.itemId } });
     const args: Record<string, unknown> = { verb, itemId: alert.itemId, version: alert.itemVersion };
     // "I'll take it" on an item assigned to someone else: assign it to yourself.

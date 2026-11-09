@@ -226,6 +226,8 @@ export function seedState(options: SeedOptions): HomemindState {
     whys: [],
     services: seedServices(),
     clockOffsetMs: 0,
-    seededAt: toIso(options.realNow ?? options.now)
+    seededAt: toIso(options.realNow ?? options.now),
+    // T8.2: summaries count from the seed, so a reset after 20:00 does not send tonight's at once.
+    summaryCheckedAt: toIso(options.now)
   };
 }

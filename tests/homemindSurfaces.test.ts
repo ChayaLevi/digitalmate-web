@@ -415,14 +415,35 @@ describe('memory', () => {
     const prefRows = (member: string) => (parse(screenTurn('memory', input(s, member, 'en', { ppma: 'off' })).jsonl).data.prefs ?? []) as Array<{ id: string; actions: Array<{ args: Record<string, unknown> }> }>;
     const mom = prefRows('mom');
     expect(mom.length).toBeGreaterThan(1);
-    expect(mom.every(r => r.actions.length === 1 && r.actions[0].args.verb === 'remove-preference')).toBe(true);
+    // T8.2: Correct, then Remove.
+    expect(mom.every(r => r.actions.map(a => a.args.verb).join() === 'open-correct-preference,remove-preference')).toBe(true);
     const maya = prefRows('maya');
-    expect(maya.find(r => r.id === 'pref-pref-noa-cake')?.actions).toHaveLength(1);
+    expect(maya.find(r => r.id === 'pref-pref-noa-cake')?.actions).toHaveLength(2);
     expect(maya.find(r => r.id === 'pref-pref-noa-peanuts')?.actions).toHaveLength(0);
     const zh = screenTurn('memory', input(s, 'mom', 'zh', { ppma: 'ok', ppmaMemory: { state: 'ready', statements } })).jsonl;
     expect(zh).toContain('这是错的');
     expect(zh).toContain('忘掉');
     expect(zh).toContain('PPMA 记住的内容');
+  });
+});
+
+describe('memory: correcting a saved preference (T8.2, Scene 5)', () => {
+  it('opens a small form with the saved words; a teen gets no form for a hard one', () => {
+    const s = seed();
+    const form = parse(screenTurn('memory', input(s, 'mom', 'en', { ppma: 'off', correctPreferenceId: 'pref-noa-cake' })).jsonl);
+    const fields = Object.values(form.components).filter(c => c.component === 'TextField');
+    expect(fields.map(c => [c.name, c.default])).toEqual([
+      ['prefText', 'For kindergarten parties, bake a cake'],
+      ['prefReason', 'Noa enjoys baking it with us the most']
+    ]);
+    const save = Object.values(form.components).flatMap(c => c.actions ?? []).find(a => a.args?.verb === 'correct-preference');
+    expect(save?.args).toEqual({ verb: 'correct-preference', preferenceId: 'pref-noa-cake', strength: 'soft', aboutMemberId: 'noa', scope: 'kindergarten-party' });
+    const zh = screenTurn('memory', input(s, 'mom', 'zh', { ppma: 'off', correctPreferenceId: 'pref-noa-cake' })).jsonl;
+    expect(zh).toContain('幼儿园聚会时，烤一个蛋糕');
+    expect(zh).toContain('更正一条已保存的偏好');
+    const teen = screenTurn('memory', input(s, 'maya', 'en', { ppma: 'off', correctPreferenceId: 'pref-noa-peanuts' })).jsonl;
+    expect(teen).toContain('That preference is no longer saved.');
+    expect(teen).not.toContain('prefText');
   });
 });
 

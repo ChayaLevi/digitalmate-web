@@ -34,6 +34,9 @@ async function openFamily(page: Page, lang: 'en' | 'zh', member?: string, person
 
 const family = (page: Page) => page.locator('.hm-family');
 
+/** Alerts that ask or tell about the board. T8.2's evening summary notice can come with any clock jump past 20:00, so it is left out. */
+const QUIET_ALERTS = '.hm-alert:not([data-kind="summary"])';
+
 async function seriousIssues(page: Page) {
   // Wait for fades (`surfaceIn`) to end; looping animations (the background glow) never finish.
   // allSettled: a live re-render can cancel a fade, which rejects its promise.
@@ -195,7 +198,7 @@ for (const lang of ['en', 'zh'] as const) {
   test(`every Family screen at 390 px in ${lang}: no overflow, no serious axe issues`, async ({ page }) => {
     await openFamily(page, lang, 'mom');
     await expect(family(page)).toHaveAttribute('data-member', 'mom');
-    const names = lang === 'zh' ? ['我的一天', '家庭', '日历', '搜索', '规则', '记忆', '服务', '动态', '设置', '+ 添加'] : ['My day', 'Family', 'Calendar', 'Search', 'Rules', 'Memory', 'Services', 'Activity', 'Settings', '+ Add'];
+    const names = lang === 'zh' ? ['我的一天', '摘要', '家庭', '日历', '搜索', '规则', '记忆', '服务', '动态', '设置', '+ 添加'] : ['My day', 'Summary', 'Family', 'Calendar', 'Search', 'Rules', 'Memory', 'Services', 'Activity', 'Settings', '+ Add'];
     const nav = family(page).getByRole('navigation', { name: lang === 'zh' ? '家庭页面' : 'Family screens' });
     // Every screen button is in view without sideways scrolling: a hidden scroll hid the last ones.
     const navBox = await nav.boundingBox();
@@ -230,7 +233,7 @@ test('live sync: Mom assigns the pickup, Dad sees it and an alert without reload
     // Both streams are open before anything changes.
     await expect(mom.locator('[data-stream="live"]')).toHaveText('Live');
     await expect(dad.locator('[data-stream="live"]')).toHaveText('实时');
-    await expect(dad.locator('.hm-alert')).toHaveCount(0);
+    await expect(dad.locator(QUIET_ALERTS)).toHaveCount(0);
     let dadLoads = 0;
     dad.on('framenavigated', frame => {
       if (frame === dad.mainFrame()) dadLoads++;
@@ -251,7 +254,7 @@ test('live sync: Mom assigns the pickup, Dad sees it and an alert without reload
     await expect(alert).toContainText('妈妈把「幼儿园接孩子」交给了你');
     expect(dadLoads).toBe(0);
     // Mom made the change, so she gets no alert about it.
-    await expect(mom.locator('.hm-alert')).toHaveCount(0);
+    await expect(mom.locator(QUIET_ALERTS)).toHaveCount(0);
     await noOverflow(dad);
     expect(await seriousIssues(dad)).toEqual([]);
     await dad.screenshot({ path: test.info().outputPath('live-alert-zh.png') });
@@ -347,8 +350,8 @@ test('reminders: the demo clock jumps, Dad is reminded, Mom gets the escalation,
 
     // Mom takes it from the escalation: every alert of that reminder closes, in both windows.
     await momAlert.getByRole('button', { name: "I'll take it: Kindergarten pickup" }).click();
-    await expect(mom.locator('.hm-alert')).toHaveCount(0);
-    await expect(dad.locator('.hm-alert')).toHaveCount(0);
+    await expect(mom.locator(QUIET_ALERTS)).toHaveCount(0);
+    await expect(dad.locator(QUIET_ALERTS)).toHaveCount(0);
   } finally {
     await momContext.close();
     await dadContext.close();
@@ -388,7 +391,7 @@ test('Scene 1: Mom assigns the pickup, Dad does not confirm, the clock jumps, Mo
     await expect(dadRow).toContainText('已提醒');
     await expect(dadRow.getByRole('button', { name: '稍后提醒: 幼儿园接孩子' })).toBeVisible();
     await expect(dadRow.getByRole('button', { name: '我来处理: 幼儿园接孩子' })).toBeVisible();
-    await expect(mom.locator('.hm-alert')).toHaveCount(0);
+    await expect(mom.locator(QUIET_ALERTS)).toHaveCount(0);
 
     // 3. Dad does not answer. Two jumps of 15 minutes on Mom's chip: Mom gets the escalation, in neutral words.
     await mom.getByRole('button', { name: '+15 min (demo clock)' }).click();
@@ -408,8 +411,8 @@ test('Scene 1: Mom assigns the pickup, Dad does not confirm, the clock jumps, Mo
 
     // 4. Mom takes it from the row on her board: the pickup is hers, and every alert closes in both windows.
     await momRow.getByRole('button', { name: "I'll take it: Kindergarten pickup" }).click();
-    await expect(mom.locator('.hm-alert')).toHaveCount(0);
-    await expect(dad.locator('.hm-alert')).toHaveCount(0);
+    await expect(mom.locator(QUIET_ALERTS)).toHaveCount(0);
+    await expect(dad.locator(QUIET_ALERTS)).toHaveCount(0);
     const st = (await (await request.get(`${BASE}/api/homemind/debug/state`)).json()) as { items: Array<{ id: string; ownership: { state: string; ownerId?: string } }> };
     expect(st.items.find(i => i.id === 'pickup-today')?.ownership).toMatchObject({ state: 'assigned', ownerId: 'mom' });
     await expect(dad.locator('[data-task-id="pickup-today"]')).toHaveCount(0);
@@ -1124,6 +1127,131 @@ test('Scene 3: Mom says Noa is sick; Dad sees who could stay home and takes it; 
     } else {
       expect(situation?.cardIds).toEqual([]);
     }
+  } finally {
+    await momContext.close();
+    await dadContext.close();
+  }
+});
+
+// T8.2: Scene 5 as scripted: a non-urgent message waits for the evening summary with its reason visible
+// (silence), a saved preference is corrected and the next suggestion changes, and the summary goes out at 20:00.
+test('Scene 5: the "不着急" note waits for the evening summary with its reason; a corrected preference changes the next suggestion; the summary arrives at 20:00', async ({ browser, request }) => {
+  const token = await momToken(request);
+  // The coming Monday 10:00 in the family's zone: the party (Thursday) is ahead, and 20:00 is ten hours away.
+  const state = (await (await request.get(`${BASE}/api/homemind/debug/state`)).json()) as { family: { timezone: string }; clockOffsetMs: number };
+  const zone = state.family.timezone;
+  const today = localParts(Date.now() + state.clockOffsetMs, zone).date;
+  let mondayDate = '';
+  for (let d = 1; d <= 8 && !mondayDate; d++) {
+    const date = addDays(today, d);
+    if (new Date(`${date}T12:00:00Z`).getUTCDay() === 1) mondayDate = date;
+  }
+  await jumpTo(request, token, zonedToUtc(mondayDate, '10:00', zone));
+
+  const momContext = await browser.newContext();
+  const dadContext = await browser.newContext();
+  try {
+    const mom = await momContext.newPage();
+    const dad = await dadContext.newPage();
+    await openFamily(mom, 'en', 'mom');
+    await openFamily(dad, 'zh', 'dad');
+    await expect(family(mom)).toHaveAttribute('data-member', 'mom');
+    await expect(dad.locator('[data-stream="live"]')).toBeVisible();
+    const momSurface = mom.locator('.a2ui-surface');
+    const dadSurface = dad.locator('.a2ui-surface');
+    const momNav = family(mom).getByRole('navigation', { name: 'Family screens' });
+    const dadNav = family(dad).getByRole('navigation', { name: '家庭页面' });
+
+    // Claims on, then the teacher's party message and the 接龙: both are about this week, so they are shown now.
+    await momNav.getByRole('button', { name: 'Services', exact: true }).click();
+    await momSurface.getByRole('button', { name: 'Turn on: post on its own (level 4)' }).click();
+    await expect(momSurface).toContainText('On, approved by Mom');
+    await momSurface.getByRole('button', { name: /^Post next group message \(demo\) \(3\)/ }).click();
+    await expect(momSurface).toContainText('Shown now: it is about “本周”');
+    const dadParty = dad.locator('.hm-alert[data-kind="message"][data-item-id="grp-msg-1"]');
+    await expect(dadParty).toContainText('王老师在班级群');
+    await expect(dadParty).toContainText('现在提醒：和这几天有关。（模拟群）');
+    await momSurface.getByRole('button', { name: /^Post next group message \(demo\) \(2\)/ }).click();
+    await expect(momSurface).toContainText('3. 诺娅妈妈 苹果');
+    // The claim already told the family about the sign-up: no second alert for it.
+    await expect(dad.locator('.hm-alert[data-kind="group"]')).toBeVisible();
+    await expect(dad.locator('.hm-alert[data-item-id="grp-msg-2"]')).toHaveCount(0);
+
+    // 1. The non-urgent note: no alert anywhere; the reason is on Services and on both parents' My day.
+    await momSurface.getByRole('button', { name: /^Post next group message \(demo\) \(1\)/ }).click();
+    await expect(momSurface).toContainText('秋游回执');
+    await expect(momSurface).toContainText('Waits for the evening summary (20:00): the sender wrote “不着急” (not urgent)');
+    await dadNav.getByRole('button', { name: '我的一天', exact: true }).click();
+    await expect(dadSurface).toContainText('等今晚的摘要');
+    await expect(dadSurface).toContainText('等到晚间摘要（20:00）：发消息的人写了“不着急”（不着急）');
+    await expect(dadSurface).toContainText('这些消息没有发提醒。');
+    await expect(dad.locator('.hm-alert[data-item-id="grp-msg-3"]')).toHaveCount(0);
+    await expect(mom.locator('.hm-alert[data-item-id="grp-msg-3"]')).toHaveCount(0);
+    await noOverflow(dad);
+    expect(await seriousIssues(dad)).toEqual([]);
+    await dad.screenshot({ path: test.info().outputPath('scene5-held-zh.png'), fullPage: true });
+
+    // 2. The next suggestion, before the correction: cake carries the saved preference.
+    await momNav.getByRole('button', { name: 'My day', exact: true }).click();
+    await expect(momSurface).toContainText("Waiting for tonight's summary");
+    const cakeRow = mom.locator('[data-task-id="alt-claim-grp-msg-2-cake"]');
+    const cookiesRow = mom.locator('[data-task-id="alt-claim-grp-msg-2-cookies"]');
+    await expect(cakeRow).toContainText('Saved preference: “For kindergarten parties, bake a cake”');
+    await expect(cookiesRow).not.toContainText('Saved preference');
+
+    // 3. A memory detail is corrected on the Memory tab.
+    await momNav.getByRole('button', { name: 'Memory', exact: true }).click();
+    await momSurface.getByRole('button', { name: /^Correct: For kindergarten parties, bake a cake/ }).click();
+    await expect(momSurface).toContainText('Correct a saved preference');
+    await expect(mom.getByLabel('What Homemind should remember')).toHaveValue('For kindergarten parties, bake a cake');
+    await noOverflow(mom);
+    expect(await seriousIssues(mom)).toEqual([]);
+    await mom.getByLabel('What Homemind should remember').fill('For kindergarten parties, bring cookies');
+    await mom.getByLabel('Why (optional)').fill('Noa likes to pick the cookies herself now');
+    await momSurface.getByRole('button', { name: 'Save the correction' }).click();
+    await expect(family(mom)).toContainText('Preference corrected. The next suggestions use it.');
+    await expect(momSurface).toContainText('For kindergarten parties, bring cookies');
+    await expect(momSurface).not.toContainText('bake a cake');
+
+    // 4. The next suggestion changed: cookies now carry the preference, cake no longer does.
+    await momNav.getByRole('button', { name: 'My day', exact: true }).click();
+    await expect(cookiesRow).toContainText('Saved preference: “For kindergarten parties, bring cookies” because Noa likes to pick the cookies herself now');
+    await expect(cakeRow).not.toContainText('Saved preference');
+    await mom.screenshot({ path: test.info().outputPath('scene5-corrected-en.png'), fullPage: true });
+
+    // 5. The clock crosses 20:00: the evening summary arrives, with the note that waited and why.
+    await jumpTo(request, token, zonedToUtc(mondayDate, '20:01', zone));
+    const dadSummaryAlert = dad.locator('.hm-alert[data-kind="summary"]');
+    await expect(dadSummaryAlert).toContainText('你的晚间摘要已送达');
+    await expect(dadSummaryAlert).toContainText('有 1 条群消息等到了现在。');
+    await dadSummaryAlert.getByRole('button', { name: /^查看/ }).click();
+    await expect(dadNav.getByRole('button', { name: '摘要', exact: true })).toHaveAttribute('aria-current', 'page');
+    await expect(dadSurface).toContainText('晚间摘要');
+    await expect(dadSurface).toContainText('20:01送达');
+    const dadText = (await dadSurface.innerText()).replace(/\s+/g, ' ');
+    expect(dadText.indexOf('你需要做的事')).toBeGreaterThan(-1);
+    expect(dadText.indexOf('你需要做的事')).toBeLessThan(dadText.indexOf('全家知道就好'));
+    expect(dadText.indexOf('全家知道就好')).toBeLessThan(dadText.indexOf('等到摘要再看的消息'));
+    await expect(dadSurface).toContainText('秋游回执');
+    await expect(dadSurface).toContainText('发消息的人写了“不着急”（不着急）');
+    await expect(dadSurface).toContainText('不是由模型决定');
+    await expect(dadSurface.locator('.hm-sim-badge').first()).toHaveText('模拟');
+    await noOverflow(dad);
+    expect(await seriousIssues(dad)).toEqual([]);
+    await dad.screenshot({ path: test.info().outputPath('scene5-summary-zh.png'), fullPage: true });
+
+    // Mom's summary in English, and the week ahead.
+    await expect(mom.locator('.hm-alert[data-kind="summary"]')).toContainText('Your evening summary is ready');
+    await momNav.getByRole('button', { name: 'Summary', exact: true }).click();
+    await expect(momSurface).toContainText('Messages that waited for this summary');
+    await expect(momSurface).toContainText('What you need to do');
+    await momSurface.getByRole('button', { name: 'Week ahead' }).click();
+    await expect(momSurface).toContainText('The week ahead');
+    await expect(momSurface).toContainText('Kindergarten autumn food party');
+    await expect(momSurface).toContainText('You could take it');
+    await noOverflow(mom);
+    expect(await seriousIssues(mom)).toEqual([]);
+    await mom.screenshot({ path: test.info().outputPath('scene5-week-en.png'), fullPage: true });
   } finally {
     await momContext.close();
     await dadContext.close();

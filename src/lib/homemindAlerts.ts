@@ -36,8 +36,23 @@ export function alertTitle(alert: HomemindAlert, lang: Lang): string {
     const n = alert.entries?.length ?? 1;
     return t(lang, `${n} updates`, `${n} 条更新`);
   }
+  // T8.2: not about a board item.
+  if (alert.kind === 'summary') return t(lang, 'Evening summary', '晚间摘要');
+  if (alert.kind === 'message') return (lang === 'zh' && alert.messageAuthorZh) || alert.messageAuthor || t(lang, 'Class group', '班级群');
   if (alert.sensitive || !alert.title) return t(lang, GENERIC.en, GENERIC.zh);
   return titleOf(lang, alert.title, alert.titleZh);
+}
+
+/** T8.2: why a group message is shown now, in a few words (the rule that decided, with the words it matched). */
+function shownNowReason(alert: HomemindAlert, lang: Lang): string {
+  switch (alert.judgmentReason) {
+    case 'urgent-words':
+      return t(lang, 'Shown at once: it reads as urgent.', '立即提醒：消息看起来很紧急。');
+    case 'sign-up':
+      return t(lang, 'Shown now: a sign-up with a deadline.', '现在提醒：这是有截止时间的接龙。');
+    default:
+      return t(lang, 'Shown now: it is about the next few days.', '现在提醒：和这几天有关。');
+  }
 }
 
 export function alertText(alert: HomemindAlert, lang: Lang): string {
@@ -66,6 +81,18 @@ export function alertText(alert: HomemindAlert, lang: Lang): string {
     const what = (lang === 'zh' ? alert.staleWhatZh : alert.staleWhat) ?? alert.staleWhat ?? '';
     const n = alert.staleCount ?? 1;
     return t(lang, `The kindergarten changed a message. ${what} ${n} of your items depend on it; check them on My day. (Simulated group)`, `幼儿园修改了一条消息。${what}你有 ${n} 项事情与它有关，请在“我的一天”查看。（模拟群）`);
+  }
+  if (alert.kind === 'message') {
+    // T8.2: a message in the simulated class group that should be seen now, and why now.
+    const author = alertTitle(alert, lang);
+    return t(lang, `${author} in the class group: “${alert.messageText ?? ''}” ${shownNowReason(alert, lang)} (Simulated group)`, `${author}在班级群：“${alert.messageText ?? ''}”${shownNowReason(alert, lang)}（模拟群）`);
+  }
+  if (alert.kind === 'summary') {
+    const n = alert.summaryToDo ?? 0;
+    const m = alert.summaryMessages ?? 0;
+    const week = alert.weekAhead ? t(lang, ' The week ahead is in it too.', '下周概览也一起送达。') : '';
+    const msgs = m ? t(lang, ` ${m} group message${m === 1 ? '' : 's'} waited for it.`, `有 ${m} 条群消息等到了现在。`) : '';
+    return t(lang, `Your evening summary is ready: ${n} thing${n === 1 ? '' : 's'} for you.${msgs}${week}`, `你的晚间摘要已送达：${n} 件与你有关的事。${msgs}${week}`);
   }
   if (alert.sensitive || !alert.title) return t(lang, GENERIC.en, GENERIC.zh);
   const title = alertTitle(alert, lang);
@@ -106,6 +133,8 @@ export function alertButtons(alert: HomemindAlert, lang: Lang): AlertButton[] {
     case 'backup':
     case 'group':
     case 'stale':
+    case 'message':
+    case 'summary':
       return [open, dismiss];
     case 'batch':
       return [dismiss];
@@ -114,8 +143,8 @@ export function alertButtons(alert: HomemindAlert, lang: Lang): AlertButton[] {
 
 /** Whether the alert still asks something of `memberId`, given the item as it is now (`null`: gone or hidden). */
 export function stillRelevant(alert: HomemindAlert, item: Item | null, memberId: string): boolean {
-  // A batch only lists things; it stays until dismissed.
-  if (alert.kind === 'batch') return true;
+  // A batch only lists things; it stays until dismissed. So do T8.2's message and summary notices (no board item).
+  if (alert.kind === 'batch' || alert.kind === 'message' || alert.kind === 'summary') return true;
   if (!item || item.status !== 'open') return false;
   const own = item.ownership;
   const confirmed = own.state === 'assigned' && own.confirmed;
@@ -138,7 +167,8 @@ export function stillRelevant(alert: HomemindAlert, item: Item | null, memberId:
 }
 
 /** Notices only tell; they never push out an alert that asks for an answer. */
-const isNotice = (alert: HomemindAlert) => alert.kind === 'batch' || alert.kind === 'backup' || alert.kind === 'group' || alert.kind === 'stale';
+const isNotice = (alert: HomemindAlert) =>
+  alert.kind === 'batch' || alert.kind === 'backup' || alert.kind === 'group' || alert.kind === 'stale' || alert.kind === 'message' || alert.kind === 'summary';
 
 /**
  * The list after a new alert arrives: one alert that asks something per item (the newest), plus

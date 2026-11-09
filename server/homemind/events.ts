@@ -4,6 +4,7 @@
  *
  * Pure of HTTP: a subscriber is a function. The bridge turns frames into SSE. No network, no timers.
  */
+import { isItemlessAlert } from './alerts';
 import type { AlertDelivery } from './alerts';
 import type { CoreEvent } from './core';
 import type { HomemindState, StreamMessage } from './types';
@@ -78,8 +79,13 @@ export function createEventHub(): EventHub {
     },
     publishAlerts(state, deliveries) {
       for (const { recipientId, alert } of deliveries) {
-        const item = state.items.find(i => i.id === alert.itemId);
-        if (!item || !canSeeItem(state, recipientId, item)) continue;
+        if (isItemlessAlert(alert)) {
+          // T8.2: not about a board item; its maker chose the recipients (parents for a group message).
+          if (!state.family.members.some(m => m.id === recipientId && m.hasAccount)) continue;
+        } else {
+          const item = state.items.find(i => i.id === alert.itemId);
+          if (!item || !canSeeItem(state, recipientId, item)) continue;
+        }
         for (const subscriber of subscribers.filter(s => s.memberId === recipientId)) deliver(subscriber, { event: 'alert', data: alert });
       }
     },

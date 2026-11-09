@@ -446,6 +446,91 @@ export interface HomemindState {
   sourceChanges?: SourceChange[];
   /** T8.1: "Noa is sick" and what Homemind suggested for that day, newest last (situations.ts keeps at most 30). */
   situations?: Situation[];
+  /** T8.2: the tier Homemind gave each message in a simulated group, and why, newest last (judgment.ts keeps at most 100). */
+  messageJudgments?: MessageJudgment[];
+  /** T8.2: the evening summaries that went out, newest last (summary.ts keeps at most 30). */
+  summaries?: SummaryRecord[];
+  /** T8.2: the demo-clock time summaries were last checked. A summary goes out when a tick crosses 20:00 after it. */
+  summaryCheckedAt?: string;
+}
+
+// --- judgment and summaries (T8.2, judgment.ts and summary.ts) -----------------------------------------------
+
+/**
+ * Why a message got its tier. Fixed rules over its words, never the model:
+ *   urgent-words  "紧急", "马上", "urgent"...: it breaks quiet hours
+ *   sign-up       a 接龙: the sign-up rules (T7.4) read it, and it is shown now
+ *   not-urgent    the sender says so ("不着急", "no rush"): it waits for the evening summary
+ *   soon          today, tomorrow or this week: shown now
+ *   next-week     next week or later: it waits for the evening summary
+ *   no-date       no date and no request for today: it waits for the evening summary
+ */
+export type JudgmentReason = 'urgent-words' | 'sign-up' | 'not-urgent' | 'soon' | 'next-week' | 'no-date';
+
+/** T8.2: the tier of one message at one version, and what Homemind did with it. */
+export interface MessageJudgment {
+  /** `jdg-<messageId>-v<version>`. */
+  id: string;
+  messageId: string;
+  version: number;
+  groupId: string;
+  at: string;
+  tier: Tier;
+  reason: JudgmentReason;
+  /** The words the rule matched, quoted from the message. */
+  quote?: string;
+  /** `summary`: the evening summary it waits for. */
+  summaryAt?: string;
+  /** `summary`: the summary it went out in (a `SummaryRecord` id). */
+  deliveredIn?: string;
+  /** `urgent` or `timed`: who got an alert at once. Empty when the sign-up rules already told the family. */
+  alertedIds?: string[];
+  /** The sign-up rules (T7.4) claimed or stopped on it and sent their own notice, so no second alert. */
+  handledBy?: 'group-claim';
+}
+
+/** T8.2: one evening summary that went out. */
+export interface SummaryRecord {
+  /** `sum-<date>`. */
+  id: string;
+  /** Local date of the evening. */
+  date: string;
+  at: string;
+  /** The family's week starts the next day, so the week ahead went out with it. */
+  weekAhead: boolean;
+}
+
+/** T8.2: one thing on a member's summary under "What you need to do", and why it is theirs. */
+export interface SummaryToDo {
+  itemId: string;
+  /** `owner`: theirs, confirmed. `unconfirmed`: given to them, not confirmed. `asked`: "Who's taking this?" and they could. `unanswered`: a reminder that reached them got no answer. */
+  why: 'owner' | 'unconfirmed' | 'asked' | 'unanswered';
+  /** Local date it is on (absent: no date). */
+  date?: string;
+}
+
+/**
+ * T8.2: one member's summary, already limited to what they may see. "What you need to do" comes first,
+ * then who is away, the general events for everyone, and (parents) the group messages that waited.
+ */
+export interface SummaryView {
+  kind: 'daily' | 'weekly';
+  /** Daily: the evening's local date. Weekly: the first day of the week ahead. */
+  date: string;
+  /** The local dates covered, first and last. */
+  from: string;
+  to: string;
+  /** When it goes out (the evening's 20:00). */
+  scheduledAt: string;
+  /** Set once it went out; absent: a preview. */
+  deliveredAt?: string;
+  toDo: SummaryToDo[];
+  /** Who is away, from events the member can see. */
+  away: Array<{ memberId: string; eventId: string; date: string; start: string; end: string }>;
+  /** Events in the period for everyone else to know, not already under "What you need to do". */
+  everyone: Array<{ itemId: string; date: string }>;
+  /** Parents: the group messages that waited for this summary, with the reason. */
+  messages: Array<{ judgment: MessageJudgment; message: GroupMessage }>;
 }
 
 // --- a day gone wrong (T8.1, situations.ts) ---------------------------------------------------------------
@@ -856,7 +941,7 @@ export type PpmaStatus = 'off' | 'connecting' | 'ok' | 'offline';
  * contact was messaged), `batch` (several small updates as one alert). `group` (T7.4, groupClaims.ts):
  * Homemind claimed or changed a sign-up in a simulated group; a notice to everyone who sees the event.
  */
-export type AlertKind = 'assigned' | 'open' | 'reminder' | 'escalation' | 'backup' | 'batch' | 'group' | 'stale';
+export type AlertKind = 'assigned' | 'open' | 'reminder' | 'escalation' | 'backup' | 'batch' | 'group' | 'stale' | 'message' | 'summary';
 
 /** One line of a batched alert. */
 export interface AlertBatchEntry {
@@ -914,6 +999,19 @@ export interface HomemindAlert {
   staleCount?: number;
   staleWhat?: string;
   staleWhatZh?: string;
+  /**
+   * `message` (T8.2): a group message that should be seen now (tier `urgent` or `timed`). `itemId` is the
+   * message id: it is not about a board item. Always about a simulated group.
+   */
+  messageAuthor?: string;
+  messageAuthorZh?: string;
+  messageText?: string;
+  judgmentReason?: JudgmentReason;
+  /** `summary` (T8.2): the evening summary went out. `itemId` is the summary id. How many things to do, and how many messages waited. */
+  summaryToDo?: number;
+  summaryMessages?: number;
+  /** The week ahead went out with it. */
+  weekAhead?: boolean;
 }
 
 /** A reminder that reached a member and is still waiting for an answer, for the reminder buttons on board rows (T4.2). */

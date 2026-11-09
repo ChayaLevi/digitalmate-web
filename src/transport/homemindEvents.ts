@@ -96,7 +96,9 @@ function toClock(record: Record<string, unknown>): { now: string; offsetMs: numb
   return { now, offsetMs, timezone };
 }
 
-const ALERT_KINDS: readonly HomemindAlert['kind'][] = ['assigned', 'open', 'reminder', 'escalation', 'backup', 'batch', 'group', 'stale'];
+const ALERT_KINDS: readonly HomemindAlert['kind'][] = ['assigned', 'open', 'reminder', 'escalation', 'backup', 'batch', 'group', 'stale', 'message', 'summary'];
+const JUDGMENT_REASONS = ['urgent-words', 'sign-up', 'not-urgent', 'soon', 'next-week', 'no-date'] as const;
+const count = (value: unknown) => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 1000;
 const ASKS = ['heads-up', 'confirm', 'open'] as const;
 const MAX_ENTRIES = 20;
 
@@ -118,6 +120,7 @@ export function toAlert(record: Record<string, unknown>): HomemindAlert | null {
   const { id, kind, itemId, itemVersion, tier, at, byId, byName, byNameZh, title, titleZh, sensitive } = record;
   const { reminderId, ask, time, recurring, contactName, contactNameZh, simulated, entries } = record;
   const { groupChoice, groupChoiceZh, groupFrom, groupFromZh, staleCount, staleWhat, staleWhatZh } = record;
+  const { messageAuthor, messageAuthorZh, messageText, judgmentReason, summaryToDo, summaryMessages, weekAhead } = record;
   if (!str(id) || !ALERT_KINDS.includes(kind as HomemindAlert['kind']) || !str(itemId, 64) || !str(byId, 64) || !str(byName) || !str(at, 40)) return null;
   if (typeof itemVersion !== 'number' || !Number.isInteger(itemVersion) || itemVersion < 1) return null;
   if (tier !== 'urgent' && tier !== 'timed' && tier !== 'summary') return null;
@@ -136,6 +139,10 @@ export function toAlert(record: Record<string, unknown>): HomemindAlert | null {
   // T7.4: a group notice says what was signed up for, and it is always about the simulated group.
   if (kind === 'group' && (!groupChoice || simulated !== true)) return null;
   // T7.5: a changed-message notice says how many items depend on it and what changed, about the simulated group.
+  // T8.2: a group message names who wrote it, what, and the rule's reason, about the simulated group.
+  if (kind === 'message' && (!str(messageAuthor) || !str(messageText, 1000) || (messageAuthorZh !== undefined && !str(messageAuthorZh)) || !JUDGMENT_REASONS.includes(judgmentReason as (typeof JUDGMENT_REASONS)[number]) || simulated !== true)) return null;
+  // T8.2: the evening summary says how many things and messages it holds.
+  if (kind === 'summary' && (!count(summaryToDo) || !count(summaryMessages) || (weekAhead !== undefined && typeof weekAhead !== 'boolean'))) return null;
   if (kind === 'stale' && (typeof staleCount !== 'number' || !Number.isInteger(staleCount) || staleCount < 1 || staleCount > 100 || !staleWhat || simulated !== true)) return null;
   return {
     id,
@@ -161,7 +168,11 @@ export function toAlert(record: Record<string, unknown>): HomemindAlert | null {
     ...(kind === 'group'
       ? { groupChoice: groupChoice as string, ...(groupChoiceZh ? { groupChoiceZh: groupChoiceZh as string } : {}), ...(groupFrom ? { groupFrom: groupFrom as string, ...(groupFromZh ? { groupFromZh: groupFromZh as string } : {}) } : {}) }
       : {}),
-    ...(kind === 'stale' ? { staleCount: staleCount as number, staleWhat: staleWhat as string, ...(staleWhatZh ? { staleWhatZh: staleWhatZh as string } : {}) } : {})
+    ...(kind === 'stale' ? { staleCount: staleCount as number, staleWhat: staleWhat as string, ...(staleWhatZh ? { staleWhatZh: staleWhatZh as string } : {}) } : {}),
+    ...(kind === 'message'
+      ? { messageAuthor: messageAuthor as string, ...(messageAuthorZh ? { messageAuthorZh: messageAuthorZh as string } : {}), messageText: messageText as string, judgmentReason: judgmentReason as HomemindAlert['judgmentReason'] }
+      : {}),
+    ...(kind === 'summary' ? { summaryToDo: summaryToDo as number, summaryMessages: summaryMessages as number, ...(weekAhead ? { weekAhead: true } : {}) } : {})
   };
 }
 

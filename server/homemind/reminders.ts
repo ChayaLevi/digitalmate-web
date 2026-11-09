@@ -18,6 +18,7 @@
  * Pure: no I/O, no clock reads (`now` is passed in), no randomness. Wording is the client's job; the
  * only text made here is the backup message, which says nothing about the family's plans.
  */
+import { isItemlessAlert } from './alerts';
 import type { AlertDelivery } from './alerts';
 import { addDays, localParts, toIso, zonedToUtc } from './clock';
 import { eligibleOwners, occurrences } from './core';
@@ -436,6 +437,8 @@ function dedupe(alerts: readonly AlertDelivery[], fromChange: readonly AlertDeli
 // Quiet hours and batching
 
 function stillApplies(state: HomemindState, held: HeldAlert): boolean {
+  // T8.2: a group message or the evening summary still applies once quiet hours end.
+  if (isItemlessAlert(held.alert)) return state.family.members.some(m => m.id === held.recipientId && m.hasAccount);
   const item = state.items.find(i => i.id === held.alert.itemId);
   if (!item || item.status !== 'open' || !canSeeItem(state, held.recipientId, item)) return false;
   if (!held.alert.reminderId) return true;
@@ -485,9 +488,10 @@ export function routeAlerts(state: HomemindState, deliveries: readonly AlertDeli
       ready.push(delivery);
     }
   }
-  const send: AlertDelivery[] = ready.filter(d => d.alert.tier === 'urgent');
+  // Urgent alerts, and T8.2's message and summary notices, go on their own.
+  const send: AlertDelivery[] = ready.filter(d => d.alert.tier === 'urgent' || isItemlessAlert(d.alert));
   const small = new Map<string, HomemindAlert[]>();
-  for (const d of ready) if (d.alert.tier !== 'urgent') small.set(d.recipientId, [...(small.get(d.recipientId) ?? []), d.alert]);
+  for (const d of ready) if (d.alert.tier !== 'urgent' && !isItemlessAlert(d.alert)) small.set(d.recipientId, [...(small.get(d.recipientId) ?? []), d.alert]);
   for (const [recipientId, alerts] of small) {
     send.push({ recipientId, alert: alerts.length === 1 ? alerts[0] : batchAlert(recipientId, alerts, now) });
   }

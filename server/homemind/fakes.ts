@@ -16,6 +16,7 @@ import type { ActionAdapter, AdapterRegistry } from './actions';
 import { addDays, localParts, toIso, zonedToUtc } from './clock';
 import type { BabysitterMessage, GroupMessage, HomemindState, Member, PizzaOrder, ServicesState, ServicesView, TeacherMessage } from './types';
 import { ID_PATTERN } from './types';
+import { canSee } from './core';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -269,7 +270,8 @@ const INBOX_FIXTURE = [
     subject: 'Class photo day next Wednesday',
     subjectZh: '下周三拍班级合影',
     body: 'Please dress the children in the class T-shirt next Wednesday.',
-    bodyZh: '下周三请给孩子穿班服。'
+    bodyZh: '下周三请给孩子穿班服。',
+    ask: { type: 'task', title: 'Class T-shirt for photo day', titleZh: '拍班级合影：穿班服', weekday: 3 }
   },
   {
     id: 'mail-2',
@@ -279,7 +281,8 @@ const INBOX_FIXTURE = [
     subject: 'Your books are due tomorrow',
     subjectZh: '您借的书明天到期',
     body: 'Two books on your card are due tomorrow.',
-    bodyZh: '您借阅的两本书明天到期。'
+    bodyZh: '您借阅的两本书明天到期。',
+    ask: { type: 'task', title: 'Return the library books', titleZh: '归还图书馆的书', daysAhead: 1 }
   },
   {
     id: 'mail-3',
@@ -289,7 +292,8 @@ const INBOX_FIXTURE = [
     subject: 'Pool closed next Saturday',
     subjectZh: '下周六泳池关闭',
     body: 'The pool is closed next Saturday for cleaning. Lessons on other days are as usual.',
-    bodyZh: '下周六泳池清洁关闭，其他日子的课程照常。'
+    bodyZh: '下周六泳池清洁关闭，其他日子的课程照常。',
+    ask: { type: 'event', title: 'Swim club: pool closed', titleZh: '游泳俱乐部：泳池关闭', weekday: 6 }
   },
   {
     id: 'mail-4',
@@ -303,20 +307,80 @@ const INBOX_FIXTURE = [
   }
 ] as const;
 
-export function inboxFor(memberId: string, now: number): ServicesView['inbox']['messages'] {
-  return INBOX_FIXTURE.filter(m => (m.to as readonly string[]).includes(memberId))
-    .map(m => ({ m, sender: APPROVED_SENDERS.find(s => s.address === m.from) }))
-    .filter(({ sender }) => sender !== undefined)
-    .map(({ m, sender }) => ({
+/** What a sample email asks of the family, written into the fixture (no model reads it: it is sample data). */
+export interface MailAsk {
+  type: 'task' | 'event';
+  title: string;
+  titleZh: string;
+  /** The next such weekday after today (0 Sunday to 6 Saturday), or `daysAhead` days from today. All day. */
+  weekday?: number;
+  daysAhead?: number;
+}
+
+export interface SampleMail {
+  id: string;
+  version: number;
+  at: string;
+  to: string[];
+  from: string;
+  fromName: string;
+  fromNameZh: string;
+  subject: string;
+  subjectZh: string;
+  body: string;
+  bodyZh: string;
+  ask?: MailAsk;
+}
+
+/** Every sample mail from an approved sender, with its recipients. A sender not on the list is never returned. */
+export function approvedMail(now: number): SampleMail[] {
+  const out: SampleMail[] = [];
+  for (const m of INBOX_FIXTURE) {
+    const sender = APPROVED_SENDERS.find(s => s.address === m.from);
+    if (!sender) continue;
+    out.push({
       id: m.id,
+      version: 1,
       at: toIso(now - m.hoursAgo * HOUR),
+      to: [...m.to],
       from: m.from,
-      fromName: sender!.name,
-      fromNameZh: sender!.nameZh,
+      fromName: sender.name,
+      fromNameZh: sender.nameZh,
       subject: m.subject,
       subjectZh: m.subjectZh,
       body: m.body,
-      bodyZh: m.bodyZh
+      bodyZh: m.bodyZh,
+      ...('ask' in m ? { ask: { ...(m.ask as MailAsk) } } : {})
+    });
+  }
+  return out;
+}
+
+/** The mails this member already has a live item for (one they can see: a private one counts for its mailbox owners). */
+export function mailOnBoard(state: HomemindState, memberId: string): Set<string> {
+  const ids = new Set<string>();
+  for (const item of state.items) {
+    if (item.status === 'cancelled' || !canSee(state, memberId, item)) continue;
+    for (const ref of item.sourceRefs ?? []) if (ref.id.startsWith('mail-')) ids.add(ref.id);
+  }
+  return ids;
+}
+
+/** `added`: ids of mails that already have an item on this member's board. */
+export function inboxFor(memberId: string, now: number, added: ReadonlySet<string> = new Set()): ServicesView['inbox']['messages'] {
+  return approvedMail(now)
+    .filter(m => m.to.includes(memberId))
+    .map(m => ({
+      id: m.id,
+      at: m.at,
+      from: m.from,
+      fromName: m.fromName,
+      fromNameZh: m.fromNameZh,
+      subject: m.subject,
+      subjectZh: m.subjectZh,
+      body: m.body,
+      bodyZh: m.bodyZh,
+      ...(added.has(m.id) ? { added: true } : {})
     }))
     .sort((a, b) => b.at.localeCompare(a.at));
 }
@@ -371,7 +435,7 @@ export function servicesViewFor(state: HomemindState, memberId: string, now: num
       }),
       simulated: true
     },
-    inbox: { approvedSenders: APPROVED_SENDERS.map(s => ({ ...s })), messages: inboxFor(memberId, now), simulated: true },
+    inbox: { approvedSenders: APPROVED_SENDERS.map(s => ({ ...s })), messages: inboxFor(memberId, now, mailOnBoard(state, memberId)), simulated: true },
     weather: { days: weatherFor(now, zone), simulated: true },
     teacher: { name: TEACHER.name, nameZh: TEACHER.nameZh, messages: services.teacherMessages ?? [], simulated: true }
   };

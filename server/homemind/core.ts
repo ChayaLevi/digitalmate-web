@@ -71,6 +71,8 @@ export interface NewItem extends ItemFields {
   titleZh?: string;
   /** T7.5: the messages the item was made from. Not from clients. */
   sourceRefs?: SourceRef[];
+  /** T8.3: the members whose mailbox got the email this came from. Only inbox.ts sets it (never a client). */
+  mailboxIds?: string[];
 }
 
 /**
@@ -184,6 +186,8 @@ const isParent = (state: HomemindState, id: string) => memberOf(state, id)?.role
 
 /** Whether `memberId` may see `item` at all. visibility.ts builds the full per-member view on this. */
 export function canSee(state: HomemindState, memberId: string, item: Item): boolean {
+  // T8.3: until approved, an item from an email is the mailbox owners' alone (not even other parents).
+  if (item.mailboxIds && !item.mailboxIds.includes(memberId)) return false;
   return item.visibility === 'family' || isParent(state, memberId);
 }
 
@@ -497,6 +501,12 @@ function planCreate(state: HomemindState, input: NewItem, actor: string, clock: 
     item.titleZh = titleZh;
   }
   if (input.sourceRefs?.length) item.sourceRefs = input.sourceRefs.slice(0, 8).map(r => ({ id: r.id, version: r.version }));
+  if (input.mailboxIds?.length) {
+    // Only a proposal can be private to a mailbox, and its owners must be real members, the actor among them.
+    const ids = [...new Set(input.mailboxIds)];
+    if (!proposed || !ids.includes(actor) || ids.some(id => !memberOf(state, id))) return invalid('bad mailbox');
+    item.mailboxIds = ids;
+  }
 
   return { next: new Map([[id, item]]), kind: 'create', itemId: id, what: proposed ? 'Proposed an item' : 'Added an item' };
 }
@@ -726,7 +736,9 @@ function planItemChange(state: HomemindState, change: ItemChange, actor: string)
     case 'dismiss': {
       if (item.status !== 'proposed') return fail(409, 'conflict', 'this is not waiting for approval', item);
       const status = change.kind === 'approve' ? 'open' : 'cancelled';
-      const draft = change.kind === 'approve' ? one({ ...item, status }, 'approve', 'Approved') : one({ ...item, status }, 'dismiss', 'Dismissed');
+      // Approving an item from an email makes it the family's (T8.3); Undo brings the mailbox back with the old version.
+      const { mailboxIds: _private, ...family } = item;
+      const draft = change.kind === 'approve' ? one({ ...family, status }, 'approve', 'Approved') : one({ ...item, status }, 'dismiss', 'Dismissed');
       // One tap for an event and the preparations proposed with it (T5.3). Undo restores them all.
       if (item.type === 'event') {
         for (const prep of preparationsOf(state, item.id)) if (prep.status === 'proposed') draft.next.set(prep.id, { ...prep, status });

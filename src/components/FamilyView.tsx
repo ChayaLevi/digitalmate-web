@@ -511,6 +511,8 @@ export function FamilyView({
             ? tr('Preference saved.', '偏好已保存。')
           : verb === 'memory-correct'
             ? tr('Correction sent to PPMA. It shows here until PPMA has applied it.', '更正已发送给 PPMA，在 PPMA 处理完成前会显示在这里。')
+          : verb === 'inbox-add'
+            ? tr("Added as a suggestion that only the mailbox owners see. Approve it to make it the family's.", '已作为建议加入，只有收件箱的主人看得到。批准后才会成为全家的事项。')
           : verb === 'post-group-message'
             ? tr('A new message arrived in the simulated group.', '模拟群里收到一条新消息。')
           : verb === 'update-group-message'

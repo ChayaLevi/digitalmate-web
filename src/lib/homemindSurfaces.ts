@@ -1764,6 +1764,8 @@ const S = {
   freeToday: { en: 'Free today', zh: '今天有空' },
   notToday: { en: 'Not free today', zh: '今天没空' },
   inbox: { en: 'Inbox (approved senders only)', zh: '收件箱（仅白名单发件人）' },
+  inboxAdd: { en: 'Add to my board', zh: '加到我的看板' },
+  inboxAdded: { en: 'On your board', zh: '已在你的看板上' },
   inboxEmpty: { en: 'No messages from approved senders in your mailbox.', zh: '你的邮箱里没有白名单发件人的邮件。' },
   weather: { en: 'Weather', zh: '天气' },
   todayW: { en: 'Today', zh: '今天' },
@@ -1880,9 +1882,24 @@ function servicesScreen(input: HomemindScreenData): HomemindTurn {
       services.inbox.messages.map(m => ({
         title: lang === 'zh' ? m.subjectZh : m.subject,
         subtitle: `${lang === 'zh' ? m.fromNameZh : m.fromName} · ${lang === 'zh' ? m.bodyZh : m.body}`,
-        meta: timeOf(m.at)
+        meta: [timeOf(m.at), m.added ? sx(lang, 'inboxAdded') : ''].filter(Boolean).join(' · ')
       }))
     );
+    // T8.3: one button per mail not on the board yet; the item is private to the mailbox owners until approved.
+    const addable = services.inbox.messages.filter(m => !m.added);
+    if (addable.length) {
+      children.push({
+        id: 'inbox-actions',
+        component: 'ActionBar',
+        actions: addable.map(m => ({
+          id: `homemind.inbox-add-${m.id}`,
+          label: `${sx(lang, 'inboxAdd')}: ${lang === 'zh' ? m.subjectZh : m.subject}`,
+          variant: 'secondary' as const,
+          kind: 'homemind' as const,
+          args: { verb: 'inbox-add', mailId: m.id }
+        }))
+      });
+    }
   } else children.push(text('inbox-empty', `**${sx(lang, 'inbox')}** · ${sim}\n\n${sx(lang, 'inboxEmpty')}`));
 
   list(

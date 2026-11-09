@@ -257,6 +257,11 @@ export async function runHomemindAction(action: A2uiAction, token: string): Prom
     const result = await call<MutationResult>(`/api/homemind/source-changes/${id(args.changeId)}/${choice}`, { method: 'POST', token, body: '{}' });
     return { kind: 'mutation', result, verb };
   }
+  if (verb === 'inbox-add') {
+    // T8.3: add a sample email to my board as a proposal only the mailbox owners see.
+    const result = await call<MutationResult>(`/api/homemind/inbox/${id(args.mailId)}/add`, { method: 'POST', token, body: '{}' });
+    return { kind: 'mutation', result, verb };
+  }
   if (verb === 'situation') {
     // T8.1: Apply / Not now on a suggestion made because someone is sick, Apply all, or Undo.
     const choice = args.action;

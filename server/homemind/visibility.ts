@@ -95,6 +95,8 @@ export function viewFor(state: HomemindState, memberId: string): MemberView | nu
  */
 export function eventFor(state: HomemindState, memberId: string, event: CoreEvent): CoreEvent | null {
   if (event.type !== 'item.changed') return null;
+  // T8.3: an item from an email that is still private to its mailboxes says nothing to anyone else, not even "removed".
+  if (event.item?.mailboxIds && !event.item.mailboxIds.includes(memberId)) return null;
   if (event.item && canSeeItem(state, memberId, event.item)) {
     return { type: 'item.changed', itemId: event.itemId, item: redactItem(state, memberId, event.item) };
   }

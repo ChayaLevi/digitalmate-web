@@ -119,6 +119,11 @@ export interface Item {
   sourceRefs?: SourceRef[];
   /** T7.5: a message it was made from changed since; reminders wait until a parent applies, keeps or discards. */
   stale?: StaleMark;
+  /**
+   * T8.3: an item made from an email is seen only by the owners of the mailbox(es) that got it, until one
+   * of them approves it (approving clears this). Not even the other parent sees it before.
+   */
+  mailboxIds?: string[];
 }
 
 /** T7.5: a message (group or inbox) at one version. */
@@ -869,7 +874,8 @@ export interface ServicesView {
   /** Only the signed-in member's own mailbox. */
   inbox: {
     approvedSenders: Array<{ address: string; name: string; nameZh: string }>;
-    messages: Array<{ id: string; at: string; from: string; fromName: string; fromNameZh: string; subject: string; subjectZh: string; body: string; bodyZh: string }>;
+    /** `added`: an item made from it is already on this member's board (T8.3). */
+    messages: Array<{ id: string; at: string; from: string; fromName: string; fromNameZh: string; subject: string; subjectZh: string; body: string; bodyZh: string; added?: boolean }>;
     simulated: true;
   };
   weather: {

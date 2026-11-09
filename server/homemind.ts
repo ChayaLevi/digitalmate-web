@@ -37,6 +37,7 @@ import type { ActionErrorCode, AdapterRegistry } from './homemind/actions';
 import { applySettings, parseSettingsPatch } from './homemind/settings';
 import { applyRuleRequest, parseRuleBody, prepareRuleNow, runRules } from './homemind/rules';
 import { afterGroupCard, applyGroupPolicy, considerSignUps, groupAutoAllowed, groupsView, parseGroupPolicyBody, reconsiderSignUp, requestGroupChange } from './homemind/groupClaims';
+import { planMailItem } from './homemind/inbox';
 import { KINDERGARTEN_GROUP, createSimulatedAdapters, postNextGroupMessage, servicesViewFor, updateGroupMessages } from './homemind/fakes';
 import { detectSourceChanges, resolveSourceChange, sourceChangesView, undoSourceChange } from './homemind/sourceChanges';
 import { createLlmClient, llmConfigFromEnv, llmStatus } from './homemind/llm';
@@ -1253,6 +1254,23 @@ const routes: Route[] = [
       const claim = (rt.state.groupClaims ?? []).find(c => c.id === result.claim.id) ?? result.claim;
       const card = rt.state.actionCards.find(c => c.id === result.card.id) ?? result.card;
       json(ctx.response, 200, { ok: true, claim: claimSummary(claim), card: { id: card.id, status: card.status }, posted: card.status === 'executed' });
+    }
+  },
+  {
+    method: 'POST',
+    pattern: /^\/inbox\/([a-z0-9][a-z0-9_-]{0,63})\/add$/,
+    auth: true,
+    // T8.3: a sample email from an approved sender becomes a proposal, visible only to the mailbox owners until approved.
+    handler: async ctx => {
+      pick(await readBody(ctx.request), [], 'inbox');
+      const { rt, member } = ctx;
+      const plan = planMailItem(rt.state, member.id, ctx.params[0], rt.clock.now());
+      if (!plan.ok) return fail(ctx.response, plan.status, plan.code, plan.message);
+      if (plan.duplicate) return json(ctx.response, 200, { ok: true, duplicate: true, items: itemsById(rt.state, member.id, [plan.item.id]) });
+      const applied = await applyAndCommit(ctx, plan.change);
+      if (!applied.ok) return changeFailed(ctx, applied);
+      rt.hub.broadcast({ event: 'services.changed', data: {} });
+      json(ctx.response, 200, { ok: true, duplicate: false, activityId: applied.activityId, items: applied.items });
     }
   },
   {

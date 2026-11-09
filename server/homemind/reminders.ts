@@ -523,8 +523,10 @@ export function tickReminders(state: HomemindState, now: number, fromChange: rea
   };
   const fired: AlertDelivery[] = [];
   const closed = [...synced.closed];
+  // T7.5: an item whose message changed waits for a parent's decision: its reminders do not fire meanwhile.
+  const staleIds = new Set(current.items.filter(i => i.stale).map(i => i.id));
   const reminders = current.reminders.map(r => {
-    if (!isActive(r)) return r;
+    if (!isActive(r) || staleIds.has(r.itemId)) return r;
     const result = fire(current, r, now, backupId);
     fired.push(...result.alerts);
     if (result.backup) backups.push(result.backup);

@@ -34,7 +34,7 @@ import type { Change, CoreEvent, NewItem } from './core';
 import { ADAPTER_IDS, KINDERGARTEN_GROUP, groupAuthorFor, servicesOf } from './fakes';
 import { applicablePreferences, checkChoice } from './preferences';
 import type { BlockedChoice, PreferenceContext } from './preferences';
-import type { ActionCard, GroupClaim, GroupClaimChange, GroupClaimPolicy, GroupMessage, GroupsView, HomemindAlert, HomemindState, Item, Member, Preference, SignUpChoiceView, SignUpOption, Why } from './types';
+import type { ActionCard, GroupClaim, GroupClaimChange, GroupClaimPolicy, GroupMessage, GroupsView, HomemindAlert, HomemindState, Item, Member, Preference, SignUpChoiceView, SignUpOption, SourceRef, Why } from './types';
 import { ID_PATTERN } from './types';
 import { canSeeItem } from './visibility';
 
@@ -86,7 +86,7 @@ export function foodFor(label: string): SignUpFood | undefined {
   return best?.food;
 }
 
-const foodByKey = (key: string | undefined) => SIGNUP_FOODS.find(f => f.key === key);
+export const foodByKey = (key: string | undefined) => SIGNUP_FOODS.find(f => f.key === key);
 
 // --- reading a sign-up (fixed rules, not the model) -------------------------------------------------------
 
@@ -413,7 +413,8 @@ const STOP_TEXT: Record<string, [string, string]> = {
   nothing_suitable: ['nothing left on the list is food Homemind may claim on its own (food to buy, within the cap, no preference against it)', '清单上剩下的没有 Homemind 可以自行认领的（需购买的食物、不超过上限、没有冲突的偏好）'],
   already_signed_up: ['the family is already on the list', '家里已经在接龙名单上'],
   paused: ['automatic actions are paused', '自动操作已暂停'],
-  failed: ['the simulated group did not take the post', '模拟群没有收到这条消息']
+  failed: ['the simulated group did not take the post', '模拟群没有收到这条消息'],
+  withdrawn: ['the family was taken off the list', '已把家里从名单上撤下']
 };
 
 function claimWhy(state: HomemindState, claim: GroupClaim, assessed: Assessed[], auto: boolean): Why {
@@ -475,7 +476,18 @@ export interface ConsiderResult {
   changed: boolean;
 }
 
-const claimFor = (state: HomemindState, message: GroupMessage) => claimsOf(state).find(c => c.messageId === message.id && c.messageVersion === message.version);
+/** The claim for a message, whatever version it read: a newer version is T7.5's to compare (sourceChanges.ts), never a second claim. */
+const claimFor = (state: HomemindState, message: GroupMessage) => claimsOf(state).find(c => c.messageId === message.id);
+
+/** The messages a reading used, at their versions: the sign-up and the message the event's time came from. */
+export function refsOf(message: GroupMessage, timeSource?: GroupMessage): SourceRef[] {
+  const refs: SourceRef[] = [{ id: message.id, version: message.version }];
+  if (timeSource && timeSource.id !== message.id) refs.push({ id: timeSource.id, version: timeSource.version });
+  return refs;
+}
+
+/** A claim's source refs (older claims recorded only the sign-up). */
+export const claimRefs = (claim: GroupClaim): SourceRef[] => claim.sourceRefs ?? [{ id: claim.messageId, version: claim.messageVersion }];
 
 /**
  * Looks at every sign-up in the groups whose claims are on and that has no claim yet (or stopped only
@@ -483,6 +495,15 @@ const claimFor = (state: HomemindState, message: GroupMessage) => claimsOf(state
  * stops, with the reason. Never posts: the bridge runs a waiting card at level 4, or a parent taps it.
  */
 export function considerSignUps(state: HomemindState, now: number, adapters: AdapterRegistry): ConsiderResult {
+  return considerMessages(state, now, adapters, () => true);
+}
+
+/** T7.5: reads one sign-up again (a stopped claim whose message was edited), replacing its claim. */
+export function reconsiderSignUp(state: HomemindState, messageId: string, now: number, adapters: AdapterRegistry): ConsiderResult {
+  return considerMessages(state, now, adapters, m => m.id === messageId, true);
+}
+
+function considerMessages(state: HomemindState, now: number, adapters: AdapterRegistry, wanted: (m: GroupMessage) => boolean, again = false): ConsiderResult {
   let next = state;
   const recorded: GroupClaim[] = [];
   const services = servicesOf(state);
@@ -490,9 +511,9 @@ export function considerSignUps(state: HomemindState, now: number, adapters: Ada
   const policy = policyFor(state, group.id);
   if (!policy.enabled) return { state, claims: [], changed: false };
   for (const message of group.messages) {
-    if (!isSignUp(message)) continue;
+    if (!isSignUp(message) || !wanted(message)) continue;
     const existing = claimFor(next, message);
-    if (existing && !(existing.status === 'stopped' && existing.reason === 'paused' && !next.family.paused)) continue;
+    if (existing && !again && !(existing.status === 'stopped' && existing.reason === 'paused' && !next.family.paused)) continue;
     const done = considerOne(next, message, policy, now, adapters, existing?.id);
     next = done.state;
     recorded.push(done.claim);
@@ -508,7 +529,7 @@ function saveClaim(state: HomemindState, claim: GroupClaim, why: Why): HomemindS
 function considerOne(state: HomemindState, message: GroupMessage, policy: GroupClaimPolicy, now: number, adapters: AdapterRegistry, replaceId?: string): { state: HomemindState; claim: GroupClaim } {
   const zone = state.family.timezone;
   const id = replaceId ?? freeId(`claim-${message.id}`, x => claimsOf(state).some(c => c.id === x));
-  const base: GroupClaim = { id, groupId: policy.groupId, messageId: message.id, messageVersion: message.version, at: toIso(now), status: 'stopped', whyId: `why-${id}`.slice(0, 64) };
+  const base: GroupClaim = { id, groupId: policy.groupId, messageId: message.id, messageVersion: message.version, sourceRefs: refsOf(message), at: toIso(now), status: 'stopped', whyId: `why-${id}`.slice(0, 64) };
   const stop = (claim: GroupClaim, assessed: Assessed[] = []) => ({ claim, state: saveClaim(state, claim, claimWhy(state, claim, assessed, false)) });
 
   if (state.family.paused) return stop({ ...base, reason: 'paused' });
@@ -517,6 +538,7 @@ function considerOne(state: HomemindState, message: GroupMessage, policy: GroupC
   const titles = eventTitles(reading.eventName);
   const read: GroupClaim = {
     ...base,
+    sourceRefs: refsOf(message, reading.source),
     topic: reading.topic,
     options: reading.options,
     eventTitle: titles.en,
@@ -563,7 +585,8 @@ function considerOne(state: HomemindState, message: GroupMessage, policy: GroupC
       expiresAt: toIso(closesAt),
       whyId: why.id,
       title: `Sign-up: ${chosen.food.en}`,
-      titleZh: `接龙认领：${chosen.option.label}`
+      titleZh: `接龙认领：${chosen.option.label}`,
+      sourceRefs: claim.sourceRefs
     },
     adapters,
     now
@@ -633,7 +656,8 @@ function prepChanges(state: HomemindState, food: SignUpFood, label: string, clai
       parentEventId: eventId,
       // "Who's taking this?": Homemind never gives a person work on its own.
       ownership: { state: 'open', candidateIds: parents },
-      source: sourceOf()
+      source: sourceOf(),
+      sourceRefs: claimRefs(claim)
     };
     return { kind: 'create', item };
   });
@@ -666,9 +690,9 @@ function groupAlerts(state: HomemindState, claim: GroupClaim, event: Item, at: n
   return state.family.members.filter(m => m.hasAccount && canSeeItem(state, m.id, event)).map(m => ({ recipientId: m.id, alert }));
 }
 
-const labelOf = (claim: GroupClaim, key: string | undefined) => claim.options?.find(o => o.key === key)?.label ?? foodByKey(key)?.zh ?? key ?? '';
+export const labelOf = (claim: GroupClaim, key: string | undefined) => claim.options?.find(o => o.key === key)?.label ?? foodByKey(key)?.zh ?? key ?? '';
 
-function replaceClaim(state: HomemindState, claim: GroupClaim): HomemindState {
+export function replaceClaim(state: HomemindState, claim: GroupClaim): HomemindState {
   return { ...state, groupClaims: claimsOf(state).map(c => (c.id === claim.id ? claim : c)) };
 }
 
@@ -716,7 +740,8 @@ function afterClaimCard(state: HomemindState, claim: GroupClaim, card: ActionCar
             end: toIso(start + HOUR),
             forMemberIds: child ? [child.id] : [],
             ...(message ? { notes: `“${message.text.slice(0, 300)}”` } : {}),
-            source: sourceOf()
+            source: sourceOf(),
+            sourceRefs: claimRefs(claim)
           }
         }
       ],
@@ -753,6 +778,7 @@ function afterChangeCard(state: HomemindState, claim: GroupClaim, card: ActionCa
     return { state: replaceClaim(state, failed), events: [], alerts: [], claim: failed };
   }
   if (card.status !== 'executed') return null;
+  if (!change.to) return afterWithdrawal(state, claim, change, card, clock);
   const food = foodByKey(change.to);
   if (!food) return null;
   const label = labelOf(claim, change.to);
@@ -781,6 +807,22 @@ function afterChangeCard(state: HomemindState, claim: GroupClaim, card: ActionCa
   return { state: current, events, alerts, claim: changed };
 }
 
+/** T7.5: the family's name came off the list. What is left of its preparations leaves the board (Undo can bring them back). */
+function afterWithdrawal(state: HomemindState, claim: GroupClaim, change: GroupClaimChange, card: ActionCard, clock: Clock): AfterCard {
+  const cancels: Change[] = (claim.preparationIds ?? []).flatMap(id => {
+    const item = state.items.find(i => i.id === id);
+    return item && (item.status === 'open' || item.status === 'proposed') ? [{ kind: 'cancel' as const, itemId: id, version: item.version }] : [];
+  });
+  const cancelled = applyAll(state, cancels, change.by, clock);
+  const withdrawn: GroupClaim = {
+    ...claim,
+    status: 'stopped',
+    reason: 'withdrawn',
+    changes: (claim.changes ?? []).map(ch => (ch.cardId === card.id ? { ...ch, status: 'posted' as const } : ch))
+  };
+  return { state: replaceClaim(cancelled.state, withdrawn), events: cancelled.events, alerts: [], claim: withdrawn };
+}
+
 // --- "Change" --------------------------------------------------------------------------------------------
 
 export type ChangeRequestResult =
@@ -793,6 +835,23 @@ export type ChangeRequestResult =
  * one of the claim's alternatives right now (free, food, within the cap, no hard preference against it).
  */
 export function requestGroupChange(state: HomemindState, claimId: string, optionKey: string, memberId: string, now: number, adapters: AdapterRegistry): ChangeRequestResult {
+  if (!optionKey) return { ok: false, status: 409, code: 'not_available', message: 'Say which choice to change to' };
+  return prepareClaimCorrection(state, claimId, optionKey, memberId, now, adapters);
+}
+
+/**
+ * A correction card for a posted claim: switch to `optionKey`, or (T7.5) with `''` take the family's name
+ * off the list. `because` (T7.5: "apples are no longer needed") goes into the post and the Why.
+ */
+export function prepareClaimCorrection(
+  state: HomemindState,
+  claimId: string,
+  optionKey: string,
+  memberId: string,
+  now: number,
+  adapters: AdapterRegistry,
+  because?: { en: string; zh: string }
+): ChangeRequestResult {
   if (!isParent(state, memberId)) return { ok: false, status: 403, code: 'forbidden', message: 'Only a parent can change what the family signed up for' };
   const claim = claimsOf(state).find(c => c.id === claimId);
   if (!claim) return { ok: false, status: 404, code: 'not_found', message: 'No such sign-up' };
@@ -802,29 +861,40 @@ export function requestGroupChange(state: HomemindState, claimId: string, option
   }
   const closesAt = Math.min(Date.parse(claim.deadline ?? claim.eventStart ?? ''), Date.parse(claim.eventStart ?? ''));
   if (!(closesAt > now)) return { ok: false, status: 409, code: 'closed', message: 'The sign-up has closed' };
-  const target = alternativesFor(state, claim).find(a => a.food?.key === optionKey);
-  if (!target || !target.food) return { ok: false, status: 409, code: 'not_available', message: 'That choice is not available: taken, not food, over the cap, or ruled out by a preference' };
+  const target = optionKey ? alternativesFor(state, claim).find(a => a.food?.key === optionKey) : undefined;
+  if (optionKey && (!target || !target.food)) return { ok: false, status: 409, code: 'not_available', message: 'That choice is not available: taken, not food, over the cap, or ruled out by a preference' };
   const member = state.family.members.find(m => m.id === memberId) as Member;
   const claimant = state.family.members.find(m => m.id === claim.asMemberId) ?? member;
   const author = groupAuthorFor(state, claimant);
   const fromLabel = labelOf(claim, claim.choice);
-  const text = `更正：${author.authorZh}认领改为${target.option.label}（原来是${fromLabel}）`;
+  const text = target
+    ? `更正：${author.authorZh}认领改为${target.option.label}（原来是${fromLabel}${because ? `，${because.zh}` : ''}）`
+    : `更正：${author.authorZh}取消认领${fromLabel}${because ? `（${because.zh}）` : ''}`;
   const n = (claim.changes ?? []).length + 1;
   const cardId = freeId(`card-${claim.id}-fix-${n}`, x => state.actionCards.some(c => c.id === x));
   const whyId = `why-${cardId}`.slice(0, 64);
-  const pref = target.preferred[0];
+  const pref = target?.preferred[0];
   const auto = groupAutoAllowed(state);
   const group = groupInfo(claim.groupId);
+  const toEn = target ? `${target.option.label} (${target.food?.en ?? ''})` : 'off the list';
+  const toZh = target ? target.option.label : '取消认领';
+  const who = nameOf(state, memberId, 'en');
+  const whoZh = nameOf(state, memberId, 'zh');
+  const lead = because ? `${because.en}. ${who} chose: ${fromLabel} → ${toEn}.` : `${who} tapped Change: ${fromLabel} → ${toEn}.`;
+  const leadZh = because ? `${because.zh}。${whoZh}选择：${fromLabel} → ${toZh}。` : `${whoZh}点了“更改”：${fromLabel} → ${toZh}。`;
   const why: Why = {
     id: whyId,
-    summary: `${nameOf(state, memberId, 'en')} tapped Change: ${fromLabel} → ${target.option.label} (${target.food.en}).${pref ? ` Saved preference: “${pref.text}”${pref.reason ? `, because ${pref.reason}` : ''}.` : ''} Homemind posts a correction in ${group?.name ?? claim.groupId} (simulated) and swaps the preparations.${auto ? ' The group is set to post on its own (level 4).' : ' Nothing is posted until a parent taps the card.'}`,
-    summaryZh: `${nameOf(state, memberId, 'zh')}点了“更改”：${fromLabel} → ${target.option.label}。${pref ? `已保存的偏好：“${pref.textZh ?? pref.text}”${pref.reasonZh ?? pref.reason ? `，因为${pref.reasonZh ?? pref.reason}` : ''}。` : ''}Homemind 会在${group?.nameZh ?? claim.groupId}（模拟）发一条更正，并更换准备事项。${auto ? '这个群设置为自动发送（等级 4）。' : '家长点一下卡片之前，不会发送任何内容。'}`,
+    summary: `${lead}${pref ? ` Saved preference: “${pref.text}”${pref.reason ? `, because ${pref.reason}` : ''}.` : ''} Homemind posts a correction in ${group?.name ?? claim.groupId} (simulated) and ${target ? 'swaps the preparations' : 'takes the preparations off the board'}.${auto ? ' The group is set to post on its own (level 4).' : ' Nothing is posted until a parent taps the card.'}`,
+    summaryZh: `${leadZh}${pref ? `已保存的偏好：“${pref.textZh ?? pref.text}”${pref.reasonZh ?? pref.reason ? `，因为${pref.reasonZh ?? pref.reason}` : ''}。` : ''}Homemind 会在${group?.nameZh ?? claim.groupId}（模拟）发一条更正，${target ? '并更换准备事项' : '并把准备事项从看板上移除'}。${auto ? '这个群设置为自动发送（等级 4）。' : '家长点一下卡片之前，不会发送任何内容。'}`,
     basis: [
-      { kind: 'change', ref: claim.id, note: `${fromLabel} to ${target.option.label}, asked by ${nameOf(state, memberId, 'en')}` },
+      { kind: 'change', ref: claim.id, note: `${fromLabel} to ${target ? target.option.label : 'none'}, asked by ${who}` },
+      ...(because ? [{ kind: 'message', ref: claim.messageId, note: because.en }] : []),
       ...(pref ? [{ kind: 'preference', ref: pref.id, note: pref.text }] : [])
     ],
     source: 'rule'
   };
+  const cardTitle = target ? `Change the sign-up to ${target.food?.en ?? ''}` : `Take the family off the sign-up (${fromLabel})`;
+  const cardTitleZh = target ? `接龙改为${target.option.label}` : `取消接龙认领（${fromLabel}）`;
   const prepared = prepareCard(
     state,
     {
@@ -836,25 +906,27 @@ export function requestGroupChange(state: HomemindState, claimId: string, option
         kind: 'correction',
         replyTo: claim.messageId,
         asMemberId: memberId,
-        title: `Change the sign-up to ${target.food.en}`,
-        titleZh: `接龙改为${target.option.label}`,
+        title: cardTitle,
+        titleZh: cardTitleZh,
         summary: `Post in ${group?.name ?? claim.groupId}: “${text}”. Simulated group: nothing leaves this demo.`,
         summaryZh: `在${group?.nameZh ?? claim.groupId}发送：“${text}”。模拟群：不会发到演示之外。`
       },
       expiresAt: toIso(closesAt),
       whyId,
-      title: `Change the sign-up to ${target.food.en}`,
-      titleZh: `接龙改为${target.option.label}`
+      title: cardTitle,
+      titleZh: cardTitleZh,
+      sourceRefs: claimRefs(claim)
     },
     adapters,
     now
   );
   if (!prepared.ok) return { ok: false, status: 409, code: prepared.code, message: prepared.message };
-  const change: GroupClaimChange = { at: toIso(now), by: memberId, from: claim.choice ?? '', to: target.food.key, cardId, status: 'waiting' };
+  const change: GroupClaimChange = { at: toIso(now), by: memberId, from: claim.choice ?? '', to: target?.food?.key ?? '', cardId, status: 'waiting' };
   const updated: GroupClaim = { ...claim, changes: [...(claim.changes ?? []), change], whyId };
   const next = replaceClaim({ ...prepared.state, whys: [...prepared.state.whys.filter(w => w.id !== whyId), why] }, updated);
   return { ok: true, state: next, claim: updated, card: prepared.card };
 }
+
 
 // --- what screens show -----------------------------------------------------------------------------------
 
@@ -887,4 +959,16 @@ export function groupsView(state: HomemindState): GroupsView {
       };
     })
   };
+}
+
+// --- T7.5: what a changed sign-up allows ------------------------------------------------------------------
+
+/**
+ * When the family's choice is gone from an edited list: what Homemind would claim instead, by the same
+ * rules as a first claim (food to buy, within the cap, no hard preference against it, a soft one first).
+ */
+export function switchChoiceFor(state: HomemindState, claim: GroupClaim, options: SignUpOption[]): { key: string; label: string } | undefined {
+  const policy = policyFor(state, claim.groupId);
+  const pick = autoChoice(assess(state, { ...claim, options }).filter(a => a.food?.key !== claim.choice), policy);
+  return pick?.food ? { key: pick.food.key, label: pick.option.label } : undefined;
 }

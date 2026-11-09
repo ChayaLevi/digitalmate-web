@@ -96,7 +96,7 @@ function toClock(record: Record<string, unknown>): { now: string; offsetMs: numb
   return { now, offsetMs, timezone };
 }
 
-const ALERT_KINDS: readonly HomemindAlert['kind'][] = ['assigned', 'open', 'reminder', 'escalation', 'backup', 'batch', 'group'];
+const ALERT_KINDS: readonly HomemindAlert['kind'][] = ['assigned', 'open', 'reminder', 'escalation', 'backup', 'batch', 'group', 'stale'];
 const ASKS = ['heads-up', 'confirm', 'open'] as const;
 const MAX_ENTRIES = 20;
 
@@ -117,12 +117,13 @@ function toEntries(value: unknown): AlertBatchEntry[] | null {
 export function toAlert(record: Record<string, unknown>): HomemindAlert | null {
   const { id, kind, itemId, itemVersion, tier, at, byId, byName, byNameZh, title, titleZh, sensitive } = record;
   const { reminderId, ask, time, recurring, contactName, contactNameZh, simulated, entries } = record;
-  const { groupChoice, groupChoiceZh, groupFrom, groupFromZh } = record;
+  const { groupChoice, groupChoiceZh, groupFrom, groupFromZh, staleCount, staleWhat, staleWhatZh } = record;
   if (!str(id) || !ALERT_KINDS.includes(kind as HomemindAlert['kind']) || !str(itemId, 64) || !str(byId, 64) || !str(byName) || !str(at, 40)) return null;
   if (typeof itemVersion !== 'number' || !Number.isInteger(itemVersion) || itemVersion < 1) return null;
   if (tier !== 'urgent' && tier !== 'timed' && tier !== 'summary') return null;
   if (typeof sensitive !== 'boolean') return null;
   for (const optional of [byNameZh, title, titleZh, contactName, contactNameZh, groupChoice, groupChoiceZh, groupFrom, groupFromZh]) if (optional !== undefined && !str(optional)) return null;
+  for (const optional of [staleWhat, staleWhatZh]) if (optional !== undefined && !str(optional, 1000)) return null;
   if (reminderId !== undefined && !str(reminderId, 64)) return null;
   if (ask !== undefined && !ASKS.includes(ask as (typeof ASKS)[number])) return null;
   if (time !== undefined && !(typeof time === 'string' && /^\d{2}:\d{2}$/.test(time))) return null;
@@ -134,6 +135,8 @@ export function toAlert(record: Record<string, unknown>): HomemindAlert | null {
   if (kind === 'backup' && !contactName) return null;
   // T7.4: a group notice says what was signed up for, and it is always about the simulated group.
   if (kind === 'group' && (!groupChoice || simulated !== true)) return null;
+  // T7.5: a changed-message notice says how many items depend on it and what changed, about the simulated group.
+  if (kind === 'stale' && (typeof staleCount !== 'number' || !Number.isInteger(staleCount) || staleCount < 1 || staleCount > 100 || !staleWhat || simulated !== true)) return null;
   return {
     id,
     kind: kind as HomemindAlert['kind'],
@@ -157,7 +160,8 @@ export function toAlert(record: Record<string, unknown>): HomemindAlert | null {
     ...(batch ? { entries: batch } : {}),
     ...(kind === 'group'
       ? { groupChoice: groupChoice as string, ...(groupChoiceZh ? { groupChoiceZh: groupChoiceZh as string } : {}), ...(groupFrom ? { groupFrom: groupFrom as string, ...(groupFromZh ? { groupFromZh: groupFromZh as string } : {}) } : {}) }
-      : {})
+      : {}),
+    ...(kind === 'stale' ? { staleCount: staleCount as number, staleWhat: staleWhat as string, ...(staleWhatZh ? { staleWhatZh: staleWhatZh as string } : {}) } : {})
   };
 }
 

@@ -62,6 +62,24 @@ export const GROUP_FIXTURE: ReadonlyArray<Pick<GroupMessage, 'id' | 'author' | '
   }
 ];
 
+/**
+ * T7.5: what the "update message" demo control does: the teacher moves the party from Thursday to Friday,
+ * and the sign-up list is edited so apples are no longer needed. Each edit makes that message's version 2.
+ * Like the fixture, no printed dates.
+ */
+export const GROUP_UPDATES: ReadonlyArray<{ id: string; version: number; text: string }> = [
+  {
+    id: 'grp-msg-1',
+    version: 2,
+    text: '各位家长好！秋季美食派对改到本周五下午3点在班里举办🎉 请家长们接龙认领要带的食物，够8个小朋友吃。周三晚上8点前接龙完毕，谢谢配合！'
+  },
+  {
+    id: 'grp-msg-2',
+    version: 2,
+    text: '#接龙\n周五美食派对 认领食物（橙子、蛋糕、饼干、香蕉、葡萄）\n苹果已经够了，不用再带\n\n1. 乐乐妈妈 香蕉\n2. 小雨爸爸 葡萄'
+  }
+];
+
 export function seedServices(): ServicesState {
   return { group: { id: KINDERGARTEN_GROUP.id, messages: [], posted: 0 }, pizzaOrders: [], babysitterMessages: [] };
 }
@@ -86,6 +104,43 @@ export function postNextGroupMessage(state: HomemindState, now: number): PostRes
     remaining: GROUP_FIXTURE.length - posted,
     state: withServices(state, { ...services, group: { ...services.group, messages: [...services.group.messages, message], posted } })
   };
+}
+
+export type UpdateResult = { ok: true; state: HomemindState; messages: GroupMessage[]; remaining: number } | { ok: false; code: 'not_posted' | 'no_more_updates'; message: string };
+
+/** Sample edits not made yet. */
+export function updatesLeft(state: HomemindState): number {
+  const messages = servicesOf(state).group.messages;
+  return GROUP_UPDATES.filter(u => (messages.find(m => m.id === u.id)?.version ?? 0) < u.version).length;
+}
+
+/**
+ * T7.5, the demo control: the senders edit their messages. Every sample edit whose message is in the
+ * group and not yet at that version is made now: a new version, the old text kept in `earlier`, and the
+ * posting time unchanged ("this Friday" still means the week it was posted).
+ */
+export function updateGroupMessages(state: HomemindState, now: number): UpdateResult {
+  const services = servicesOf(state);
+  const due = GROUP_UPDATES.filter(u => {
+    const m = services.group.messages.find(x => x.id === u.id);
+    return m && m.version < u.version;
+  });
+  if (!due.length) {
+    const unposted = GROUP_UPDATES.some(u => !services.group.messages.some(m => m.id === u.id));
+    return unposted
+      ? { ok: false, code: 'not_posted', message: 'Post the sample messages first: the edit changes the party message and the sign-up' }
+      : { ok: false, code: 'no_more_updates', message: 'The sample edit was already made. Reset the demo to start again' };
+  }
+  const updated: GroupMessage[] = [];
+  const messages = services.group.messages.map(m => {
+    const edit = due.find(u => u.id === m.id);
+    if (!edit) return m;
+    const next: GroupMessage = { ...m, version: edit.version, text: edit.text, editedAt: toIso(now), earlier: [...(m.earlier ?? []), { version: m.version, text: m.text, at: m.editedAt ?? m.at }] };
+    updated.push(next);
+    return next;
+  });
+  const next = withServices(state, { ...services, group: { ...services.group, messages } });
+  return { ok: true, state: next, messages: updated, remaining: updatesLeft(next) };
 }
 
 /** How a parent appears in the group: "Noa's mom" / "诺娅妈妈", after the family's youngest child. */
@@ -267,6 +322,7 @@ export function servicesViewFor(state: HomemindState, memberId: string, now: num
       nameZh: KINDERGARTEN_GROUP.nameZh,
       messages: services.group.messages,
       remaining: Math.max(0, GROUP_FIXTURE.length - services.group.posted),
+      updates: updatesLeft(state),
       simulated: true
     },
     pizza: {

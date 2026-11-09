@@ -15,7 +15,7 @@
  * Components that do not render the flag (rules, settings rows) say the word in their text instead.
  */
 import type { A2uiAction, A2uiComponent } from '../types';
-import type { ActionCard, Activity, ExtractedEntry, Family, GroupsView, Item, ItemExplanation, Lang, Member, PendingReminder, PpmaExplanationData, PpmaMemoryData, Preference, Reminder, Rule, RuleRun, ServicesView, SignUpInfo, SkippedExtraction, Why } from '../../server/homemind/types';
+import type { ActionCard, Activity, ExtractedEntry, Family, GroupsView, Item, ItemExplanation, Lang, Member, PendingReminder, PpmaExplanationData, PpmaMemoryData, Preference, Reminder, Rule, RuleRun, ServicesView, SignUpInfo, SkippedExtraction, SourceChangeView, Why } from '../../server/homemind/types';
 
 export type HomemindLang = Lang;
 export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit' | 'item' | 'services';
@@ -75,6 +75,8 @@ export interface HomemindScreenData {
   confirmations?: Record<string, { token: string; expiresAt: string }>;
   /** T7.4: the group claim setting and the sign-ups Homemind looked at (`my-day` and `services`). */
   groups?: GroupsView;
+  /** T7.5: messages that changed after the family acted on them, limited by the server to what this member can see. */
+  sourceChanges?: SourceChangeView[];
 }
 
 /** What the bridge sends the browser for every Homemind screen. Same shape as a Fridge2Table turn. */
@@ -171,6 +173,11 @@ const T = {
   cancelCard: { en: 'Cancel', zh: '取消' },
   expires: { en: 'Expires', zh: '截止' },
   statusPending: { en: 'Waiting for a parent', zh: '等待家长确认' },
+  cardHeld: { en: 'On hold: a message it quotes changed.', zh: '已暂停：它引用的消息有变化。' },
+  cardHeldShort: { en: 'On hold', zh: '已暂停' },
+  staleMark: { en: 'Message changed', zh: '消息有变' },
+  staleUnclear: { en: 'the edited message could not be read', zh: '修改后的消息读不懂' },
+  staleChoiceGone: { en: 'no longer needed', zh: '已不需要' },
   recentCards: { en: 'Recently', zh: '最近' },
   cardExecuted: { en: 'done (simulated)', zh: '已完成（模拟）' },
   cardFailed: { en: 'did not go through', zh: '未能完成' },
@@ -452,6 +459,7 @@ function taskRow(item: Item, view: HomemindViewData, lang: HomemindLang, today: 
     item.visibility === 'parents' ? hx(lang, 'parentsOnly') : '',
     item.ownership.state === 'assigned' && item.status !== 'done' ? (item.ownership.confirmed ? hx(lang, 'confirmed') : hx(lang, 'notConfirmed')) : '',
     openNote(item, view, lang),
+    staleNote(item, zone, lang),
     pendingFor(item, view) ? hx(lang, pendingFor(item, view)?.snoozed ? 'remindAgain' : 'reminded') : ''
   ]
     .filter(Boolean)
@@ -462,7 +470,7 @@ function taskRow(item: Item, view: HomemindViewData, lang: HomemindLang, today: 
     meta,
     ownerLabel: ownerLabelOf(item, view, lang),
     state: stateOf(item),
-    tone: toneOf(item),
+    tone: item.stale ? 'warning' : toneOf(item),
     ...(item.source.simulated ? { simulated: true } : {}),
     actions: itemActions(item, view, lang),
     ...withOpen(openAction(item, view, lang))
@@ -535,11 +543,13 @@ function pendingCards(view: HomemindViewData, lang: HomemindLang, now: string, c
   for (const card of view.actionCards.filter(c => c.status === 'pending' && Date.parse(c.expiresAt) > Date.parse(now))) {
     const simulated = card.mode === 'simulated';
     const expires = dateParts(card.expiresAt, view.family.timezone);
+    // T7.5: a held card quotes a message that changed. It shows why and offers no Confirm until a parent decides.
+    const held = card.held ? `${hx(lang, 'cardHeld')}${lang === 'zh' ? '：' : ': '}${lang === 'zh' ? card.held.reasonZh : card.held.reason}` : '';
     data[card.id] = {
       title: cardText(card, 'title', lang),
-      body: cardText(card, 'summary', lang),
+      body: [cardText(card, 'summary', lang), held].filter(Boolean).join(' '),
       expires: expires ? `${hx(lang, 'expires')} ${expires.time}` : undefined,
-      scope: hx(lang, 'statusPending'),
+      scope: held ? hx(lang, 'cardHeldShort') : hx(lang, 'statusPending'),
       simulated
     };
     // The token binds this card, its exact contents and this parent (T7.1). Without one the server refuses the tap.
@@ -549,7 +559,7 @@ function pendingCards(view: HomemindViewData, lang: HomemindLang, now: string, c
       component: 'ApprovalCard',
       dataPath: `/cards/${card.id}`,
       actions: [
-        { id: `homemind.confirm-card:${card.id}`, label: hx(lang, 'confirmCard'), variant: 'primary', kind: 'homemind', args: { verb: 'confirm-card', cardId: card.id, ...(token ? { token } : {}) } },
+        ...(card.held ? [] : [{ id: `homemind.confirm-card:${card.id}`, label: hx(lang, 'confirmCard'), variant: 'primary' as const, kind: 'homemind', args: { verb: 'confirm-card', cardId: card.id, ...(token ? { token } : {}) } }]),
         { id: `homemind.cancel-card:${card.id}`, label: hx(lang, 'cancelCard'), variant: 'ghost', kind: 'homemind', args: { verb: 'cancel-card', cardId: card.id } },
         { id: `homemind.why:${card.whyId}`, label: hx(lang, 'why'), variant: 'secondary', kind: 'homemind', args: { verb: 'why', whyId: card.whyId } }
       ]
@@ -589,6 +599,7 @@ function myDay(input: HomemindScreenData): HomemindTurn {
   const children: A2uiComponent[] = [...cards.children];
   const data: Record<string, unknown> = { ...cards.data };
   if (cards.data.cards) children.unshift(text('cards-title', `**${hx(lang, 'cards')}**`));
+  sourceChangeBlocks(input, children, data);
   if (input.groups) groupClaimBlocks(input, 'my-day', children, data);
   section(children, data, 'needs', hx(lang, 'needsYou'), needs.map(i => taskRow(i, view, lang, today)));
   section(children, data, 'today', hx(lang, 'today'), todays.map(i => taskRow(i, view, lang, today)), hx(lang, 'nothingToday'));
@@ -947,6 +958,19 @@ function activityLine(a: Activity, view: HomemindViewData, lang: HomemindLang): 
     const words: Record<string, [string, string]> = { created: ['created the rule', '创建了规则'], enabled: ['turned on the rule', '开启了规则'], disabled: ['turned off the rule', '关闭了规则'] };
     const w = words[a.note ?? ''] ?? words.enabled;
     return lang === 'zh' ? `${who} ${w[1]} ${what}`.trim() : `${who} ${w[0]} ${what}`.trim();
+  }
+  if (a.kind === 'source') {
+    // T7.5: items marked or decided because a message they came from changed.
+    const actor = a.actor === 'homemind' ? 'Homemind' : who;
+    const words: Record<string, [string, string]> = {
+      marked: ['flagged items whose message changed', '标记了消息有变的事项'],
+      applied: ['applied a changed message', '应用了消息的更改'],
+      kept: ['kept items as they were after a message changed', '在消息变化后保持了原样'],
+      discarded: ['discarded items after a message changed', '在消息变化后舍弃了相关事项'],
+      synced: ['updated where items came from', '更新了事项的来源']
+    };
+    const w = words[a.note ?? ''] ?? words.marked;
+    return `${actor} ${lang === 'zh' ? w[1] : w[0]} (${hx(lang, 'simulated')})`;
   }
   if (a.kind === 'action') {
     // T7.1/T7.3: an action card's outcome. Homemind itself expires or replaces cards.
@@ -1582,6 +1606,8 @@ const S = {
   group: { en: 'Kindergarten group', zh: '幼儿园群' },
   groupEmpty: { en: 'No messages yet.', zh: '还没有消息。' },
   postNext: { en: 'Post next group message (demo)', zh: '发送下一条群消息（演示）' },
+  updateMessage: { en: 'Update message (demo)', zh: '修改群消息（演示）' },
+  edited: { en: 'edited', zh: '已修改' },
   fromFamily: { en: 'posted by Homemind', zh: '由 Homemind 发送' },
   claim: { en: 'claim', zh: '认领' },
   correction: { en: 'correction', zh: '更正' },
@@ -1640,17 +1666,18 @@ function servicesScreen(input: HomemindScreenData): HomemindTurn {
       group.messages.map(m => ({
         title: lang === 'zh' ? m.authorZh ?? m.author : m.author,
         subtitle: m.text,
-        meta: [timeOf(m.at), m.from === 'family' ? sx(lang, 'fromFamily') : '', m.replyKind ? sx(lang, m.replyKind) : ''].filter(Boolean).join(' · ')
+        meta: [timeOf(m.at), m.editedAt ? `${sx(lang, 'edited')} ${timeOf(m.editedAt)}` : '', m.from === 'family' ? sx(lang, 'fromFamily') : '', m.replyKind ? sx(lang, m.replyKind) : ''].filter(Boolean).join(' · ')
       }))
     );
   } else children.push(text('group-empty', `**${groupTitle}** · ${sim}\n\n${sx(lang, 'groupEmpty')}`));
-  if (input.demo && group.remaining > 0) {
-    children.push({
-      id: 'group-demo',
-      component: 'ActionBar',
-      actions: [{ id: 'homemind.post-group-message', label: `${sx(lang, 'postNext')} (${group.remaining})`, variant: 'secondary', kind: 'homemind', args: { verb: 'post-group-message' } }]
-    });
+  const demoActions: A2uiAction[] = [];
+  if (input.demo && group.remaining > 0) demoActions.push({ id: 'homemind.post-group-message', label: `${sx(lang, 'postNext')} (${group.remaining})`, variant: 'secondary', kind: 'homemind', args: { verb: 'post-group-message' } });
+  // T7.5: the senders edit their messages (once the party message and the sign-up are there).
+  if (input.demo && (group.updates ?? 0) > 0 && group.messages.some(m => m.id === 'grp-msg-2')) {
+    demoActions.push({ id: 'homemind.update-group-message', label: sx(lang, 'updateMessage'), variant: 'secondary', kind: 'homemind', args: { verb: 'update-group-message' } });
   }
+  if (demoActions.length) children.push({ id: 'group-demo', component: 'ActionBar', actions: demoActions });
+  sourceChangeBlocks(input, children, data);
   if (input.groups) groupClaimBlocks(input, 'services', children, data);
 
   const pizza = services.pizza;
@@ -1743,6 +1770,7 @@ const G = {
   already: { en: 'the family is already on the list', zh: '家里已经在名单上' },
   paused: { en: 'automatic actions were paused', zh: '自动操作已暂停' },
   failed: { en: 'the simulated group did not take the post', zh: '模拟群没有收到' },
+  withdrawn: { en: 'the family was taken off the list', zh: '已把家里从名单上撤下' },
   cardCancelled: { en: 'the card was cancelled, nothing was posted', zh: '卡片已取消，没有发送' },
   cardExpired: { en: 'nobody tapped before the sign-up closed, nothing was posted', zh: '截止前没有人确认，没有发送' }
 } as const;
@@ -1800,7 +1828,7 @@ function groupClaimBlocks(input: HomemindScreenData, where: 'my-day' | 'services
     })
     .slice(0, 3);
   if (!shown.length) return;
-  const stopWords: Record<string, keyof typeof G> = { unclear: 'unclear', closed: 'closed', nothing_suitable: 'nothing', already_signed_up: 'already', paused: 'paused', failed: 'failed' };
+  const stopWords: Record<string, keyof typeof G> = { unclear: 'unclear', closed: 'closed', nothing_suitable: 'nothing', already_signed_up: 'already', paused: 'paused', failed: 'failed', withdrawn: 'withdrawn' };
   const rows: TaskRow[] = [];
   const after: Array<{ claimId: string; rows: TaskRow[]; note?: string }> = [];
   for (const c of shown) {
@@ -1873,6 +1901,157 @@ function groupClaimBlocks(input: HomemindScreenData, where: 'my-day' | 'services
     const id = `groupAlt-${block.claimId}`;
     children.push(taskList(`group-alt-${block.claimId}`, gx(lang, 'changeTo'), `/${id}`));
     data[id] = block.rows;
+  }
+}
+
+// --- changed messages (T7.5) -----------------------------------------------------------------------
+
+const SC = {
+  title: { en: 'Changed messages', zh: '消息有变化' },
+  moved: { en: 'The kindergarten changed the party to {day}.', zh: '幼儿园把派对改到了{day}。' },
+  list: { en: 'The kindergarten changed the sign-up list.', zh: '幼儿园修改了接龙清单。' },
+  unclear: { en: 'A kindergarten message was edited, and Homemind could not read the new version.', zh: '幼儿园的一条消息被修改了，Homemind 读不懂新版本。' },
+  edited: { en: 'A kindergarten message was edited.', zh: '幼儿园的一条消息被修改了。' },
+  depend: { en: '{n} items depend on it.', zh: '有 {n} 项与它有关。' },
+  dependOne: { en: '1 item depends on it.', zh: '有 1 项与它有关。' },
+  dependNone: { en: 'Nothing on the board depends on it.', zh: '看板上没有与它有关的事项。' },
+  waiting: { en: 'Reminders for these wait until a parent decides. Compared in code, not by the model.', zh: '家长决定之前，相关提醒先暂停。由代码比较，没有用模型。' },
+  apply: { en: 'Apply changes', zh: '应用更改' },
+  keep: { en: 'Keep as is', zh: '保持原样' },
+  discard: { en: 'Discard', zh: '舍弃' },
+  undo: { en: 'Undo', zh: '撤销' },
+  applied: { en: 'Applied by {who}', zh: '{who}已应用更改' },
+  kept: { en: 'Kept as it was by {who}', zh: '{who}选择保持原样' },
+  discarded: { en: 'Discarded by {who}', zh: '{who}已舍弃' },
+  noUndo: { en: 'No Undo: a message was already posted in the simulated group', zh: '无法撤销：已在模拟群里发过消息' },
+  parentsDecide: { en: 'A parent decides.', zh: '由家长决定。' },
+  noApply: { en: 'Apply is not offered: the new version could not be read.', zh: '无法应用：新版本读不懂。' },
+  depends: { en: 'What depends on it', zh: '有关事项' }
+} as const;
+const scx = (lang: HomemindLang, key: keyof typeof SC): string => SC[key][lang];
+const FULL_WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function localWhen(iso: string | undefined, zone: string, lang: HomemindLang): string {
+  const p = iso ? dateParts(iso, zone) : null;
+  return p ? `${WEEKDAYS[lang][p.weekday] ?? ''} ${p.date.slice(5).replace('-', '/')} ${p.time}`.trim() : '';
+}
+
+/** "Message changed: Thu 11/12 15:00 → Fri 11/13 15:00" on a board row whose message changed. */
+function staleNote(item: Pick<Item, 'stale'>, zone: string, lang: HomemindLang): string {
+  const mark = item.stale;
+  if (!mark) return '';
+  const label = hx(lang, 'staleMark');
+  const sep = lang === 'zh' ? '：' : ': ';
+  if (mark.field === 'start' && mark.oldValue && mark.newValue) return `${label}${sep}${localWhen(mark.oldValue, zone, lang)} → ${localWhen(mark.newValue, zone, lang)}`;
+  if (mark.field === 'choice') return `${label}${sep}${hx(lang, 'staleChoiceGone')}`;
+  if (mark.field === 'unclear') return `${label}${sep}${hx(lang, 'staleUnclear')}`;
+  return label;
+}
+
+/** The differences in a few words, from the diffs (computed in code on the server). */
+function describeChange(diffs: SourceChangeView['change']['diffs'], zone: string, lang: HomemindLang): string {
+  const out: string[] = [];
+  for (const d of diffs) {
+    if (d.field === 'eventStart') out.push(lang === 'zh' ? `时间：${localWhen(d.old, zone, lang)} → ${localWhen(d.new, zone, lang)}` : `When: ${localWhen(d.old, zone, lang)} → ${localWhen(d.new, zone, lang)}`);
+    else if (d.field === 'deadline') out.push(lang === 'zh' ? `截止：${localWhen(d.new, zone, lang) || '未写'}` : `Closes: ${localWhen(d.new, zone, lang) || 'not given'}`);
+    else if (d.field === 'options') {
+      if (d.removed.length) out.push(lang === 'zh' ? `已不需要：${d.removed.join('、')}` : `No longer needed: ${d.removed.join(', ')}`);
+      if (d.added.length) out.push(lang === 'zh' ? `新增：${d.added.join('、')}` : `New: ${d.added.join(', ')}`);
+    } else if (d.field === 'choice') {
+      out.push(
+        lang === 'zh'
+          ? d.switchTo
+            ? `家里的${d.oldLabel}将改为${d.switchToLabel}，并在群里更正`
+            : `家里的${d.oldLabel}已不需要，将从名单撤下`
+          : d.switchTo
+            ? `The family's ${d.oldLabel} → ${d.switchToLabel}, with a correction in the group`
+            : `The family's ${d.oldLabel} is no longer needed; its name comes off the list`
+      );
+    } else if (d.field === 'unclear') out.push(lang === 'zh' ? d.problemZh : d.problem);
+  }
+  return out.join(' · ');
+}
+
+/**
+ * One row per changed message: the headline ("The kindergarten changed the party to Friday. 3 items depend
+ * on it."), what changed (compared in code), and Apply / Keep / Discard for a parent; after a decision, who
+ * made it and Undo. Then the affected items, each with what changes for it.
+ */
+function sourceChangeBlocks(input: HomemindScreenData, children: A2uiComponent[], data: Record<string, unknown>): void {
+  const { lang, view } = input;
+  const list = input.sourceChanges ?? [];
+  if (!list.length) return;
+  const zone = view.family.timezone;
+  const isParent = memberOf(view.family, view.memberId)?.role === 'parent';
+  const rows: TaskRow[] = [];
+  const blocks: Array<{ id: string; rows: TaskRow[] }> = [];
+  for (const v of list) {
+    const c = v.change;
+    let newStart: string | undefined;
+    for (const d of c.diffs) if (d.field === 'eventStart') newStart = d.new;
+    const wd = newStart ? dateParts(newStart, zone)?.weekday ?? 0 : 0;
+    const day = newStart ? (lang === 'zh' ? WEEKDAYS.zh[wd] : FULL_WEEKDAYS[wd]) : '';
+    const head = c.diffs.some(d => d.field === 'unclear')
+      ? scx(lang, 'unclear')
+      : newStart
+        ? fill(scx(lang, 'moved'), { day })
+        : c.diffs.some(d => d.field === 'options' || d.field === 'choice')
+          ? scx(lang, 'list')
+          : scx(lang, 'edited');
+    const n = v.items.length;
+    const depend = n === 0 ? scx(lang, 'dependNone') : n === 1 ? scx(lang, 'dependOne') : fill(scx(lang, 'depend'), { n: String(n) });
+    const group = lang === 'zh' ? v.groupNameZh : v.groupName;
+    const who = nameOf(memberOf(view.family, c.resolvedBy), lang);
+    const why: A2uiAction = { id: `homemind.why:${c.whyId}`, label: hx(lang, 'why'), variant: 'secondary', kind: 'homemind', args: { verb: 'why', whyId: c.whyId } };
+    const a = (action: 'apply' | 'keep' | 'discard' | 'undo', variant: A2uiAction['variant']): A2uiAction => ({
+      id: `homemind.source-change:${c.id}:${action}`,
+      label: scx(lang, action),
+      variant,
+      kind: 'homemind',
+      args: { verb: 'source-change', changeId: c.id, action }
+    });
+    let actions: A2uiAction[] = [why];
+    let status: string;
+    if (c.status === 'pending') {
+      status = isParent ? (v.canApply ? scx(lang, 'waiting') : scx(lang, 'noApply')) : `${scx(lang, 'waiting')} ${scx(lang, 'parentsDecide')}`;
+      if (isParent) actions = [...(v.canApply ? [a('apply', 'primary')] : []), a('keep', 'secondary'), a('discard', 'ghost'), why];
+    } else {
+      status = fill(scx(lang, c.status), { who });
+      if (isParent && v.undoable) actions = [a('undo', 'secondary'), why];
+      else if (!v.undoable) status = `${status} · ${scx(lang, 'noUndo')}`;
+    }
+    rows.push({
+      id: `source-${c.id}`,
+      title: lang === 'zh' ? `${head}${depend}` : `${head} ${depend}`,
+      meta: [describeChange(c.diffs, zone, lang), status, group].filter(Boolean).join(' · '),
+      ownerLabel: '',
+      state: '',
+      tone: c.status === 'pending' ? 'warning' : 'muted',
+      simulated: true,
+      actions
+    });
+    if (c.status === 'pending' && v.items.length) {
+      blocks.push({
+        id: c.id,
+        rows: v.items.map(item => ({
+          id: `stale-${item.id}`,
+          title: lang === 'zh' ? item.titleZh ?? item.title : item.title,
+          meta: staleNote(item, zone, lang),
+          ownerLabel: '',
+          state: '',
+          tone: 'warning',
+          simulated: true,
+          actions: []
+        }))
+      });
+    }
+  }
+  children.push(taskList('source-changes', scx(lang, 'title'), '/sourceChanges'));
+  data.sourceChanges = rows;
+  for (const b of blocks) {
+    const key = `staleItems-${b.id}`;
+    children.push(taskList(`stale-items-${b.id}`, scx(lang, 'depends'), `/${key}`));
+    data[key] = b.rows;
   }
 }
 

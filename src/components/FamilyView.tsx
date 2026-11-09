@@ -485,6 +485,16 @@ export function FamilyView({
             ? tr('Correction sent to PPMA. It shows here until PPMA has applied it.', '更正已发送给 PPMA，在 PPMA 处理完成前会显示在这里。')
           : verb === 'post-group-message'
             ? tr('A new message arrived in the simulated group.', '模拟群里收到一条新消息。')
+          : verb === 'update-group-message'
+            ? tr('The messages in the simulated group were edited. See My day for what depends on them.', '模拟群里的消息被修改了。与之有关的事项见“我的一天”。')
+          : verb === 'source-change'
+            ? args.action === 'apply'
+              ? tr('Changes applied. Undo is on the card.', '已应用更改，卡片上可以撤销。')
+              : args.action === 'keep'
+                ? tr('Kept as it was. Undo is on the card.', '已保持原样，卡片上可以撤销。')
+                : args.action === 'discard'
+                  ? tr('Discarded. Undo is on the card.', '已舍弃，卡片上可以撤销。')
+                  : tr('Undone. The change waits for a decision again.', '已撤销，这项更改重新等待决定。')
           : verb === 'confirm-card'
             ? tr('Done. It went to the simulated service only.', '已完成，只发送到模拟服务。')
           : verb === 'cancel-card'

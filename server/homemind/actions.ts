@@ -81,7 +81,9 @@ export type ActionErrorCode =
   | 'token_expired'
   | 'token_used'
   | 'payload_changed'
-  | 'auto_not_allowed';
+  | 'auto_not_allowed'
+  /** T7.5: a message the card quotes changed; it waits for a parent to apply, keep or discard. */
+  | 'held';
 
 export interface ActionError {
   ok: false;
@@ -157,6 +159,8 @@ export interface CardInput {
   ruleId?: string;
   /** T7.3: board items the card is about, for per-member visibility. */
   refs?: string[];
+  /** T7.5: the messages the card quotes, at their versions (a newer version holds the card). */
+  sourceRefs?: Array<{ id: string; version: number }>;
 }
 
 export type PrepareResult = { ok: true; state: HomemindState; card: ActionCard } | ActionError;
@@ -196,6 +200,7 @@ export function prepareCard(state: HomemindState, input: CardInput, adapters: Ad
     ...(input.titleZh ? { titleZh: input.titleZh } : {}),
     ...(input.ruleId ? { ruleId: input.ruleId } : {}),
     ...(input.refs?.length ? { refs: [...input.refs] } : {}),
+    ...(input.sourceRefs?.length ? { sourceRefs: input.sourceRefs.map(r => ({ id: r.id, version: r.version })) } : {}),
     usedTokenIds: []
   };
   return { ok: true, card, state: { ...state, actionCards: [...state.actionCards, card] } };
@@ -288,6 +293,8 @@ export function authorize(state: HomemindState, cardId: string, auth: ExecuteAut
   if (!adapter) return refuse('no_adapter', `No adapter ${card.adapter}`);
   // The adapter decides what is real. A card that says "simulated" for a real adapter is treated as real.
   const real = adapter.mode === 'real' || card.mode === 'real';
+  // T7.5: a held card never runs, by a tap or at level 4, until a parent decides about the changed message.
+  if (card.held) return refuse('held', 'A message this card quotes changed. Apply, keep or discard the change first');
 
   let tokenId: string | undefined;
   if (auth.kind === 'tap') {

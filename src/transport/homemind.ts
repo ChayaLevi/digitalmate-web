@@ -248,6 +248,18 @@ export async function runHomemindAction(action: A2uiAction, token: string): Prom
     const result = await call<MutationResult>(`/api/homemind/group-claims/${id(args.claimId)}/change`, { method: 'POST', token, body: JSON.stringify({ option: args.option }) });
     return { kind: 'mutation', result, verb };
   }
+  if (verb === 'source-change') {
+    // T7.5: Apply changes / Keep as is / Discard on a changed message, or Undo of that decision. Parents only.
+    const choice = args.action;
+    if (choice !== 'apply' && choice !== 'keep' && choice !== 'discard' && choice !== 'undo') throw new HomemindError(400, 'invalid', 'Unknown decision');
+    const result = await call<MutationResult>(`/api/homemind/source-changes/${id(args.changeId)}/${choice}`, { method: 'POST', token, body: '{}' });
+    return { kind: 'mutation', result, verb };
+  }
+  if (verb === 'update-group-message') {
+    // Demo only (`HOMEMIND_DEMO=1`), T7.5: the senders edit their messages in the simulated group.
+    const result = await call<MutationResult>('/api/homemind/demo/update-group-message', { method: 'POST', token, body: '{}' });
+    return { kind: 'mutation', result, verb };
+  }
   if (verb === 'post-group-message') {
     // Demo only (`HOMEMIND_DEMO=1`): the next sample message arrives in the simulated kindergarten group.
     const result = await call<MutationResult>('/api/homemind/demo/post-group-message', { method: 'POST', token, body: '{}' });

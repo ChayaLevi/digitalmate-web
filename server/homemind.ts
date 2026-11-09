@@ -36,8 +36,9 @@ import { cancelCard, executeAction, expireCards, issueConfirmation } from './hom
 import type { ActionErrorCode, AdapterRegistry } from './homemind/actions';
 import { applySettings, parseSettingsPatch } from './homemind/settings';
 import { applyRuleRequest, parseRuleBody, prepareRuleNow, runRules } from './homemind/rules';
-import { afterGroupCard, applyGroupPolicy, considerSignUps, groupAutoAllowed, groupsView, parseGroupPolicyBody, requestGroupChange } from './homemind/groupClaims';
-import { KINDERGARTEN_GROUP, createSimulatedAdapters, postNextGroupMessage, servicesViewFor } from './homemind/fakes';
+import { afterGroupCard, applyGroupPolicy, considerSignUps, groupAutoAllowed, groupsView, parseGroupPolicyBody, reconsiderSignUp, requestGroupChange } from './homemind/groupClaims';
+import { KINDERGARTEN_GROUP, createSimulatedAdapters, postNextGroupMessage, servicesViewFor, updateGroupMessages } from './homemind/fakes';
+import { detectSourceChanges, resolveSourceChange, sourceChangesView, undoSourceChange } from './homemind/sourceChanges';
 import { createLlmClient, llmConfigFromEnv, llmStatus } from './homemind/llm';
 import type { LlmClient } from './homemind/llm';
 import { isImageDataUrl, MAX_IMAGE_DATA_URL, runExtraction, runIntent, LIMITS as INTENT_LIMITS } from './homemind/intents';
@@ -420,7 +421,8 @@ const ACTION_STATUS: Record<ActionErrorCode, number> = {
   token_expired: 409,
   token_used: 409,
   payload_changed: 409,
-  auto_not_allowed: 403
+  auto_not_allowed: 403,
+  held: 409
 };
 
 /** Saves a state that changed only action cards (and their Activity), and tells every window to re-read. */
@@ -493,6 +495,32 @@ async function runGroupClaims(rt: Runtime): Promise<GroupClaim[]> {
   rt.hub.broadcast({ event: 'services.changed', data: {} });
   for (const claim of step.claims) if (claim.status === 'waiting' && claim.cardId) await autoRunGroupCard(rt, claim.cardId);
   return step.claims.map(c => (rt.state.groupClaims ?? []).find(x => x.id === c.id) ?? c);
+}
+
+/** T7.5: stopped sign-ups whose message changed are read again (and may claim, at level 4 at once). */
+async function rereadSignUps(rt: Runtime, messageIds: readonly string[]): Promise<void> {
+  for (const messageId of messageIds) {
+    const step = reconsiderSignUp(rt.state, messageId, rt.clock.now(), adaptersOf(rt));
+    if (!step.changed) continue;
+    await commitCards(rt, step.state);
+    rt.hub.broadcast({ event: 'services.changed', data: {} });
+    for (const claim of step.claims) if (claim.status === 'waiting' && claim.cardId) await autoRunGroupCard(rt, claim.cardId);
+  }
+}
+
+/**
+ * T7.5: after a group message got a new version: compare it in code with what the family's work was made
+ * from, mark what depends on it, hold the cards that quote it, and tell the owners. Returns the new changes.
+ */
+async function runSourceChanges(rt: Runtime): Promise<string[]> {
+  const step = detectSourceChanges(rt.state, rt.clock.now(), rt.clock);
+  if (step.changed) {
+    await commit(rt, step.state, step.events, undefined, step.alerts);
+    rt.hub.broadcast({ event: 'actions.changed', data: {} });
+    rt.hub.broadcast({ event: 'services.changed', data: {} });
+  }
+  await rereadSignUps(rt, step.reread);
+  return step.changes.map(c => c.id);
 }
 
 const claimSummary = (c: GroupClaim) => ({ id: c.id, status: c.status, ...(c.reason ? { reason: c.reason } : {}), ...(c.choice ? { choice: c.choice } : {}) });
@@ -991,7 +1019,8 @@ const routes: Route[] = [
       }
       const isParent = ctx.member.role === 'parent';
       // A view carries no Undo patches, so the server says which changes this member may undo.
-      const undoable = ctx.rt.state.activity.filter(a => a.undo && !a.undone && (isParent || a.actor === ctx.member.id)).map(a => a.id);
+      // T7.5: a source change is undone from its own card, never item by item.
+      const undoable = ctx.rt.state.activity.filter(a => a.undo && !a.undone && a.kind !== 'source' && (isParent || a.actor === ctx.member.id)).map(a => a.id);
       // A parent's confirmation tokens for pending action cards (T7.1): each binds that card, its payload and this parent.
       // T7.3: they also go behind each card's own Confirm button, so a tap sends the token for exactly that card.
       const confirmations = confirmationsFor(ctx.rt, ctx.member);
@@ -1012,7 +1041,7 @@ const routes: Route[] = [
         // The simulated services (T7.2); the inbox is this member's own mailbox only.
         ...(name === 'services' ? { services: servicesViewFor(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()), demo: demo() } : {}),
         // T7.4: the group's claim setting and what Homemind signed up for (family-wide).
-        ...(name === 'services' || name === 'my-day' ? { groups: groupsView(ctx.rt.state) } : {}),
+        ...(name === 'services' || name === 'my-day' ? { groups: groupsView(ctx.rt.state), sourceChanges: sourceChangesView(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()) } : {}),
         ...(name === 'rules' ? { demo: demo() } : {}),
         confirmations
       });
@@ -1167,6 +1196,41 @@ const routes: Route[] = [
     }
   },
   {
+    method: 'POST',
+    pattern: /^\/source-changes\/([a-z0-9][a-z0-9_-]{0,63})\/(apply|keep|discard|undo)$/,
+    auth: true,
+    // T7.5: a parent's decision about a message that changed after the family acted on it, or its Undo.
+    handler: async ctx => {
+      pick(await readBody(ctx.request), [], 'source-change');
+      const { rt, member } = ctx;
+      const [changeId, verb] = ctx.params;
+      const now = rt.clock.now();
+      if (verb === 'undo') {
+        const undone = undoSourceChange(rt.state, changeId, member.id, now, rt.clock);
+        if (!undone.ok) return fail(ctx.response, undone.status, undone.code, undone.message);
+        await commit(rt, undone.state, undone.events, member.id);
+        rt.hub.broadcast({ event: 'actions.changed', data: {} });
+        rt.hub.broadcast({ event: 'services.changed', data: {} });
+        return json(ctx.response, 200, { ok: true, change: { id: undone.change.id, status: undone.change.status } });
+      }
+      const result = resolveSourceChange(rt.state, changeId, verb as 'apply' | 'keep' | 'discard', member.id, now, rt.clock, adaptersOf(rt));
+      if (!result.ok) return fail(ctx.response, result.status, result.code, result.message);
+      await commit(rt, result.state, result.events, member.id);
+      rt.hub.broadcast({ event: 'actions.changed', data: {} });
+      rt.hub.broadcast({ event: 'services.changed', data: {} });
+      // A correction in the simulated group goes through the guard like any card (at level 4 at once).
+      if (result.correctionCardId) await autoRunGroupCard(rt, result.correctionCardId);
+      if (result.reread) await rereadSignUps(rt, [result.reread]);
+      const card = result.correctionCardId ? rt.state.actionCards.find(c => c.id === result.correctionCardId) : undefined;
+      json(ctx.response, 200, {
+        ok: true,
+        change: { id: result.change.id, status: result.change.status },
+        ...(result.activityId ? { activityId: result.activityId } : {}),
+        ...(card ? { correction: { id: card.id, status: card.status, posted: card.status === 'executed' } } : {})
+      });
+    }
+  },
+  {
     method: 'PUT',
     pattern: /^\/settings$/,
     auth: true,
@@ -1226,6 +1290,25 @@ const routes: Route[] = [
       // T7.4: a sign-up in a group whose claims are on is read, and claimed or stopped on, at once.
       const claims = await runGroupClaims(rt);
       json(ctx.response, 200, { ok: true, message: posted.message, remaining: posted.remaining, claims: claims.map(claimSummary) });
+    }
+  },
+  {
+    method: 'POST',
+    pattern: /^\/demo\/update-group-message$/,
+    auth: true,
+    demoOnly: true,
+    // T7.5: the senders edit their messages (the party moves to Friday, apples are no longer needed).
+    handler: async ctx => {
+      pick(await readBody(ctx.request), [], 'update-group-message');
+      const { rt } = ctx;
+      const updated = updateGroupMessages(rt.state, rt.clock.now());
+      if (!updated.ok) return fail(ctx.response, 409, updated.code, updated.message);
+      rt.state = updated.state;
+      await rt.store.save(updated.state);
+      rt.hub.broadcast({ event: 'services.changed', data: {} });
+      reportToPpma(rt, updated.messages.map(m => groupMessageReport(m, KINDERGARTEN_GROUP)));
+      const changes = await runSourceChanges(rt);
+      json(ctx.response, 200, { ok: true, messages: updated.messages.map(m => ({ id: m.id, version: m.version })), remaining: updated.remaining, changes });
     }
   },
   {

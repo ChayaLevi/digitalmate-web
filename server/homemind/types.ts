@@ -115,6 +115,30 @@ export interface Item {
   source: ItemSource;
   createdBy: string;
   version: number;
+  /** T7.5: the messages this item was made from, each at the version it was read. */
+  sourceRefs?: SourceRef[];
+  /** T7.5: a message it was made from changed since; reminders wait until a parent applies, keeps or discards. */
+  stale?: StaleMark;
+}
+
+/** T7.5: a message (group or inbox) at one version. */
+export interface SourceRef {
+  id: string;
+  version: number;
+}
+
+/**
+ * T7.5: why an item no longer matches the message it came from. Values are plain data (ISO times or a
+ * sign-up choice's key); screens word them. The reason is Homemind's own words, in both languages.
+ */
+export interface StaleMark {
+  changeId: string;
+  at: string;
+  field: 'start' | 'choice' | 'unclear';
+  oldValue?: string;
+  newValue?: string;
+  reason: string;
+  reasonZh: string;
 }
 
 export type Tier = 'urgent' | 'timed' | 'summary';
@@ -238,6 +262,10 @@ export interface ActionCard {
   /** T7.3: board items the card's text is about (the wedding that makes Mom away). A member who can't
    * see one of them does not get the card (visibility.ts), as for a `Why`. */
   refs?: string[];
+  /** T7.5: the messages the card quotes, at the version it was prepared from. */
+  sourceRefs?: SourceRef[];
+  /** T7.5: a message it quotes changed. A held card never runs (not even at level 4) until a parent decides. */
+  held?: { changeId: string; at: string; reason: string; reasonZh: string };
 }
 
 /**
@@ -308,7 +336,10 @@ export type ActivityKind =
   | 'action'
   /** T7.3: a standing rule was created, turned on or off. `ref` is the rule id, `note` is `created`, `enabled` or `disabled`. No Undo.
    * T7.4: also a group's claim setting (`ref` is the group id, `note` `enabled`, `disabled`, `auto` or `ask`). */
-  | 'rule';
+  | 'rule'
+  /** T7.5: items marked or cleared because a message they came from changed (`ref` is the source change,
+   * `note` is `marked`, `applied`, `kept`, `discarded` or `synced`). Undo through the source change. */
+  | 'source';
 
 export interface Activity {
   id: string;
@@ -411,6 +442,63 @@ export interface HomemindState {
   groupPolicies?: GroupClaimPolicy[];
   /** T7.4: every sign-up Homemind looked at, claimed or stopped on, newest last. */
   groupClaims?: GroupClaim[];
+  /** T7.5: messages that changed after the family's items, claims or cards were made from them, newest last. */
+  sourceChanges?: SourceChange[];
+}
+
+// --- source changes (T7.5, sourceChanges.ts) -------------------------------------------------------------
+
+/** One difference between what a message said and what it says now, found in code (never by the model). */
+export type SourceDiff =
+  | { field: 'eventStart' | 'deadline'; old?: string; new?: string }
+  | { field: 'options'; removed: string[]; added: string[] }
+  /** The family's claimed choice is no longer on the list (or someone else took it). `switchTo` is what Apply would post instead. */
+  | { field: 'choice'; old: string; oldLabel: string; switchTo?: string; switchToLabel?: string }
+  /** The new version could not be read: Apply is not offered. */
+  | { field: 'unclear'; problem: string; problemZh: string };
+
+/**
+ * T7.5: a message the family's work depends on got a new version. `pending` until a parent applies the
+ * changes, keeps things as they are, or discards what depended on it. Every one of those has Undo, as far
+ * as the board goes (a message already posted in the simulated group can't be taken back).
+ */
+export interface SourceChange {
+  id: string;
+  groupId: string;
+  claimId: string;
+  at: string;
+  messages: Array<{ id: string; from: number; to: number }>;
+  status: 'pending' | 'applied' | 'kept' | 'discarded';
+  diffs: SourceDiff[];
+  /** Board items that depend on the old version, and cards that quote it (held). */
+  itemIds: string[];
+  cardIds: string[];
+  /** What the event was and would become, for the card's headline. */
+  oldEventStart?: string;
+  newEventStart?: string;
+  whyId: string;
+  resolvedBy?: string;
+  resolvedAt?: string;
+  /** The core activity of the resolution (its Undo patch), and a correction posted or prepared with it. */
+  activityId?: string;
+  correctionCardId?: string;
+  /** The claim as it was before the resolution, for Undo. */
+  claimBefore?: GroupClaim;
+  undoneAt?: string;
+}
+
+/** T7.5: a source change as one member's screen shows it (items limited to what that member can see). */
+export interface SourceChangeView {
+  change: SourceChange;
+  groupName: string;
+  groupNameZh: string;
+  eventTitle?: string;
+  eventTitleZh?: string;
+  items: Array<{ id: string; title: string; titleZh?: string; stale?: StaleMark }>;
+  /** Whether Undo is possible now (resolved, not undone, and nothing was posted with it). */
+  undoable: boolean;
+  /** Apply is offered only when the new version could be read. */
+  canApply: boolean;
 }
 
 // --- group sign-up claims (T7.4, groupClaims.ts) ---------------------------------------------------------
@@ -432,7 +520,7 @@ export interface GroupClaimPolicy {
 }
 
 /** Why a sign-up got no claim. `failed`: the simulated group did not take the post. */
-export type GroupClaimStop = 'unclear' | 'closed' | 'nothing_suitable' | 'already_signed_up' | 'paused' | 'failed';
+export type GroupClaimStop = 'unclear' | 'closed' | 'nothing_suitable' | 'already_signed_up' | 'paused' | 'failed' | 'withdrawn';
 
 /** One choice on a sign-up list, as written in the message. `key` names a food Homemind knows. */
 export interface SignUpOption {
@@ -442,7 +530,7 @@ export interface SignUpOption {
   takenBy?: string;
 }
 
-/** A correction of a claim ("Change"): from one option key to another. */
+/** A correction of a claim ("Change"): from one option key to another. T7.5: `to: ''` takes the family's name off the list. */
 export interface GroupClaimChange {
   at: string;
   by: string;
@@ -464,6 +552,8 @@ export interface GroupClaim {
   messageId: string;
   /** The message's version when it was read (T7.5 can compare). */
   messageVersion: number;
+  /** T7.5: every message the reading used (the sign-up, and the teacher's message the time came from), at its version. */
+  sourceRefs?: SourceRef[];
   at: string;
   status: 'waiting' | 'claimed' | 'stopped';
   reason?: GroupClaimStop;
@@ -543,6 +633,9 @@ export interface GroupMessage {
   /** A reply's kind: a sign-up claim, or a correction of an earlier claim. */
   replyKind?: 'claim' | 'correction';
   replyTo?: string;
+  /** T7.5: when the sender last edited it, and the earlier versions' text (oldest first). */
+  editedAt?: string;
+  earlier?: Array<{ version: number; text: string; at: string }>;
   /** Always true: there is no real group behind it. */
   simulated: true;
 }
@@ -586,6 +679,8 @@ export interface ServicesView {
     messages: GroupMessage[];
     /** Fixture messages not posted yet (the demo control). */
     remaining: number;
+    /** T7.5: sample edits not made yet (the "update message" demo control). */
+    updates?: number;
     simulated: true;
   };
   pizza: {
@@ -679,7 +774,7 @@ export type PpmaStatus = 'off' | 'connecting' | 'ok' | 'offline';
  * contact was messaged), `batch` (several small updates as one alert). `group` (T7.4, groupClaims.ts):
  * Homemind claimed or changed a sign-up in a simulated group; a notice to everyone who sees the event.
  */
-export type AlertKind = 'assigned' | 'open' | 'reminder' | 'escalation' | 'backup' | 'batch' | 'group';
+export type AlertKind = 'assigned' | 'open' | 'reminder' | 'escalation' | 'backup' | 'batch' | 'group' | 'stale';
 
 /** One line of a batched alert. */
 export interface AlertBatchEntry {
@@ -733,6 +828,10 @@ export interface HomemindAlert {
   groupChoiceZh?: string;
   groupFrom?: string;
   groupFromZh?: string;
+  /** `stale` (T7.5): a message changed; how many of the member's items depend on it, and what changed, in plain words. */
+  staleCount?: number;
+  staleWhat?: string;
+  staleWhatZh?: string;
 }
 
 /** A reminder that reached a member and is still waiting for an answer, for the reminder buttons on board rows (T4.2). */

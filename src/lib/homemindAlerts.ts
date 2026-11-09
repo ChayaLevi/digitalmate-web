@@ -60,6 +60,13 @@ export function alertText(alert: HomemindAlert, lang: Lang): string {
       ? t(lang, `Sign-up changed from ${from} to ${choice}: ${title}. (Simulated group)`, `接龙已从${from}改为${choice}：${title}。（模拟群）`)
       : t(lang, `Homemind signed the family up for ${choice}: ${title}. (Simulated group)`, `Homemind 已替家里认领${choice}：${title}。（模拟群）`);
   }
+  if (alert.kind === 'stale') {
+    // T7.5: a message in the simulated group changed after the family acted on it. Neutral: what changed, how many items.
+    if (alert.sensitive) return t(lang, GENERIC.en, GENERIC.zh);
+    const what = (lang === 'zh' ? alert.staleWhatZh : alert.staleWhat) ?? alert.staleWhat ?? '';
+    const n = alert.staleCount ?? 1;
+    return t(lang, `The kindergarten changed a message. ${what} ${n} of your items depend on it; check them on My day. (Simulated group)`, `幼儿园修改了一条消息。${what}你有 ${n} 项事情与它有关，请在“我的一天”查看。（模拟群）`);
+  }
   if (alert.sensitive || !alert.title) return t(lang, GENERIC.en, GENERIC.zh);
   const title = alertTitle(alert, lang);
   const at = alert.time;
@@ -98,6 +105,7 @@ export function alertButtons(alert: HomemindAlert, lang: Lang): AlertButton[] {
       return [alert.ask === 'confirm' ? b('take', "I'll take it", '我来') : b('claim', "I'll take it", '我来'), b('ack', 'Got it', '知道了'), open];
     case 'backup':
     case 'group':
+    case 'stale':
       return [open, dismiss];
     case 'batch':
       return [dismiss];
@@ -124,12 +132,13 @@ export function stillRelevant(alert: HomemindAlert, item: Item | null, memberId:
       return !confirmed;
     case 'backup':
     case 'group':
+    case 'stale':
       return true;
   }
 }
 
 /** Notices only tell; they never push out an alert that asks for an answer. */
-const isNotice = (alert: HomemindAlert) => alert.kind === 'batch' || alert.kind === 'backup' || alert.kind === 'group';
+const isNotice = (alert: HomemindAlert) => alert.kind === 'batch' || alert.kind === 'backup' || alert.kind === 'group' || alert.kind === 'stale';
 
 /**
  * The list after a new alert arrives: one alert that asks something per item (the newest), plus

@@ -967,6 +967,39 @@ test('Scene 2: a 接龙 sign-up arrives, Homemind claims apples and alerts the f
     const after = (await (await request.get(`${BASE}/api/homemind/debug/state`)).json()) as { services: { group: { messages: Array<{ text: string; replyKind?: string }> } }; items: Array<{ title: string; status: string }> };
     expect(after.services.group.messages.at(-1)).toMatchObject({ replyKind: 'correction', text: '更正：诺娅妈妈认领改为蛋糕（原来是苹果）' });
     expect(after.items.filter(i => i.title.startsWith('Buy apples')).map(i => i.status)).toEqual(['cancelled']);
+
+    // 7. T7.5, the last beat: the kindergarten moves the party to Friday and edits the list. What depends on it is
+    // marked, Dad (asked "Who's taking this?") is told, and Mom applies the change; the cake stays, so nothing is posted.
+    await family(mom).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'Services', exact: true }).click();
+    await momSurface.getByRole('button', { name: 'Update message (demo)' }).click();
+    await expect(momSurface).toContainText('本周五下午3点');
+    await expect(momSurface).toContainText('edited');
+    await expect(dad.locator('.hm-alert[data-kind="stale"]')).toContainText('幼儿园修改了一条消息');
+    await family(mom).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'My day', exact: true }).click();
+    const sourceRow = mom.locator('[data-task-id^="source-src-claim-grp-msg-2"]');
+    await expect(sourceRow).toContainText('The kindergarten changed the party to Friday. 4 items depend on it.');
+    await expect(sourceRow).toContainText('Compared in code, not by the model');
+    await expect(mom.locator('.hm-task', { hasText: 'Make the cake for the party (8 children)' }).first()).toContainText('Message changed');
+    await noOverflow(mom);
+    expect(await seriousIssues(mom)).toEqual([]);
+    await mom.screenshot({ path: test.info().outputPath('scene2-update-en.png'), fullPage: true });
+    await family(dad).getByRole('navigation', { name: '家庭页面' }).getByRole('button', { name: '我的一天', exact: true }).click();
+    await expect(dad.locator('[data-task-id^="source-src-claim-grp-msg-2"]')).toContainText('幼儿园把派对改到了周五。有 4 项与它有关。');
+    await dad.screenshot({ path: test.info().outputPath('scene2-update-zh.png'), fullPage: true });
+
+    await sourceRow.getByRole('button', { name: 'Apply changes' }).click();
+    await expect(family(mom)).toContainText('Changes applied.');
+    await expect(sourceRow).toContainText('Applied by Mom');
+    await expect(mom.locator('.hm-task', { hasText: 'Make the cake for the party (8 children)' }).first()).not.toContainText('Message changed');
+    const applied = (await (await request.get(`${BASE}/api/homemind/debug/state`)).json()) as { items: Array<{ titleZh?: string; start?: string; status: string; stale?: unknown }>; services: { group: { messages: Array<{ text: string }> } } };
+    const party = applied.items.find(i => i.titleZh === '幼儿园秋季美食派对' && i.status === 'open')!;
+    expect(localParts(Date.parse(party.start!), zone).weekday).toBe(5);
+    expect(applied.items.some(i => i.stale)).toBe(false);
+    expect(applied.services.group.messages.at(-1)?.text).toBe('更正：诺娅妈妈认领改为蛋糕（原来是苹果）');
+
+    // Undo puts it back to Thursday and the card asks again.
+    await sourceRow.getByRole('button', { name: 'Undo' }).click();
+    await expect(sourceRow).toContainText('Apply changes');
   } finally {
     await momContext.close();
     await dadContext.close();

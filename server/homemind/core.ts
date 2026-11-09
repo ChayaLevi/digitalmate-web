@@ -32,6 +32,8 @@ import type {
   Ownership,
   Recurrence,
   SourceKind,
+  SourceRef,
+  StaleMark,
   UndoEntry
 } from './types';
 
@@ -67,7 +69,26 @@ export interface NewItem extends ItemFields {
   proposed?: boolean;
   /** T7.4: a Chinese title for an item Homemind itself words (a group claim's preparations). Not from clients. */
   titleZh?: string;
+  /** T7.5: the messages the item was made from. Not from clients. */
+  sourceRefs?: SourceRef[];
 }
+
+/**
+ * T7.5: one item's part of a source change: mark or clear `stale`, move it, refresh its source refs, or
+ * remove it. Only sourceChanges.ts builds these (never a client).
+ */
+export interface SourceUpdate {
+  itemId: string;
+  version: number;
+  stale?: StaleMark | null;
+  start?: string;
+  end?: string;
+  sourceRefs?: SourceRef[];
+  cancel?: boolean;
+}
+
+/** The actor of what Homemind does on its own. Only a `source_sync` change accepts it. */
+const HOMEMIND = 'homemind';
 
 export type Change =
   | { kind: 'create'; item: NewItem }
@@ -87,7 +108,10 @@ export type Change =
   | { kind: 'cancel_occurrence'; itemId: string; version: number; date: string }
   | { kind: 'approve'; itemId: string; version: number }
   | { kind: 'dismiss'; itemId: string; version: number }
-  | { kind: 'undo'; activityId: string };
+  /** T7.5: several items at once, one Activity (`kind: 'source'`), so one Undo restores them all. */
+  | { kind: 'source_sync'; changeId: string; note: 'marked' | 'applied' | 'kept' | 'discarded' | 'synced'; updates: SourceUpdate[] }
+  /** `viaSource`: undo a `source` activity. Only sourceChanges.ts sets it, so the source change's own record follows. */
+  | { kind: 'undo'; activityId: string; viaSource?: boolean };
 
 export type ChangeKind = Change['kind'];
 
@@ -339,11 +363,19 @@ interface Draft {
  * On success the caller should persist `result.state` and publish `result.events`.
  */
 export function applyChange(state: HomemindState, change: Change, actor: string, clock: Clock): ChangeResult {
-  const member = memberOf(state, actor);
-  if (!member || !member.hasAccount) return fail(403, 'forbidden', 'unknown member, or a member without an account');
   if (!change || typeof change !== 'object') return invalid('no change');
+  const member = memberOf(state, actor);
+  const homemind = actor === HOMEMIND && change.kind === 'source_sync';
+  if (!homemind && (!member || !member.hasAccount)) return fail(403, 'forbidden', 'unknown member, or a member without an account');
 
-  const draft = change.kind === 'create' ? planCreate(state, change.item, actor, clock) : change.kind === 'undo' ? planUndo(state, change.activityId, actor) : planItemChange(state, change, actor);
+  const draft =
+    change.kind === 'create'
+      ? planCreate(state, change.item, actor, clock)
+      : change.kind === 'undo'
+        ? planUndo(state, change.activityId, actor, change.viaSource === true)
+        : change.kind === 'source_sync'
+          ? planSourceSync(state, change, actor)
+          : planItemChange(state, change, actor);
   if ('ok' in draft) return draft;
   return commit(state, draft, actor, clock);
 }
@@ -450,6 +482,7 @@ function planCreate(state: HomemindState, input: NewItem, actor: string, clock: 
     if (!titleZh || titleZh.length > LIMITS.title) return invalid(`titleZh must be 1 to ${LIMITS.title} characters`);
     item.titleZh = titleZh;
   }
+  if (input.sourceRefs?.length) item.sourceRefs = input.sourceRefs.slice(0, 8).map(r => ({ id: r.id, version: r.version }));
 
   return { next: new Map([[id, item]]), kind: 'create', itemId: id, what: proposed ? 'Proposed an item' : 'Added an item' };
 }
@@ -462,7 +495,51 @@ function pickFields(input: ItemPatch): ItemPatch {
   return out as ItemPatch;
 }
 
-type ItemChange = Exclude<Change, { kind: 'create' } | { kind: 'undo' }>;
+type ItemChange = Exclude<Change, { kind: 'create' } | { kind: 'undo' } | { kind: 'source_sync' }>;
+
+const SOURCE_WHAT: Record<Extract<Change, { kind: 'source_sync' }>['note'], string> = {
+  marked: 'Marked items whose message changed',
+  applied: 'Applied a changed message',
+  kept: 'Kept items as they were',
+  discarded: 'Discarded items from a changed message',
+  synced: 'Updated the source versions of items'
+};
+
+/** T7.5: several items in one step. Every item must be the version the caller read, or nothing changes. */
+function planSourceSync(state: HomemindState, change: Extract<Change, { kind: 'source_sync' }>, actor: string): Draft | ChangeError {
+  if (!Array.isArray(change.updates) || change.updates.length === 0 || change.updates.length > 50) return invalid('updates must be a short list');
+  if (typeof change.changeId !== 'string' || !ID_PATTERN.test(change.changeId)) return invalid('bad change id');
+  if (!SOURCE_WHAT[change.note]) return invalid('unknown note');
+  const next = new Map<string, Item | null>();
+  for (const update of change.updates) {
+    const item = state.items.find(i => i.id === update.itemId);
+    if (!item || (actor !== HOMEMIND && !canSee(state, actor, item))) return notFound();
+    if (update.version !== item.version) return fail(409, 'stale', 'this changed; here is the latest', item);
+    if (next.has(item.id)) return invalid('an item is listed twice');
+    const after: Item = { ...item };
+    if (update.stale === null) delete after.stale;
+    else if (update.stale) after.stale = { ...update.stale };
+    if (update.start !== undefined) {
+      const start = checkIso(update.start, 'start');
+      if (typeof start !== 'string') return start;
+      after.start = start;
+    }
+    if (update.end !== undefined) {
+      const end = checkIso(update.end, 'end');
+      if (typeof end !== 'string') return end;
+      after.end = end;
+    }
+    if (after.start && after.end && Date.parse(after.end) < Date.parse(after.start)) return invalid('end is before start');
+    if (update.sourceRefs) after.sourceRefs = update.sourceRefs.slice(0, 8).map(r => ({ id: r.id, version: r.version }));
+    if (update.cancel) {
+      if (item.status === 'done') return fail(409, 'conflict', 'this is already done', item);
+      after.status = 'cancelled';
+      delete after.stale;
+    }
+    next.set(item.id, after);
+  }
+  return { next, kind: 'source', what: SOURCE_WHAT[change.note], note: change.note, ref: change.changeId };
+}
 
 function planItemChange(state: HomemindState, change: ItemChange, actor: string): Draft | ChangeError {
   const item = typeof change.itemId === 'string' ? state.items.find(i => i.id === change.itemId) : undefined;
@@ -598,9 +675,11 @@ function planItemChange(state: HomemindState, change: ItemChange, actor: string)
   }
 }
 
-function planUndo(state: HomemindState, activityId: string, actor: string): Draft | ChangeError {
+function planUndo(state: HomemindState, activityId: string, actor: string, viaSource = false): Draft | ChangeError {
   const original = typeof activityId === 'string' ? state.activity.find(a => a.id === activityId) : undefined;
   if (!original || !original.undo) return notFound('change');
+  // T7.5: a source change is undone as a whole (its record and held cards too), never item by item.
+  if (original.kind === 'source' && !viaSource) return fail(409, 'conflict', 'undo this from the changed-message card');
   const touched = original.undo.items.map(entry => entry.before ?? state.items.find(i => i.id === entry.itemId)).filter((i): i is Item => !!i);
   // No trace of a Parents-only change for anyone else, and nobody undoes another member's change
   // unless they are a parent.

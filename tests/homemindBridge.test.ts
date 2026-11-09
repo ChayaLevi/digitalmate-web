@@ -95,6 +95,9 @@ describe('the flag', () => {
       expect((await fetch(`${base}/api/homemind${path}`)).status).toBe(FALLTHROUGH);
     }
     expect((await fetch(`${base}/api/homemind/session`, { method: 'POST', body: '{}' })).status).toBe(FALLTHROUGH);
+    // T7.5's routes too.
+    expect((await fetch(`${base}/api/homemind/demo/update-group-message`, { method: 'POST', body: '{}' })).status).toBe(FALLTHROUGH);
+    expect((await fetch(`${base}/api/homemind/source-changes/src-x-1/apply`, { method: 'POST', body: '{}' })).status).toBe(FALLTHROUGH);
     process.env.HOMEMIND_ENABLED = '0';
     expect((await fetch(`${base}/api/homemind/health`)).status).toBe(FALLTHROUGH);
   });

@@ -1,0 +1,39 @@
+# Homemind on Render (P10). The live service was created by hand in the dashboard with these same settings;
+# this file is for a rebuild. Applying it as a Blueprint creates a SECOND service next to the hand-made one.
+# See docs/homemind-cloud.md. Never put a key or the access code in this file.
+services:
+  - type: web
+    name: homemind
+    runtime: node
+    region: singapore
+    plan: starter            # always on; a free instance sleeps and fires no reminders
+    branch: feat/homemind
+    buildCommand: npm ci --include=dev && npm run build   # tsx (used by npm start) is a dev dependency
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: HOST
+        value: 0.0.0.0
+      - key: HOMEMIND_ENABLED
+        value: "1"
+      - key: HOMEMIND_CLOUD
+        value: "1"
+      - key: HOMEMIND_DEMO
+        value: "1"
+      - key: HOMEMIND_TIMEZONE
+        value: Asia/Shanghai
+      - key: HOMEMIND_SECRET
+        generateValue: true
+      - key: HOMEMIND_ACCESS_CODE   # 8 characters or more, set in the dashboard
+        sync: false
+      - key: HOMEMIND_LLM           # live spends the key for anyone past the access code; fake needs no key
+        value: live
+      - key: HOMEMIND_LLM_BASE_URL
+        sync: false
+      - key: HOMEMIND_LLM_API_KEY
+        sync: false
+      - key: HOMEMIND_LLM_MODEL
+        sync: false
+      # Do not add ORBIT_*, EPIC_REPLAY_*, FRIDGE2TABLE_* or PPMA_*: cloud mode closes those bridges and warns.

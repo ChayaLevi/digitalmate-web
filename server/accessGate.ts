@@ -213,6 +213,9 @@ function sendGate(request: IncomingMessage, response: ServerResponse, status: nu
   response.statusCode = status;
   response.setHeader('content-type', 'text/html; charset=utf-8');
   response.setHeader('cache-control', 'no-store');
+  // The bridge's `no-referrer` makes a browser send `Origin: null` with the form, which the same-origin check
+  // refuses. `same-origin` still sends nothing to other sites, and lets the form carry its real origin.
+  response.setHeader('referrer-policy', 'same-origin');
   response.end(request.method === 'HEAD' ? undefined : gatePage(message));
 }
 

@@ -131,6 +131,8 @@ describe('access code gate (T10.3)', () => {
     expect(html).toContain('访问码');
     expect(html).toContain('action="/access"');
     expect(html).not.toMatch(/<script|https?:\/\//);
+    // Under `no-referrer` a browser posts the form with `Origin: null` (found in the T10.4 dry run).
+    expect(page.headers.get('referrer-policy')).toBe('same-origin');
 
     const api = await fetch(`${base}/api/homemind/health`);
     expect(api.status).toBe(401);
@@ -223,10 +225,11 @@ describe('access code gate (T10.3)', () => {
     expect((await postCode(CODE, { 'x-forwarded-for': '203.0.113.8' })).status).toBe(200);
   });
 
-  it('refuses a cross-origin POST /access', async () => {
+  it('refuses a cross-origin POST /access, and an opaque (null) origin', async () => {
     const res = await postCode(CODE, { origin: 'https://evil.example' });
     expect(res.status).toBe(403);
     expect(res.headers.get('set-cookie')).toBeNull();
+    expect((await postCode(CODE, { origin: 'null' })).status).toBe(403);
   });
 
   it('the live stream without the cookie gets 401; with it, it opens', async () => {

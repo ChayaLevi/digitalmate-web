@@ -154,7 +154,7 @@ describe('the family time zone on a UTC machine (T10.2)', () => {
 
   it('cloud mode without a zone is refused, never a silent UTC', async () => {
     process.env.HOMEMIND_CLOUD = '1';
-    const res = await fetch(`${base}/api/homemind/members`);
+    const res = await fetch(`${base}/api/homemind/health`);
     expect(res.status).toBe(503);
     expect(((await res.json()) as { message: string }).message).toContain('HOMEMIND_TIMEZONE');
   });

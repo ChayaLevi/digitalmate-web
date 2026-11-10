@@ -156,7 +156,7 @@ describe('cloud mode closes the other bridges (T10.1)', () => {
     process.env.HOMEMIND_CLOUD = '1';
     const rss = await fetch(`${base}/api/rss`);
     expect(rss.status).not.toBe(404);
-    expect((await fetch(`${base}/api/homemind/members`)).status).toBe(200);
+    expect((await fetch(`${base}/api/homemind/health`)).status).toBe(200);
     expect((await fetch(`${base}/`)).status).toBe(418);
     expect((await fetch(`${base}/api/orbitx`)).status).toBe(418);
     expect(upstreamHits).toEqual([]);

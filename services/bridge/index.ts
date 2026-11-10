@@ -8,6 +8,7 @@ import { handleEpicRequest } from '../../server/epic';
 import { handleFridgeRequest } from '../../server/fridge';
 import { handleHomemindRequest, homemindStartupErrors } from '../../server/homemind';
 import { cloudConfigWarnings, cloudGate, cloudMode } from '../../server/cloud';
+import { accessStartupErrors, accessWarnings, handleAccessGate } from '../../server/accessGate';
 
 const root = resolve(process.cwd(), 'dist');
 const port = Number(process.env.PORT ?? 4173);
@@ -101,6 +102,8 @@ const server = createServer(async (request, response) => {
 
     // Cloud mode (P10): the Orbit, Epic and Fridge bridges answer 404 before any of them is reached.
     if (cloudGate(request, response)) return;
+    // T10.3: with HOMEMIND_ACCESS_CODE set, everything below needs the access cookie.
+    if (await handleAccessGate(request, response)) return;
 
     if (url.pathname === '/api/rss') {
       await handleRssRequest(request, response);
@@ -157,9 +160,9 @@ const server = createServer(async (request, response) => {
   }
 });
 
-// T10.2/T10.3: a missing or bad Homemind setting stops the start, with the variable's name, instead of a
+// T10.2/T10.3: a missing or bad Homemind or access-code setting stops the start, with the variable's name, instead of a
 // server that runs on the wrong day or without its gate.
-const startupErrors = homemindStartupErrors();
+const startupErrors = [...accessStartupErrors(), ...homemindStartupErrors()];
 if (startupErrors.length) {
   for (const error of startupErrors) console.error(`[homemind] ${error}`);
   console.error('[homemind] not starting. Fix the variables above and start again.');
@@ -177,6 +180,9 @@ server.listen(port, host, () => {
   if (cloudMode()) console.log('Cloud mode: on (Orbit, Epic and Fridge bridges closed)');
   for (const warning of cloudConfigWarnings()) {
     console.warn(`[cloud] ${warning}`);
+  }
+  for (const warning of accessWarnings()) {
+    console.warn(`[access] ${warning}`);
   }
 });
 

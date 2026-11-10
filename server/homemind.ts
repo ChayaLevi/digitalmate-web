@@ -64,6 +64,7 @@ import type { GroupClaim, HomemindState, Item, Lang, Member, PpmaStatus, StreamM
 import { redactItem, searchItems, viewFor } from './homemind/visibility';
 import { isSameOrigin } from './orbit';
 import { cloudMode } from './cloud';
+import { accessCodeFromEnv } from './accessGate';
 import { chatTurn, screenTurn } from '../src/lib/homemindSurfaces';
 import type { ChatOutcome } from '../src/lib/homemindSurfaces';
 
@@ -203,6 +204,15 @@ interface Holder {
 // A global, so a Vite reload of this module does not load the state a second time.
 const HOLDER = Symbol.for('homemind.runtime');
 type GlobalWithHolder = typeof globalThis & { [HOLDER]?: Holder };
+
+/**
+ * The demo picker ("I am Mom") is not authentication. Locally it is always there. In cloud mode (P10) it is
+ * served only behind the access code, and never once accounts exist (`DATABASE_URL`, P12).
+ */
+function pickerAllowed(): boolean {
+  if (!cloudMode()) return true;
+  return accessCodeFromEnv() !== null && !process.env.DATABASE_URL?.trim();
+}
 
 /** The zone a new family is seeded in (T10.2). A bad or missing `HOMEMIND_TIMEZONE` is a 503, never a silent UTC. */
 function seedTimezone(): string {
@@ -652,6 +662,8 @@ interface Route {
   demoOnly?: boolean;
   /** Never served in cloud mode (`HOMEMIND_CLOUD=1`), even with `HOMEMIND_DEMO=1` (P10). */
   notInCloud?: boolean;
+  /** The password-less member picker. In cloud mode only behind the access code, and never with accounts (P10). */
+  picker?: boolean;
   handler: Handler;
 }
 
@@ -1131,12 +1143,14 @@ const routes: Route[] = [
     method: 'GET',
     pattern: /^\/members$/,
     auth: false,
+    picker: true,
     handler: ({ response, rt }) => json(response, 200, { family: { id: rt.state.family.id, name: rt.state.family.name, nameZh: rt.state.family.nameZh }, members: rt.state.family.members.map(MEMBER_VIEW) })
   },
   {
     method: 'POST',
     pattern: /^\/session$/,
     auth: false,
+    picker: true,
     handler: async ctx => {
       const body = pick(await readBody(ctx.request), ['memberId'], 'session');
       const memberId = idOf(body.memberId, 'memberId');
@@ -1649,7 +1663,7 @@ async function dispatch(request: IncomingMessage, response: ServerResponse, url:
     if (match) params = match.slice(1);
     return match !== null;
   });
-  if (!route || (route.demoOnly && !demo()) || (route.notInCloud && cloudMode())) return fail(response, 404, 'not_found', 'Not found');
+  if (!route || (route.demoOnly && !demo()) || (route.notInCloud && cloudMode()) || (route.picker && !pickerAllowed())) return fail(response, 404, 'not_found', 'Not found');
 
   if (method !== 'GET' && !isSameOrigin(request)) return fail(response, 403, 'forbidden', 'Cross-origin bridge request rejected');
   const key = secret();

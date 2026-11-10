@@ -4,12 +4,12 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T10.2 done (Time zone from an env var). `HOMEMIND_TIMEZONE` decides the demo family zone; cloud mode refuses to start without it. Before that, T10.1 (cloud mode closes the Orbit, Epic and Fridge bridges). P10 in progress (T10.3 and T10.4 in this chat).
+- **Current task:** T10.3 done (Access code gate). With `HOMEMIND_ACCESS_CODE` set, every page and API call but `/healthz` needs the `hm_access` cookie from the gate page; in cloud mode the member picker exists only behind it. Before that, T10.1 and T10.2. P10 in progress (T10.4 in this chat).
 - **Planning added (2026-11-10):** `docs/PLAN.md` now has **P10 to P14** (Homemind in the cloud, several families, on Render), 19 tasks, written for the human's review. **No code was written.** Nothing in P10 to P14 is started. The human's answers to the 5 questions at the end of that section decide the details.
 - **Next task:** T9.2 (Rehearsal). 🧑 Someone to review the Chinese text; a Huawei phone if available; the human's OK on the run guide after the team-lead run. In parallel, the human may start **T10.1** (P10 does not depend on T9.2) once they answered the P10 to P14 questions.
 - **Scenes working end to end:** **Scene 1**, as scripted, in two windows: Mom assigns the pickup, it is on Dad's screen at once, he does not confirm, the demo clock jumps, Dad is reminded (alert and row), Mom gets "not confirmed yet" (alert and row), and she takes it from her board, which closes every alert in both windows. Covered by the e2e test "Scene 1: ...". Settings (quiet hours, autonomy, pause, backup contact) are editable and sync live. **Scene 4**, in two windows: Mom tells the Family chat she is at a wedding from Tuesday to Saturday, her Tuesday pickup becomes "Who's taking this?" on Dad's board, the Friday pizza card comes smaller (154 CNY for 3) and waits for a tap, Dad taps "为什么？" and sees the rule's reason, Dad's Friday work dinner makes it 89 CNY for 2 plus a babysitter card (Xiao Chen), and Dad's tap on Friday orders once from the simulated shop. Covered by the e2e test "Scene 4: ...". **Scene 2**, in two windows: Mom turns on claims for the group (level 4), the teacher's message and the 接龙 arrive, Homemind claims apples in the simulated group, Dad's window gets "Homemind 已替家里认领苹果", Mom's My day shows the claim with "Why?" and "Change to" (cake first, "because Noa enjoys baking it with us the most"), she taps Change on cake, the correction is posted, the apples preparations leave and "为派对做蛋糕（8个小朋友）" arrives on Dad's board as "谁来负责？". Covered by the e2e test "Scene 2: ...". The screenshot extraction part of Scene 2 is T5.3's chat card. **Scene 3**, in two windows: Mom tells the Family chat "Noa is sick today"; the card shows the pickup "not needed", swimming "postpone a week" and the stay-home task; Dad's window gets "谁来负责？在家照顾诺娅" and My day shows "谁可以留在家" (both "当天没有标记外出"); Dad taps 我来; Mom taps "Apply all (2)" (pickup cancelled, swimming a week later, "妈妈已采纳" in Dad's window); "Why?" says fixed rules and "Source: a Homemind rule"; on a weekday Mom confirms the teacher message and it shows on Services. Covered by the e2e test "Scene 3: ...". **Scene 2's last beat (T7.5)**, in the same e2e test: "Update message (demo)" moves the party to Friday, Dad gets the changed-message notice, Mom's My day shows "4 items depend on it" (cake: event and 3 preparations), she taps Apply changes (the party is on Friday, the flags clear, nothing posted since cake is still wanted), then Undo puts it back. **Scene 5**, in two windows: claims on, the party message reaches Dad as "王老师在班级群：… 现在提醒", the 接龙 is claimed (no second alert), the "不着急" note brings **no alert** and shows on Services and on both parents' My day as "Waits for the evening summary (20:00): the sender wrote “不着急” (not urgent)"; Mom corrects the cake preference to cookies on Memory, and the sign-up choices now show cookies with her reason and cake without; the clock jumps to 20:01, Dad gets "你的晚间摘要已送达 … 有 1 条群消息等到了现在", taps 查看, and the summary lists 你需要做的事 first and the note with its reason. Covered by the e2e test "Scene 5: ..."
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-10, after T10.2
+- **Last updated:** 2026-11-10, after T10.3
 
 ## Task status
 
@@ -51,7 +51,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T9.3 | Backup video | not started |  |
 | T10.1 | Cloud mode and closing the other bridges | done | `server/cloud.ts`, gate first in the bridge and Vite, `debug/state` 404 and a smaller `/health` in cloud mode. 1015 passed, 1 skipped (9 new) |
 | T10.2 | Time zone from an env var | done | `HOMEMIND_TIMEZONE` (IANA, checked); required in cloud mode; resets keep the family zone; startup refuses a bad value. 1025 passed, 1 skipped (10 new) |
-| T10.3 | Access code gate | not started |  |
+| T10.3 | Access code gate | done | `server/accessGate.ts`, `POST /access`, `hm_access` cookie (7 days), gate page EN/ZH, 429 after 10 wrong codes; picker only behind the code in cloud mode. 1045 passed, 1 skipped (20 new); e2e 73 of 73 |
 | T10.4 | Render files, local dry run and first guide | not started | STOP: the human deploys |
 | T11.1 | Store interface | not started | P11 |
 | T11.2 | Postgres store and migrations | not started | 🧑 OK to add `pg`; a throwaway Postgres |
@@ -491,6 +491,23 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T10.3 Access code gate: done (2026-11-10)
+**Built:**
+- File `server/accessGate.ts` (new). Pure parts: `accessKey(secret, code)` (HMAC of `HOMEMIND_SECRET` under the label `homemind.access-gate` plus the code), `signAccess`/`verifyAccess` (expiry + signature, `timingSafeEqual`), `codeMatches` (`timingSafeEqual` over SHA-256 digests), `readCookie`, `createFailureLimiter` (10 wrong codes per address per 15 minutes, in memory, capped at 10 000 addresses), `clientAddress`, `gatePage` (inline HTML, EN and ZH, no script, no external asset, a plain form to `POST /access`), `accessStartupErrors`, `accessWarnings`. Handler `handleAccessGate` and `accessGatePlugin`.
+- Behavior with `HOMEMIND_ACCESS_CODE` set: `/healthz` open; `GET /access` shows the gate; `POST /access` (JSON or form) checks same origin, the limit and the code, and sets `hm_access` (HttpOnly, SameSite=Lax, Path=/, Max-Age 7 days, Secure behind `x-forwarded-proto: https`); the form answer is a 303 to `/`. Without a valid cookie: `/api/*` and non-GET get `401 {error: 'access_code_required'}`, pages get the gate page (401). Over the limit: `429` with `retry-after: 900`, even for the right code.
+- Files `services/bridge/index.ts` and `vite.config.ts`: the gate right after the cloud gate (`accessGatePlugin()` second in the plugin list); startup refuses a code under 8 characters or a code without `HOMEMIND_SECRET`, and warns in cloud mode without a code.
+- File `server/homemind.ts`: route flag `picker` on `GET /members` and `POST /session`; `pickerAllowed()`: always locally, in cloud mode only with `HOMEMIND_ACCESS_CODE` set and no `DATABASE_URL` (the human's decision). Otherwise 404.
+- File `tests/accessGate.test.ts` (new, 20 tests). `tests/cloudGate.test.ts` and `tests/homemindTimezone.test.ts` use `/health` instead of `/members` in cloud mode.
+**Decisions:** the cookie key includes the code, so changing the code shuts out every old cookie. The page works without JavaScript (the CSP has `script-src 'self'`, so an inline script would be blocked). In cloud mode the limit's address is the **last** `x-forwarded-for` entry (added by Render's proxy, not forgeable by the client); locally the socket address. Cloud mode without a code starts (with a warning) but closes the picker, so nobody can reach the model.
+**Deviations:** none from the task. The plan does not say what cloud mode does without a code; closing the picker follows the human's answer ("the picker only behind the access code").
+**Test results:** `npm test`: 1045 passed, 1 skipped (65 files). One run before had 1 failure in `homemindPpma` (10 s timeout under load); it passed alone and in the next full run. `npx tsc --noEmit` clean; temp tsconfig with `server/accessGate.ts`, the adapter and the bridge: only the known `server/orbit.ts` errors. `npm run test:e2e`: 73 passed (11.4 min), with T10.1 to T10.3 in place and no code set.
+**Not done or not verified:** which `x-forwarded-for` entry Render gives (T14.2). If an office shares one address, one person's 10 typos lock the others out for 15 minutes (said in the cloud guide).
+**Next task should know:** e2e does not set the code, so it never sees the gate; the T10.4 dry run goes through the gate page in a browser.
+**How to verify:**
+- Commands: `npx vitest run tests/accessGate.test.ts`
+- Expected output: 1 file passed, 20 tests passed.
+- Manual check: `$env:HOMEMIND_ACCESS_CODE='try-the-gate-1'; npm run dev`, open `http://127.0.0.1:5173/`: the gate page; a wrong code says "That code is not right"; the right one opens the app.
 
 ### T10.2 Time zone from an env var: done (2026-11-10)
 **Built:**

@@ -6,7 +6,7 @@ import { handleOrbitRequest, bridgeConfigWarnings, readOrbitConfig } from '../..
 import { handleRssRequest } from '../../server/rss';
 import { handleEpicRequest } from '../../server/epic';
 import { handleFridgeRequest } from '../../server/fridge';
-import { handleHomemindRequest } from '../../server/homemind';
+import { handleHomemindRequest, homemindStartupErrors } from '../../server/homemind';
 import { cloudConfigWarnings, cloudGate, cloudMode } from '../../server/cloud';
 
 const root = resolve(process.cwd(), 'dist');
@@ -156,6 +156,15 @@ const server = createServer(async (request, response) => {
     );
   }
 });
+
+// T10.2/T10.3: a missing or bad Homemind setting stops the start, with the variable's name, instead of a
+// server that runs on the wrong day or without its gate.
+const startupErrors = homemindStartupErrors();
+if (startupErrors.length) {
+  for (const error of startupErrors) console.error(`[homemind] ${error}`);
+  console.error('[homemind] not starting. Fix the variables above and start again.');
+  process.exit(1);
+}
 
 server.listen(port, host, () => {
   console.log(`DigitalMate bridge listening on http://${host}:${port}`);

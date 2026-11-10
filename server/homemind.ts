@@ -31,7 +31,7 @@ import { startScheduler, stopScheduler } from './homemind/scheduler';
 import { createEventHub } from './homemind/events';
 import type { EventHub } from './homemind/events';
 import type { Change, ChangeError, ItemPatch, NewItem } from './homemind/core';
-import { machineTimezone, seedState } from './homemind/seed';
+import { seedState, timezoneSetting } from './homemind/seed';
 import { PRESETS, PRESET_IDS, isPresetId, nextDueAt, nextLocalTime } from './homemind/presets';
 import type { Preset } from './homemind/presets';
 import { cancelCard, executeAction, expireCards, issueConfirmation } from './homemind/actions';
@@ -204,13 +204,37 @@ interface Holder {
 const HOLDER = Symbol.for('homemind.runtime');
 type GlobalWithHolder = typeof globalThis & { [HOLDER]?: Holder };
 
+/** The zone a new family is seeded in (T10.2). A bad or missing `HOMEMIND_TIMEZONE` is a 503, never a silent UTC. */
+function seedTimezone(): string {
+  const setting = timezoneSetting(process.env.HOMEMIND_TIMEZONE, cloudMode());
+  if (!setting.ok) throw new HttpError(503, 'not_configured', setting.error);
+  return setting.zone;
+}
+
+/**
+ * What stops the bridge from starting (T10.2, T10.3), each naming the variable. Checked only when
+ * Homemind or cloud mode is on, so the base app starts exactly as before.
+ */
+export function homemindStartupErrors(env: Record<string, string | undefined> = process.env): string[] {
+  const cloud = env.HOMEMIND_CLOUD === '1';
+  if (env.HOMEMIND_ENABLED !== '1' && !cloud) return [];
+  const errors: string[] = [];
+  const zone = timezoneSetting(env.HOMEMIND_TIMEZONE, cloud);
+  if (!zone.ok) errors.push(zone.error);
+  return errors;
+}
+
 async function runtime(): Promise<Runtime> {
   const holders = globalThis as GlobalWithHolder;
   const file = dataFileFromEnv(process.env);
   if (!holders[HOLDER] || holders[HOLDER].file !== file) {
-    const store = new HomemindStore({ file, seed: () => seedState({ now: Date.now() }) });
+    const timezone = seedTimezone();
+    const store = new HomemindStore({ file, seed: () => seedState({ now: Date.now(), timezone }) });
     const ready = store.load().then(({ state, source, movedTo }) => {
       if (source === 'recovered') console.warn(`[homemind] the state file was unreadable; moved to ${movedTo} and reseeded`);
+      if (state.family.timezone !== timezone) {
+        console.warn(`[homemind] the saved family uses the time zone ${state.family.timezone}, not ${timezone}; it keeps its own (delete the state file to start in ${timezone})`);
+      }
       const rt: Runtime = { file, state, source, store, hub: createEventHub(), clock: createDemoClock(Date.now, state.clockOffsetMs) };
       startPpma(rt);
       return rt;
@@ -1559,14 +1583,16 @@ const routes: Route[] = [
         if (typeof time !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new HttpError(400, 'invalid', 'time is HH:MM');
         at = { weekdays: [weekday], time };
       }
+      // T10.2: a reset keeps the family's own zone (set when it was first seeded), not the machine's.
+      const timezone = rt.state.family.timezone;
       let state: HomemindState;
-      if (!at) state = await rt.store.reset();
+      const realNow = Date.now();
+      if (!at) state = seedState({ now: realNow, timezone });
       else {
-        const realNow = Date.now();
-        const target = nextLocalTime(realNow, machineTimezone(), at.weekdays, at.time);
-        state = { ...seedState({ now: target, realNow }), clockOffsetMs: target - realNow };
-        await rt.store.save(state);
+        const target = nextLocalTime(realNow, timezone, at.weekdays, at.time);
+        state = { ...seedState({ now: target, realNow, timezone }), clockOffsetMs: target - realNow };
       }
+      await rt.store.save(state);
       rt.state = state;
       rt.chats?.clear();
       rt.clock.setOffset(state.clockOffsetMs);
@@ -1644,6 +1670,8 @@ async function dispatch(request: IncomingMessage, response: ServerResponse, url:
 
 export function homemindBridgePlugin(): Plugin {
   const attach = (server: { middlewares: { use: (fn: (req: IncomingMessage, res: ServerResponse, next: () => void) => void) => void } }) => {
+    const errors = homemindStartupErrors();
+    if (errors.length) throw new Error(`[homemind] cannot start: ${errors.join('; ')}`);
     server.middlewares.use((request, response, next) => {
       handleHomemindRequest(request, response).then(
         handled => {

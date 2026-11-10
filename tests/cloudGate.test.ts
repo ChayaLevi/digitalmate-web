@@ -22,6 +22,7 @@ const ENV_KEYS = [
   'HOMEMIND_DEMO',
   'HOMEMIND_DATA_FILE',
   'HOMEMIND_LLM',
+  'HOMEMIND_TIMEZONE',
   'ORBIT_GATEWAY_URL',
   'ORBIT_TOKEN',
   'ORBIT_BINDING_ID',
@@ -78,6 +79,7 @@ beforeEach(async () => {
   process.env.HOMEMIND_DEMO = '1';
   process.env.HOMEMIND_DATA_FILE = join(dir, 'state.json');
   process.env.HOMEMIND_LLM = 'fake';
+  process.env.HOMEMIND_TIMEZONE = 'Asia/Shanghai'; // cloud mode needs it (T10.2)
   // Every other bridge points at the fake upstream, as if someone set them on the service by mistake.
   process.env.ORBIT_GATEWAY_URL = upstreamUrl;
   process.env.ORBIT_TOKEN = 'not-a-real-token';

@@ -4,12 +4,12 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T10.1 done (Cloud mode and closing the other bridges). With `HOMEMIND_CLOUD=1`, `/api/orbit/*`, `/api/epic/*` and `/api/fridge/*` answer 404 before they are reached, `debug/state` is 404, `/health` shows no model or PPMA detail. P10 in progress (T10.2 to T10.4 in this chat). Before that, T9.1.
+- **Current task:** T10.2 done (Time zone from an env var). `HOMEMIND_TIMEZONE` decides the demo family zone; cloud mode refuses to start without it. Before that, T10.1 (cloud mode closes the Orbit, Epic and Fridge bridges). P10 in progress (T10.3 and T10.4 in this chat).
 - **Planning added (2026-11-10):** `docs/PLAN.md` now has **P10 to P14** (Homemind in the cloud, several families, on Render), 19 tasks, written for the human's review. **No code was written.** Nothing in P10 to P14 is started. The human's answers to the 5 questions at the end of that section decide the details.
 - **Next task:** T9.2 (Rehearsal). 🧑 Someone to review the Chinese text; a Huawei phone if available; the human's OK on the run guide after the team-lead run. In parallel, the human may start **T10.1** (P10 does not depend on T9.2) once they answered the P10 to P14 questions.
 - **Scenes working end to end:** **Scene 1**, as scripted, in two windows: Mom assigns the pickup, it is on Dad's screen at once, he does not confirm, the demo clock jumps, Dad is reminded (alert and row), Mom gets "not confirmed yet" (alert and row), and she takes it from her board, which closes every alert in both windows. Covered by the e2e test "Scene 1: ...". Settings (quiet hours, autonomy, pause, backup contact) are editable and sync live. **Scene 4**, in two windows: Mom tells the Family chat she is at a wedding from Tuesday to Saturday, her Tuesday pickup becomes "Who's taking this?" on Dad's board, the Friday pizza card comes smaller (154 CNY for 3) and waits for a tap, Dad taps "为什么？" and sees the rule's reason, Dad's Friday work dinner makes it 89 CNY for 2 plus a babysitter card (Xiao Chen), and Dad's tap on Friday orders once from the simulated shop. Covered by the e2e test "Scene 4: ...". **Scene 2**, in two windows: Mom turns on claims for the group (level 4), the teacher's message and the 接龙 arrive, Homemind claims apples in the simulated group, Dad's window gets "Homemind 已替家里认领苹果", Mom's My day shows the claim with "Why?" and "Change to" (cake first, "because Noa enjoys baking it with us the most"), she taps Change on cake, the correction is posted, the apples preparations leave and "为派对做蛋糕（8个小朋友）" arrives on Dad's board as "谁来负责？". Covered by the e2e test "Scene 2: ...". The screenshot extraction part of Scene 2 is T5.3's chat card. **Scene 3**, in two windows: Mom tells the Family chat "Noa is sick today"; the card shows the pickup "not needed", swimming "postpone a week" and the stay-home task; Dad's window gets "谁来负责？在家照顾诺娅" and My day shows "谁可以留在家" (both "当天没有标记外出"); Dad taps 我来; Mom taps "Apply all (2)" (pickup cancelled, swimming a week later, "妈妈已采纳" in Dad's window); "Why?" says fixed rules and "Source: a Homemind rule"; on a weekday Mom confirms the teacher message and it shows on Services. Covered by the e2e test "Scene 3: ...". **Scene 2's last beat (T7.5)**, in the same e2e test: "Update message (demo)" moves the party to Friday, Dad gets the changed-message notice, Mom's My day shows "4 items depend on it" (cake: event and 3 preparations), she taps Apply changes (the party is on Friday, the flags clear, nothing posted since cake is still wanted), then Undo puts it back. **Scene 5**, in two windows: claims on, the party message reaches Dad as "王老师在班级群：… 现在提醒", the 接龙 is claimed (no second alert), the "不着急" note brings **no alert** and shows on Services and on both parents' My day as "Waits for the evening summary (20:00): the sender wrote “不着急” (not urgent)"; Mom corrects the cake preference to cookies on Memory, and the sign-up choices now show cookies with her reason and cake without; the clock jumps to 20:01, Dad gets "你的晚间摘要已送达 … 有 1 条群消息等到了现在", taps 查看, and the summary lists 你需要做的事 first and the note with its reason. Covered by the e2e test "Scene 5: ..."
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-10, after T10.1
+- **Last updated:** 2026-11-10, after T10.2
 
 ## Task status
 
@@ -50,7 +50,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T9.2 | Rehearsal | not started |  |
 | T9.3 | Backup video | not started |  |
 | T10.1 | Cloud mode and closing the other bridges | done | `server/cloud.ts`, gate first in the bridge and Vite, `debug/state` 404 and a smaller `/health` in cloud mode. 1015 passed, 1 skipped (9 new) |
-| T10.2 | Time zone from an env var | not started |  |
+| T10.2 | Time zone from an env var | done | `HOMEMIND_TIMEZONE` (IANA, checked); required in cloud mode; resets keep the family zone; startup refuses a bad value. 1025 passed, 1 skipped (10 new) |
 | T10.3 | Access code gate | not started |  |
 | T10.4 | Render files, local dry run and first guide | not started | STOP: the human deploys |
 | T11.1 | Store interface | not started | P11 |
@@ -491,6 +491,22 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T10.2 Time zone from an env var: done (2026-11-10)
+**Built:**
+- File `server/homemind/seed.ts`: `isValidTimezone()` (via `Intl.DateTimeFormat`) and `timezoneSetting(value, cloud)`: unset is the machine zone locally and an error in cloud mode; an unknown name is an error that names `HOMEMIND_TIMEZONE`.
+- File `server/homemind.ts`: `seedTimezone()` (a bad setting is `503 not_configured` with the message), used by `runtime()` for the seed; a loaded family in another zone keeps its own and logs one warning per load. `/demo/reset` (plain and preset) now seeds in `rt.state.family.timezone`. New `homemindStartupErrors(env)`, checked only when `HOMEMIND_ENABLED=1` or `HOMEMIND_CLOUD=1`.
+- File `services/bridge/index.ts`: prints each startup error and exits 1 before `listen`. The Vite plugin throws with the same text.
+- File `tests/homemindTimezone.test.ts` (new, 10 tests); `tests/cloudGate.test.ts` sets `HOMEMIND_TIMEZONE`.
+**Decisions:** the plain "Reset (now)" also keeps the family's zone (it used `store.reset()`, which seeded in the machine zone), so both resets agree. To start a family in a new zone, delete the state file (on Render P10, any deploy or restart does that).
+**Deviations:** none.
+**Test results:** `npm test`: 1025 passed, 1 skipped (64 files), twice in a row. One run before the cloud test fix showed 5 failures: the cloud test (fixed: cloud mode now needs a zone) and 4 known load flakes (`homemindEvents` ping, `homemindGroupClaimsBridge` timeout, `homemindPpma` 10 s, `epicVite`), each passing alone and in the next two full runs. `TZ=UTC npx vitest run tests/homemindTimezone.test.ts tests/homemindPresets.test.ts tests/homemindSeed.test.ts`: 37 passed. `npx tsc --noEmit` clean; temp tsconfig with the adapter and the bridge: only the known `server/orbit.ts` errors.
+**Not done or not verified:** a real UTC machine (Render) is checked at T10.4's dry run with `TZ=UTC` and on the live URL by the human.
+**Next task should know:** the test sets `process.env.TZ='UTC'` inside the worker and checks `machineTimezone()` is `UTC`, so it proves the point on any machine.
+**How to verify:**
+- Commands: `npx vitest run tests/homemindTimezone.test.ts`
+- Expected output: 1 file passed, 10 tests passed.
+- Manual check: `$env:HOMEMIND_TIMEZONE='Asia/Shanghai'; npm run dev` after deleting `.homemind/state.json` (it is reseeded); the Family tab's demo clock chip shows Shanghai time. With `$env:HOMEMIND_TIMEZONE='Nowhere'`, `npm run dev` refuses to start and names the variable.
 
 ### T10.1 Cloud mode and closing the other bridges: done (2026-11-10)
 **Built:**

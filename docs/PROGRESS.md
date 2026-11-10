@@ -4,12 +4,12 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T9.1 done (Demo panel and run guide). The demo panel (closed by default, `HOMEMIND_DEMO=1`) has "Prepare Scene 1" to "Prepare Scene 5": each resets the board at the moment that scene needs (the demo clock moves forward, so they work at any real day and hour), and turns on claims for Scenes 2 and 5. Rules open into details with a parent's cap and time edits, delete and Undo. Tests no longer depend on the real day or hour. `docs/homemind-demo.md` (run guide) and `docs/homemind-stats.md` (measured numbers) are written. Before that, T8.3, P8.
+- **Current task:** T10.1 done (Cloud mode and closing the other bridges). With `HOMEMIND_CLOUD=1`, `/api/orbit/*`, `/api/epic/*` and `/api/fridge/*` answer 404 before they are reached, `debug/state` is 404, `/health` shows no model or PPMA detail. P10 in progress (T10.2 to T10.4 in this chat). Before that, T9.1.
 - **Planning added (2026-11-10):** `docs/PLAN.md` now has **P10 to P14** (Homemind in the cloud, several families, on Render), 19 tasks, written for the human's review. **No code was written.** Nothing in P10 to P14 is started. The human's answers to the 5 questions at the end of that section decide the details.
 - **Next task:** T9.2 (Rehearsal). 🧑 Someone to review the Chinese text; a Huawei phone if available; the human's OK on the run guide after the team-lead run. In parallel, the human may start **T10.1** (P10 does not depend on T9.2) once they answered the P10 to P14 questions.
 - **Scenes working end to end:** **Scene 1**, as scripted, in two windows: Mom assigns the pickup, it is on Dad's screen at once, he does not confirm, the demo clock jumps, Dad is reminded (alert and row), Mom gets "not confirmed yet" (alert and row), and she takes it from her board, which closes every alert in both windows. Covered by the e2e test "Scene 1: ...". Settings (quiet hours, autonomy, pause, backup contact) are editable and sync live. **Scene 4**, in two windows: Mom tells the Family chat she is at a wedding from Tuesday to Saturday, her Tuesday pickup becomes "Who's taking this?" on Dad's board, the Friday pizza card comes smaller (154 CNY for 3) and waits for a tap, Dad taps "为什么？" and sees the rule's reason, Dad's Friday work dinner makes it 89 CNY for 2 plus a babysitter card (Xiao Chen), and Dad's tap on Friday orders once from the simulated shop. Covered by the e2e test "Scene 4: ...". **Scene 2**, in two windows: Mom turns on claims for the group (level 4), the teacher's message and the 接龙 arrive, Homemind claims apples in the simulated group, Dad's window gets "Homemind 已替家里认领苹果", Mom's My day shows the claim with "Why?" and "Change to" (cake first, "because Noa enjoys baking it with us the most"), she taps Change on cake, the correction is posted, the apples preparations leave and "为派对做蛋糕（8个小朋友）" arrives on Dad's board as "谁来负责？". Covered by the e2e test "Scene 2: ...". The screenshot extraction part of Scene 2 is T5.3's chat card. **Scene 3**, in two windows: Mom tells the Family chat "Noa is sick today"; the card shows the pickup "not needed", swimming "postpone a week" and the stay-home task; Dad's window gets "谁来负责？在家照顾诺娅" and My day shows "谁可以留在家" (both "当天没有标记外出"); Dad taps 我来; Mom taps "Apply all (2)" (pickup cancelled, swimming a week later, "妈妈已采纳" in Dad's window); "Why?" says fixed rules and "Source: a Homemind rule"; on a weekday Mom confirms the teacher message and it shows on Services. Covered by the e2e test "Scene 3: ...". **Scene 2's last beat (T7.5)**, in the same e2e test: "Update message (demo)" moves the party to Friday, Dad gets the changed-message notice, Mom's My day shows "4 items depend on it" (cake: event and 3 preparations), she taps Apply changes (the party is on Friday, the flags clear, nothing posted since cake is still wanted), then Undo puts it back. **Scene 5**, in two windows: claims on, the party message reaches Dad as "王老师在班级群：… 现在提醒", the 接龙 is claimed (no second alert), the "不着急" note brings **no alert** and shows on Services and on both parents' My day as "Waits for the evening summary (20:00): the sender wrote “不着急” (not urgent)"; Mom corrects the cake preference to cookies on Memory, and the sign-up choices now show cookies with her reason and cake without; the clock jumps to 20:01, Dad gets "你的晚间摘要已送达 … 有 1 条群消息等到了现在", taps 查看, and the summary lists 你需要做的事 first and the note with its reason. Covered by the e2e test "Scene 5: ..."
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-10, after planning P10 to P14
+- **Last updated:** 2026-11-10, after T10.1
 
 ## Task status
 
@@ -49,7 +49,7 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T9.1 | Demo panel and run guide | done | `server/homemind/presets.ts`, demo panel in `FamilyView.tsx`, `POST /demo/reset {preset}`, `POST /demo/next-reminder`, rule details and edits, 接龙 sample without dates, `docs/homemind-demo.md`, `docs/homemind-stats.md`. 1006 unit tests (26 new), 73 of 73 e2e (3 new). Live Flash 21 of 21 on the presets |
 | T9.2 | Rehearsal | not started |  |
 | T9.3 | Backup video | not started |  |
-| T10.1 | Cloud mode and closing the other bridges | not started | P10, planned 2026-11-10 |
+| T10.1 | Cloud mode and closing the other bridges | done | `server/cloud.ts`, gate first in the bridge and Vite, `debug/state` 404 and a smaller `/health` in cloud mode. 1015 passed, 1 skipped (9 new) |
 | T10.2 | Time zone from an env var | not started |  |
 | T10.3 | Access code gate | not started |  |
 | T10.4 | Render files, local dry run and first guide | not started | STOP: the human deploys |
@@ -491,6 +491,24 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T10.1 Cloud mode and closing the other bridges: done (2026-11-10)
+**Built:**
+- File `server/cloud.ts` (new): `cloudMode()`, `isClosedInCloud()`, `cloudGate()` (`/api/orbit`, `/api/epic`, `/api/fridge` and everything under them answer `404 {error: 'not_available'}`), `cloudConfigWarnings()` (names any `ORBIT_*`, `EPIC_REPLAY_*`, `FRIDGE2TABLE_*`, `PPMA_*` that is set, never the value), `cloudGatePlugin()`.
+- File `services/bridge/index.ts`: the gate runs after `/healthz` and before the `/api/rss`, epic, fridge, homemind and orbit branches; startup prints "Cloud mode: on" and the warnings.
+- File `vite.config.ts`: `cloudGatePlugin()` is the first plugin.
+- File `server/homemind.ts`: a route flag `notInCloud` (on `GET /debug/state`), checked in `dispatch` with `demoOnly`; `GET /health` in cloud mode returns only `{enabled, ready, demo, cloud: true}`.
+- Files `src/transport/homemind.ts` and `src/components/FamilyView.tsx`: `HomemindHealth.llm`/`ppma` optional, `cloud?`; the `?member=` sign-in shortcut is skipped when `health.cloud`.
+- File `tests/cloudGate.test.ts` (new, 9 tests).
+**Decisions:** `/api/rss` stays open (the human's decision). The 404 is checked on whole path segments (`/api/orbitx` is not closed). The gate is pure env-driven, so setting `HOMEMIND_CLOUD=1` closes the bridges even if their variables are set by mistake.
+**Deviations:** the plan says `/health` returns only `{enabled, ready, demo}` in cloud mode and that `?member=` is ignored. `?member=` is read by the browser (`FamilyView.demoMemberFromUrl`), not the server, so the server cannot ignore it; `/health` gains `cloud: true` and the client skips the shortcut on it. The plan's "four prefixes" is read as the three closed bridges plus `/api/homemind/debug/state` (the human kept `/api/rss` open).
+**Test results:** `npm test` before any change: 1006 passed, 1 skipped (62 files). After: 1015 passed, 1 skipped (63 files, 9 new). `npx tsc --noEmit` clean. A temp tsconfig that adds `server/homemind.ts`, `server/cloud.ts` and `services/bridge/index.ts` shows only the known `server/orbit.ts` errors. `tests/homemindBoundary.test.ts` passes. e2e not run in this task (no screen change beyond the skipped shortcut); run at T10.4.
+**Not done or not verified:** behind Render's proxy (T10.4).
+**Next task should know:** a fake upstream in `tests/cloudGate.test.ts` proves the bridges really call out when cloud mode is off, and get no call when it is on.
+**How to verify:**
+- Commands: `npx vitest run tests/cloudGate.test.ts tests/homemindBoundary.test.ts`
+- Expected output: 2 files passed, 17 tests passed.
+- Manual check: `$env:HOMEMIND_CLOUD='1'; npm run dev`, then open `http://127.0.0.1:5173/api/orbit/health`: `{"error":"not_available",...}` with status 404.
 
 ### Planning: P10 to P14, Homemind in the cloud: done (2026-11-10)
 **Built:** only `docs/PLAN.md`: a new section "P10 to P14: Homemind in the cloud (several families)" before section 5, and one phrase changed in section 6 ("production-grade auth and multi-tenancy"). It holds the human's decisions as given, the decisions made while planning, a list of 14 things in the current code that make this harder, a day estimate per phase, the new env vars, 19 tasks (T10.1 to T14.4) with files and "Done when", and 5 questions. No code, no config, no tests changed.

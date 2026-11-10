@@ -26,9 +26,12 @@ const SESSION_KEY = 'homemind.session';
 export interface HomemindHealth {
   enabled: boolean;
   ready: boolean;
-  llm: 'live' | 'fake' | 'not_configured';
-  ppma: string;
+  /** Absent in cloud mode (P10). */
+  llm?: 'live' | 'fake' | 'not_configured';
+  ppma?: string;
   demo: boolean;
+  /** Cloud mode (P10): the demo's `?member=` sign-in shortcut is ignored. */
+  cloud?: boolean;
 }
 
 export interface HomemindMember {

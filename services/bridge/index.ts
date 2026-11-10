@@ -7,6 +7,7 @@ import { handleRssRequest } from '../../server/rss';
 import { handleEpicRequest } from '../../server/epic';
 import { handleFridgeRequest } from '../../server/fridge';
 import { handleHomemindRequest } from '../../server/homemind';
+import { cloudConfigWarnings, cloudGate, cloudMode } from '../../server/cloud';
 
 const root = resolve(process.cwd(), 'dist');
 const port = Number(process.env.PORT ?? 4173);
@@ -98,6 +99,9 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    // Cloud mode (P10): the Orbit, Epic and Fridge bridges answer 404 before any of them is reached.
+    if (cloudGate(request, response)) return;
+
     if (url.pathname === '/api/rss') {
       await handleRssRequest(request, response);
       return;
@@ -160,6 +164,10 @@ server.listen(port, host, () => {
   console.log(`Orbit mode: ${config ? `live (${config.url.host})` : 'unconfigured (local mode)'}`);
   for (const warning of bridgeConfigWarnings(config)) {
     console.warn(`[config] ${warning}`);
+  }
+  if (cloudMode()) console.log('Cloud mode: on (Orbit, Epic and Fridge bridges closed)');
+  for (const warning of cloudConfigWarnings()) {
+    console.warn(`[cloud] ${warning}`);
   }
 });
 

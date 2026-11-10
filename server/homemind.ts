@@ -63,6 +63,7 @@ import { ID_PATTERN } from './homemind/types';
 import type { GroupClaim, HomemindState, Item, Lang, Member, PpmaStatus, StreamMessage } from './homemind/types';
 import { redactItem, searchItems, viewFor } from './homemind/visibility';
 import { isSameOrigin } from './orbit';
+import { cloudMode } from './cloud';
 import { chatTurn, screenTurn } from '../src/lib/homemindSurfaces';
 import type { ChatOutcome } from '../src/lib/homemindSurfaces';
 
@@ -625,6 +626,8 @@ interface Route {
   auth: boolean;
   /** Only when `HOMEMIND_DEMO=1`; otherwise the route does not exist (404). */
   demoOnly?: boolean;
+  /** Never served in cloud mode (`HOMEMIND_CLOUD=1`), even with `HOMEMIND_DEMO=1` (P10). */
+  notInCloud?: boolean;
   handler: Handler;
 }
 
@@ -1087,7 +1090,10 @@ const routes: Route[] = [
     pattern: /^\/health$/,
     auth: false,
     handler: ({ response, rt }) =>
-      json(response, 200, {
+      // Cloud mode (P10): unauthenticated, so only what the page needs; no model or PPMA detail.
+      cloudMode()
+        ? json(response, 200, { enabled: true, ready: secret() !== null, demo: demo(), cloud: true })
+        : json(response, 200, {
         enabled: true,
         ready: secret() !== null,
         llm: llmStatus(llmConfigFromEnv()),
@@ -1575,7 +1581,8 @@ const routes: Route[] = [
     pattern: /^\/debug\/state$/,
     auth: false,
     demoOnly: true,
-    // The whole state, Parents-only items included. Demo machines only (HOMEMIND_DEMO=1).
+    notInCloud: true,
+    // The whole state, Parents-only items included. Demo machines only (HOMEMIND_DEMO=1), never in the cloud.
     handler: ({ response, rt }) => json(response, 200, rt.state)
   }
 ];
@@ -1616,7 +1623,7 @@ async function dispatch(request: IncomingMessage, response: ServerResponse, url:
     if (match) params = match.slice(1);
     return match !== null;
   });
-  if (!route || (route.demoOnly && !demo())) return fail(response, 404, 'not_found', 'Not found');
+  if (!route || (route.demoOnly && !demo()) || (route.notInCloud && cloudMode())) return fail(response, 404, 'not_found', 'Not found');
 
   if (method !== 'GET' && !isSameOrigin(request)) return fail(response, 403, 'forbidden', 'Cross-origin bridge request rejected');
   const key = secret();

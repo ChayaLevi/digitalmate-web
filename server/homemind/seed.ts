@@ -21,6 +21,33 @@ export function machineTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 }
 
+/** An IANA zone name the runtime knows, such as `Asia/Shanghai`. */
+export function isValidTimezone(zone: string): boolean {
+  if (!zone || zone.length > 64) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export type TimezoneSetting = { ok: true; zone: string; source: 'env' | 'machine' } | { ok: false; error: string };
+
+/**
+ * The demo family's zone (T10.2), from `HOMEMIND_TIMEZONE`. Unset: the machine's zone, except in cloud
+ * mode, where the server runs in UTC and a silent UTC would put "today's pickup" on the wrong day.
+ */
+export function timezoneSetting(value: string | undefined, cloud: boolean): TimezoneSetting {
+  const zone = value?.trim() ?? '';
+  if (!zone) {
+    if (cloud) return { ok: false, error: 'HOMEMIND_TIMEZONE is not set. Cloud mode needs the family time zone, for example HOMEMIND_TIMEZONE=Asia/Shanghai' };
+    return { ok: true, zone: machineTimezone(), source: 'machine' };
+  }
+  if (!isValidTimezone(zone)) return { ok: false, error: `HOMEMIND_TIMEZONE is not a known IANA time zone (for example Asia/Shanghai): "${zone.slice(0, 64)}"` };
+  return { ok: true, zone, source: 'env' };
+}
+
 export interface SeedOptions {
   /** Demo time in ms (the clock's `now()`). */
   now: number;

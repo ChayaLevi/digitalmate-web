@@ -4,11 +4,12 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 
 ## Where we are
 
-- **Current task:** T9.1 done (Demo panel and run guide). The demo panel (closed by default, `HOMEMIND_DEMO=1`) has "Prepare Scene 1" to "Prepare Scene 5": each resets the board at the moment that scene needs (the demo clock moves forward, so they work at any real day and hour), and turns on claims for Scenes 2 and 5. Rules open into details with a parent's cap and time edits, delete and Undo. Tests no longer depend on the real day or hour. `docs/homemind-demo.md` (run guide) and `docs/homemind-stats.md` (measured numbers) are written. Before that, T8.3, P8.
-- **Next task:** T9.2 (Rehearsal). 🧑 Someone to review the Chinese text; a Huawei phone if available; the human's OK on the run guide after the team-lead run
+- **Current task:** **P10 done (T10.1 to T10.4), STOP.** Cloud mode (`HOMEMIND_CLOUD=1`) closes Orbit, Epic and Fridge (404) and `debug/state`; `HOMEMIND_TIMEZONE` sets the family zone (required in cloud mode); `HOMEMIND_ACCESS_CODE` puts a gate page in front of everything but `/healthz`, and in cloud mode the member picker exists only behind it. `render.yaml` and `docs/homemind-cloud.md` are written; the local dry run with the Render commands passes. Nothing is pushed or deployed.
+- **Planning added (2026-11-10):** `docs/PLAN.md` now has **P10 to P14** (Homemind in the cloud, several families, on Render), 19 tasks, written for the human's review. **No code was written.** Nothing in P10 to P14 is started. The human's answers to the 5 questions at the end of that section decide the details.
+- **Next task:** 🧑 the human's OK to push `feat/homemind`, then the three variables on the existing Render service (`docs/homemind-cloud.md` section 4) and the checks in section 5, then the team lead's report from China. After that: T9.2 (Rehearsal), and P11 only after T9.2.
 - **Scenes working end to end:** **Scene 1**, as scripted, in two windows: Mom assigns the pickup, it is on Dad's screen at once, he does not confirm, the demo clock jumps, Dad is reminded (alert and row), Mom gets "not confirmed yet" (alert and row), and she takes it from her board, which closes every alert in both windows. Covered by the e2e test "Scene 1: ...". Settings (quiet hours, autonomy, pause, backup contact) are editable and sync live. **Scene 4**, in two windows: Mom tells the Family chat she is at a wedding from Tuesday to Saturday, her Tuesday pickup becomes "Who's taking this?" on Dad's board, the Friday pizza card comes smaller (154 CNY for 3) and waits for a tap, Dad taps "为什么？" and sees the rule's reason, Dad's Friday work dinner makes it 89 CNY for 2 plus a babysitter card (Xiao Chen), and Dad's tap on Friday orders once from the simulated shop. Covered by the e2e test "Scene 4: ...". **Scene 2**, in two windows: Mom turns on claims for the group (level 4), the teacher's message and the 接龙 arrive, Homemind claims apples in the simulated group, Dad's window gets "Homemind 已替家里认领苹果", Mom's My day shows the claim with "Why?" and "Change to" (cake first, "because Noa enjoys baking it with us the most"), she taps Change on cake, the correction is posted, the apples preparations leave and "为派对做蛋糕（8个小朋友）" arrives on Dad's board as "谁来负责？". Covered by the e2e test "Scene 2: ...". The screenshot extraction part of Scene 2 is T5.3's chat card. **Scene 3**, in two windows: Mom tells the Family chat "Noa is sick today"; the card shows the pickup "not needed", swimming "postpone a week" and the stay-home task; Dad's window gets "谁来负责？在家照顾诺娅" and My day shows "谁可以留在家" (both "当天没有标记外出"); Dad taps 我来; Mom taps "Apply all (2)" (pickup cancelled, swimming a week later, "妈妈已采纳" in Dad's window); "Why?" says fixed rules and "Source: a Homemind rule"; on a weekday Mom confirms the teacher message and it shows on Services. Covered by the e2e test "Scene 3: ...". **Scene 2's last beat (T7.5)**, in the same e2e test: "Update message (demo)" moves the party to Friday, Dad gets the changed-message notice, Mom's My day shows "4 items depend on it" (cake: event and 3 preparations), she taps Apply changes (the party is on Friday, the flags clear, nothing posted since cake is still wanted), then Undo puts it back. **Scene 5**, in two windows: claims on, the party message reaches Dad as "王老师在班级群：… 现在提醒", the 接龙 is claimed (no second alert), the "不着急" note brings **no alert** and shows on Services and on both parents' My day as "Waits for the evening summary (20:00): the sender wrote “不着急” (not urgent)"; Mom corrects the cake preference to cookies on Memory, and the sign-up choices now show cookies with her reason and cake without; the clock jumps to 20:01, Dad gets "你的晚间摘要已送达 … 有 1 条群消息等到了现在", taps 查看, and the summary lists 你需要做的事 first and the note with its reason. Covered by the e2e test "Scene 5: ..."
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-10, after T9.1
+- **Last updated:** 2026-11-10, after T10.4 (end of P10)
 
 ## Task status
 
@@ -48,6 +49,25 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T9.1 | Demo panel and run guide | done | `server/homemind/presets.ts`, demo panel in `FamilyView.tsx`, `POST /demo/reset {preset}`, `POST /demo/next-reminder`, rule details and edits, 接龙 sample without dates, `docs/homemind-demo.md`, `docs/homemind-stats.md`. 1006 unit tests (26 new), 73 of 73 e2e (3 new). Live Flash 21 of 21 on the presets |
 | T9.2 | Rehearsal | not started |  |
 | T9.3 | Backup video | not started |  |
+| T10.1 | Cloud mode and closing the other bridges | done | `server/cloud.ts`, gate first in the bridge and Vite, `debug/state` 404 and a smaller `/health` in cloud mode. 1015 passed, 1 skipped (9 new) |
+| T10.2 | Time zone from an env var | done | `HOMEMIND_TIMEZONE` (IANA, checked); required in cloud mode; resets keep the family zone; startup refuses a bad value. 1025 passed, 1 skipped (10 new) |
+| T10.3 | Access code gate | done | `server/accessGate.ts`, `POST /access`, `hm_access` cookie (7 days), gate page EN/ZH, 429 after 10 wrong codes; picker only behind the code in cloud mode. 1045 passed, 1 skipped (20 new); e2e 73 of 73 |
+| T10.4 | Render files, local dry run and first guide | done | `render.yaml`, `docs/homemind-cloud.md`, `.env.example`; local dry run on port 10000 with the cloud env passes (found and fixed the gate form's `Origin: null`). P10 phase checks pass. **STOP**: the human pushes and deploys |
+| T11.1 | Store interface | not started | P11 |
+| T11.2 | Postgres store and migrations | not started | 🧑 OK to add `pg`; a throwaway Postgres |
+| T11.3 | A runtime per family | not started |  |
+| T12.1 | Passwords and the new token | not started | P12 |
+| T12.2 | Sign up, sign in, sign out | not started |  |
+| T12.3 | Create a family | not started |  |
+| T12.4 | Sign-in, sign-up and create-family screens | not started |  |
+| T13.1 | Members and removing access | not started | P13 |
+| T13.2 | Pre-approved emails | not started |  |
+| T13.3 | Join link and requests | not started |  |
+| T13.4 | Waiting, approval and people screens | not started |  |
+| T14.1 | Isolation test | not started | P14 |
+| T14.2 | Rate limits and the daily model cap | not started |  |
+| T14.3 | e2e with two families and four contexts | not started | 🧑 a throwaway Postgres |
+| T14.4 | Deploy with Postgres and the cloud guide | not started | STOP: the human deploys |
 
 ## Decisions made during the build
 
@@ -353,6 +373,8 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 | Babysitter availability is a fixed weekday table (Zhang Mon–Thu evenings, Chen Fri–Sun evenings, Li daytime), not a conversation. | T7.2 | Low, to say out loud | Fine for the demo; the card and the Services tab say Simulated. |
 | A card left `executing` (the bridge stopped while an adapter ran) stays so after a restart: it can't run again or expire. With in-process simulated adapters this needs a crash in a sub-second window. | T7.1 | Low | Reset the demo, or add a "mark failed on load" step if it ever happens. |
 | Action cards are visible to every member (`viewFor` passes them all, minus those about an event the member can't see, since T7.3). The tokens go to parents only, and only parents can confirm or cancel. | T7.1 | Low, for T8.1 | **T7.3 added `ActionCard.refs`** and the filter: a card that quotes an event must list it in `refs`. T8.1's teacher message should do the same. |
+| **The Render service may be open right now**: if it deployed `origin/feat/homemind` (T9.1), it has no gate, the picker is open to anyone, `debug/state` is served (`HOMEMIND_DEMO=1`), and the live model runs on the human's key. | T10.4 | **High until P10 is deployed** | Push P10 and add the three variables, or suspend the service (or set `HOMEMIND_LLM=fake`) until then. |
+| The gate counts wrong codes per address; Render's `x-forwarded-for` order is not checked yet, and an office behind one address shares the limit (10 per 15 minutes). | T10.3 | Low | T14.2 checks the order on the first deploy. |
 | `npm ci` reports 5 vulnerabilities (4 moderate, 1 high) in existing dependencies (6 on Node 20). | T0.1 | Low | Existing before this work. Not touched (no dependency changes without asking). |
 | ~~Fake PPMA issues no commands, so the `command.outcome` loop and PPMA proposals cannot be tested against it as is.~~ **Handled in T6.1** with `scripts/fake-ppma.mjs` (a contract-subset fake that can issue commands). The client was also checked against the real fake profile for everything but commands. | T0.2 | Closed | |
 | After a fake-profile PPMA restart, its ledger starts again at id 1. The client notices only through the 401 on its old app token (it then reads the stream from the start). A persistent PPMA that was restarted keeps its tokens and ledger, so nothing is needed there. | T6.1 | Low | Fine for the demo. If commands seem missing after a PPMA restart, delete `.homemind/state.ppma.json`. |
@@ -390,6 +412,16 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 - [x] OK on the P4 STOP: Scene 1 approved (2026-11-05)
 - [x] PPMA clone at `../ppma`, for T0.2
 - [x] Real 接龙 screenshot: none available. A simulated one is used instead
+- [x] Tabs in cloud mode: none hidden; chat (in-browser mock) and Discover keep working; Orbit, Epic and Fridge bridges closed on the server (2026-11-10)
+- [x] The member picker in P10, behind the access code only (2026-11-10)
+- [x] A Render account exists (2026-11-10). Still to do at T10.4: connect GitHub, choose an always-on plan and the region, OK to push `feat/homemind`
+- [ ] Which two items "מאושר" approved (moving `tsx`, adding `pg`, or the admin script)
+- [ ] OK to add the `pg` dependency (before T11.2)
+- [ ] A throwaway Postgres for tests (before T11.2 and T14.3)
+- [x] The Render service exists (hand-made: Singapore, Starter, branch `feat/homemind`) with the model variables (2026-11-10)
+- [ ] OK to push `feat/homemind` (P10), then add `HOMEMIND_CLOUD`, `HOMEMIND_ACCESS_CODE`, `HOMEMIND_TIMEZONE` on the service (`docs/homemind-cloud.md`)
+- [ ] The sign-up email list (before P12)
+- [ ] The team lead to open the first link from the company network and report (T10.4)
 - [ ] Huawei phone for a browser test, if available, for T9.2
 - [ ] Someone to review the Chinese text, for T9.2
 - [ ] Ask the team: will PPMA go behind DigitalMate, and who owns the PPMA-Orbit integration?
@@ -463,6 +495,91 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### T10.4 Render files, local dry run and first guide: done, STOP for the human (2026-11-10). End of P10
+**Built:**
+- File `render.yaml` (new): one web service matching the hand-made one (Node, Singapore, Starter, branch `feat/homemind`, `npm ci --include=dev && npm run build`, `npm start`, `/healthz`), env `NODE_VERSION=22`, `HOST=0.0.0.0`, `HOMEMIND_ENABLED/CLOUD/DEMO=1`, `HOMEMIND_TIMEZONE=Asia/Shanghai`, `HOMEMIND_SECRET` generated, `HOMEMIND_ACCESS_CODE` and the model variables `sync: false`, `HOMEMIND_LLM=live`. A comment says that applying it as a Blueprint creates a second service.
+- File `docs/homemind-cloud.md` (new): what runs where, the service, the env var table, the three variables to add to the existing service after the push (all in one save) and where to click, the checks on the live URL (gate page, `/api/orbit/health` 404, `debug/state` 404, the clock chip in Shanghai time, two people), what is lost on restart, what this is not, the check from China.
+- File `.env.example`: `HOMEMIND_TIMEZONE`, `HOMEMIND_CLOUD`, `HOMEMIND_ACCESS_CODE`.
+- **Fix found by the dry run** in `server/accessGate.ts`: the gate page now answers with `referrer-policy: same-origin`. Under the bridge's `no-referrer`, Chrome posts the form with `Origin: null`, which `isSameOrigin` refuses, so nobody could get past the gate in a real browser. The unit tests had set `origin` by hand. Two test lines added (the header, and `Origin: null` refused).
+**Decisions:** `HOMEMIND_LLM=live` in `render.yaml` (the human's choice for the existing service; the plan said `fake` until the human chooses).
+**Deviations:** the plan's "Mom and Dad work in two windows through Scene 1" was run as a browser script (Playwright, two contexts) against the production bridge, not by hand; the e2e Scene 1 test cannot be reused there, because it uses `?member=` and `debug/state`, both closed in cloud mode. The script was in a temp folder and was deleted (not committed).
+**Test results:**
+- Build: `npm ci --include=dev && npm run build`: OK (only the chunk-size warning).
+- Start refused: `HOMEMIND_CLOUD=1`, no zone, code `short`: exit 1, two lines naming `HOMEMIND_ACCESS_CODE` and `HOMEMIND_TIMEZONE`.
+- Dry run: `npm start` with `PORT=10000 HOST=0.0.0.0 TZ=UTC`, cloud env, `HOMEMIND_LLM=fake`, state in the scratchpad. Startup log: "Cloud mode: on", no warnings. curl: `/healthz` 200, `/` 401 (gate page), `/api/homemind/health` 401, `/api/orbit|epic|fridge/health` 404, `debug/state` 401 without the cookie. Browser script, 2 contexts at 390 px (EN Mom, ZH Dad): the gate refuses a wrong code and takes the right one, `?member=mom` is ignored (the picker shows), with the cookie `debug/state` is 404 and `/health` is `{enabled, ready, demo, cloud}`, the three bridges 404, "Prepare Scene 1" on the demo panel, the chip showed "Tue 19:44" at 11:44 UTC (Shanghai), Scene 1 through to Mom's escalation and her "I'll take it" (all alerts close in both windows): **1 passed** after the fix (failed before it, see above).
+- `npm test` (flag on): 1045 passed, 1 skipped. `npx tsc --noEmit` clean; temp tsconfig with the adapter, `server/cloud.ts`, `server/accessGate.ts` and the bridge: only the known `server/orbit.ts` errors.
+- `npm run test:e2e` (flag on): 73 passed (run in T10.3; since then only the gate page header changed, which e2e never reaches).
+- **P10 phase checks.** `npm run build`: OK. **Flag off** (`HOMEMIND_ENABLED=` empty, no `HOMEMIND_CLOUD`): `npm test` 1045 passed, 1 skipped (earlier runs had 1 timeout under load, each time in a different test, each passing alone). `npx playwright test --grep-invert homemind`: 39 passed, 1 failed (`app.spec.ts:59` travel query: "Tearing down context exceeded the test timeout", in a 33-minute run on a loaded machine); it passed alone (44 s). `npm start` with no flags: `/api/homemind/health` falls through to the app page, `/api/orbit/health` answers `{"configured":false,...}` as before, `/access` is the app page (no gate).
+**Not done or not verified:** no push and no deploy (the human deploys). Not checked behind Render's real proxy: `x-forwarded-proto` and the Secure cookie, `isSameOrigin` with `x-forwarded-host`, the `x-forwarded-for` order, and reach from China. The live model was not used in the dry run.
+**Next task should know:** **the Render service, if it already deployed `origin/feat/homemind` (T9.1), is open right now**: no gate, the picker for anyone, `debug/state` served (`HOMEMIND_DEMO=1`), and the live model on the human's key. Said to the human at the STOP.
+**How to verify:**
+- Commands: `npm ci --include=dev && npm run build`, then in PowerShell: `$env:PORT='10000'; $env:HOST='0.0.0.0'; $env:HOMEMIND_ENABLED='1'; $env:HOMEMIND_CLOUD='1'; $env:HOMEMIND_DEMO='1'; $env:HOMEMIND_SECRET='local-dry-run-secret-0123'; $env:HOMEMIND_ACCESS_CODE='local-code-2026'; $env:HOMEMIND_TIMEZONE='Asia/Shanghai'; $env:HOMEMIND_LLM='fake'; npm start`
+- Expected output: "Cloud mode: on (Orbit, Epic and Fridge bridges closed)" and no warning lines.
+- Manual check: open `http://127.0.0.1:10000/`: the gate page; enter `local-code-2026`; Family tab, then Mom; `http://127.0.0.1:10000/api/orbit/health` is 404 `not_available`. After the deploy, follow `docs/homemind-cloud.md` section 5 on the live URL.
+
+### T10.3 Access code gate: done (2026-11-10)
+**Built:**
+- File `server/accessGate.ts` (new). Pure parts: `accessKey(secret, code)` (HMAC of `HOMEMIND_SECRET` under the label `homemind.access-gate` plus the code), `signAccess`/`verifyAccess` (expiry + signature, `timingSafeEqual`), `codeMatches` (`timingSafeEqual` over SHA-256 digests), `readCookie`, `createFailureLimiter` (10 wrong codes per address per 15 minutes, in memory, capped at 10 000 addresses), `clientAddress`, `gatePage` (inline HTML, EN and ZH, no script, no external asset, a plain form to `POST /access`), `accessStartupErrors`, `accessWarnings`. Handler `handleAccessGate` and `accessGatePlugin`.
+- Behavior with `HOMEMIND_ACCESS_CODE` set: `/healthz` open; `GET /access` shows the gate; `POST /access` (JSON or form) checks same origin, the limit and the code, and sets `hm_access` (HttpOnly, SameSite=Lax, Path=/, Max-Age 7 days, Secure behind `x-forwarded-proto: https`); the form answer is a 303 to `/`. Without a valid cookie: `/api/*` and non-GET get `401 {error: 'access_code_required'}`, pages get the gate page (401). Over the limit: `429` with `retry-after: 900`, even for the right code.
+- Files `services/bridge/index.ts` and `vite.config.ts`: the gate right after the cloud gate (`accessGatePlugin()` second in the plugin list); startup refuses a code under 8 characters or a code without `HOMEMIND_SECRET`, and warns in cloud mode without a code.
+- File `server/homemind.ts`: route flag `picker` on `GET /members` and `POST /session`; `pickerAllowed()`: always locally, in cloud mode only with `HOMEMIND_ACCESS_CODE` set and no `DATABASE_URL` (the human's decision). Otherwise 404.
+- File `tests/accessGate.test.ts` (new, 20 tests). `tests/cloudGate.test.ts` and `tests/homemindTimezone.test.ts` use `/health` instead of `/members` in cloud mode.
+**Decisions:** the cookie key includes the code, so changing the code shuts out every old cookie. The page works without JavaScript (the CSP has `script-src 'self'`, so an inline script would be blocked). In cloud mode the limit's address is the **last** `x-forwarded-for` entry (added by Render's proxy, not forgeable by the client); locally the socket address. Cloud mode without a code starts (with a warning) but closes the picker, so nobody can reach the model.
+**Deviations:** none from the task. The plan does not say what cloud mode does without a code; closing the picker follows the human's answer ("the picker only behind the access code").
+**Test results:** `npm test`: 1045 passed, 1 skipped (65 files). One run before had 1 failure in `homemindPpma` (10 s timeout under load); it passed alone and in the next full run. `npx tsc --noEmit` clean; temp tsconfig with `server/accessGate.ts`, the adapter and the bridge: only the known `server/orbit.ts` errors. `npm run test:e2e`: 73 passed (11.4 min), with T10.1 to T10.3 in place and no code set.
+**Not done or not verified:** which `x-forwarded-for` entry Render gives (T14.2). If an office shares one address, one person's 10 typos lock the others out for 15 minutes (said in the cloud guide).
+**Next task should know:** e2e does not set the code, so it never sees the gate; the T10.4 dry run goes through the gate page in a browser.
+**How to verify:**
+- Commands: `npx vitest run tests/accessGate.test.ts`
+- Expected output: 1 file passed, 20 tests passed.
+- Manual check: `$env:HOMEMIND_ACCESS_CODE='try-the-gate-1'; npm run dev`, open `http://127.0.0.1:5173/`: the gate page; a wrong code says "That code is not right"; the right one opens the app.
+
+### T10.2 Time zone from an env var: done (2026-11-10)
+**Built:**
+- File `server/homemind/seed.ts`: `isValidTimezone()` (via `Intl.DateTimeFormat`) and `timezoneSetting(value, cloud)`: unset is the machine zone locally and an error in cloud mode; an unknown name is an error that names `HOMEMIND_TIMEZONE`.
+- File `server/homemind.ts`: `seedTimezone()` (a bad setting is `503 not_configured` with the message), used by `runtime()` for the seed; a loaded family in another zone keeps its own and logs one warning per load. `/demo/reset` (plain and preset) now seeds in `rt.state.family.timezone`. New `homemindStartupErrors(env)`, checked only when `HOMEMIND_ENABLED=1` or `HOMEMIND_CLOUD=1`.
+- File `services/bridge/index.ts`: prints each startup error and exits 1 before `listen`. The Vite plugin throws with the same text.
+- File `tests/homemindTimezone.test.ts` (new, 10 tests); `tests/cloudGate.test.ts` sets `HOMEMIND_TIMEZONE`.
+**Decisions:** the plain "Reset (now)" also keeps the family's zone (it used `store.reset()`, which seeded in the machine zone), so both resets agree. To start a family in a new zone, delete the state file (on Render P10, any deploy or restart does that).
+**Deviations:** none.
+**Test results:** `npm test`: 1025 passed, 1 skipped (64 files), twice in a row. One run before the cloud test fix showed 5 failures: the cloud test (fixed: cloud mode now needs a zone) and 4 known load flakes (`homemindEvents` ping, `homemindGroupClaimsBridge` timeout, `homemindPpma` 10 s, `epicVite`), each passing alone and in the next two full runs. `TZ=UTC npx vitest run tests/homemindTimezone.test.ts tests/homemindPresets.test.ts tests/homemindSeed.test.ts`: 37 passed. `npx tsc --noEmit` clean; temp tsconfig with the adapter and the bridge: only the known `server/orbit.ts` errors.
+**Not done or not verified:** a real UTC machine (Render) is checked at T10.4's dry run with `TZ=UTC` and on the live URL by the human.
+**Next task should know:** the test sets `process.env.TZ='UTC'` inside the worker and checks `machineTimezone()` is `UTC`, so it proves the point on any machine.
+**How to verify:**
+- Commands: `npx vitest run tests/homemindTimezone.test.ts`
+- Expected output: 1 file passed, 10 tests passed.
+- Manual check: `$env:HOMEMIND_TIMEZONE='Asia/Shanghai'; npm run dev` after deleting `.homemind/state.json` (it is reseeded); the Family tab's demo clock chip shows Shanghai time. With `$env:HOMEMIND_TIMEZONE='Nowhere'`, `npm run dev` refuses to start and names the variable.
+
+### T10.1 Cloud mode and closing the other bridges: done (2026-11-10)
+**Built:**
+- File `server/cloud.ts` (new): `cloudMode()`, `isClosedInCloud()`, `cloudGate()` (`/api/orbit`, `/api/epic`, `/api/fridge` and everything under them answer `404 {error: 'not_available'}`), `cloudConfigWarnings()` (names any `ORBIT_*`, `EPIC_REPLAY_*`, `FRIDGE2TABLE_*`, `PPMA_*` that is set, never the value), `cloudGatePlugin()`.
+- File `services/bridge/index.ts`: the gate runs after `/healthz` and before the `/api/rss`, epic, fridge, homemind and orbit branches; startup prints "Cloud mode: on" and the warnings.
+- File `vite.config.ts`: `cloudGatePlugin()` is the first plugin.
+- File `server/homemind.ts`: a route flag `notInCloud` (on `GET /debug/state`), checked in `dispatch` with `demoOnly`; `GET /health` in cloud mode returns only `{enabled, ready, demo, cloud: true}`.
+- Files `src/transport/homemind.ts` and `src/components/FamilyView.tsx`: `HomemindHealth.llm`/`ppma` optional, `cloud?`; the `?member=` sign-in shortcut is skipped when `health.cloud`.
+- File `tests/cloudGate.test.ts` (new, 9 tests).
+**Decisions:** `/api/rss` stays open (the human's decision). The 404 is checked on whole path segments (`/api/orbitx` is not closed). The gate is pure env-driven, so setting `HOMEMIND_CLOUD=1` closes the bridges even if their variables are set by mistake.
+**Deviations:** the plan says `/health` returns only `{enabled, ready, demo}` in cloud mode and that `?member=` is ignored. `?member=` is read by the browser (`FamilyView.demoMemberFromUrl`), not the server, so the server cannot ignore it; `/health` gains `cloud: true` and the client skips the shortcut on it. The plan's "four prefixes" is read as the three closed bridges plus `/api/homemind/debug/state` (the human kept `/api/rss` open).
+**Test results:** `npm test` before any change: 1006 passed, 1 skipped (62 files). After: 1015 passed, 1 skipped (63 files, 9 new). `npx tsc --noEmit` clean. A temp tsconfig that adds `server/homemind.ts`, `server/cloud.ts` and `services/bridge/index.ts` shows only the known `server/orbit.ts` errors. `tests/homemindBoundary.test.ts` passes. e2e not run in this task (no screen change beyond the skipped shortcut); run at T10.4.
+**Not done or not verified:** behind Render's proxy (T10.4).
+**Next task should know:** a fake upstream in `tests/cloudGate.test.ts` proves the bridges really call out when cloud mode is off, and get no call when it is on.
+**How to verify:**
+- Commands: `npx vitest run tests/cloudGate.test.ts tests/homemindBoundary.test.ts`
+- Expected output: 2 files passed, 17 tests passed.
+- Manual check: `$env:HOMEMIND_CLOUD='1'; npm run dev`, then open `http://127.0.0.1:5173/api/orbit/health`: `{"error":"not_available",...}` with status 404.
+
+### Planning: P10 to P14, Homemind in the cloud: done (2026-11-10)
+**Built:** only `docs/PLAN.md`: a new section "P10 to P14: Homemind in the cloud (several families)" before section 5, and one phrase changed in section 6 ("production-grade auth and multi-tenancy"). It holds the human's decisions as given, the decisions made while planning, a list of 14 things in the current code that make this harder, a day estimate per phase, the new env vars, 19 tasks (T10.1 to T14.4) with files and "Done when", and 5 questions. No code, no config, no tests changed.
+**Decisions (made while planning, the human can change them):** one family per user; only emails on the global list can create a family; `hasAccount` stays in the state and is derived from the memberships; removing someone removes access, not the member; sign out is client-side; `GET /members` does not exist in cloud mode (`GET /me` replaces it); P10 keeps the member picker, only behind the access code.
+**Deviations:** `CLAUDE.md` says "The app has no accounts" and section 6 of the plan put multi-tenancy out of scope. The new phases change both for the cloud build only; local mode and the flag-off behavior stay as they are. `CLAUDE.md` was not edited (it says not to); the human may want its "What the code already tells us" bullet about accounts updated when P12 starts.
+**Test results:** `npm test` before any change: the first run failed with 1 test failed, 3 files failed (999 passed, 7 skipped); the output showed an `afterEach` of a test that stops PPMA clients (`clients.map(c => c.stop())`). Two runs right after: 1006 passed, 1 skipped, 62 files passed, 24 s. The first failure was not reproduced, so it looks like a timing flake, but its test name was not captured. `tsc` and e2e were not run (docs only).
+**Not done or not verified:** Render's current plan terms, regions, how `x-forwarded-for` is ordered behind Render's proxy, and whether `onrender.com` is reachable from the company network were not checked (no network use in this session). The plan marks each as something to check.
+**Next task should know:** the largest risks are T11.3 (the dispatcher, scheduler and test hooks), the zero-downtime deploy overlap (T11.2's lock and version check), and the shared browser `localStorage` (T12.4). P11 to P14 should wait until T9.2 is done.
+**How to verify:**
+- Commands: `git diff --stat HEAD~1` and open `docs/PLAN.md` at "### P10 to P14".
+- Expected output: only `docs/PLAN.md` and `docs/PROGRESS.md` changed; 19 tasks listed, each with "Done when".
+- Manual check: read the "What in the current code makes this harder" list and the 5 questions, and answer them.
 
 ### T9.1 Demo panel and run guide: done (2026-11-10)
 **Built:**

@@ -161,7 +161,7 @@ export function FamilyView({
   const [notice, setNotice] = useState<Notice | null>(null);
   /** A problem with the form being saved, shown next to Save (not in the notice at the top). */
   const [formError, setFormError] = useState<string | null>(null);
-  const autoSignIn = useRef(health.demo ? demoMemberFromUrl() : null);
+  const autoSignIn = useRef(health.demo && !health.cloud ? demoMemberFromUrl() : null);
   const loadSeq = useRef(0);
   /** Live alerts from the stream, newest first. */
   const [alerts, setAlerts] = useState<HomemindAlert[]>([]);

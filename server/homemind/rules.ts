@@ -20,7 +20,7 @@ import { prepareCard, withdrawCard } from './actions';
 import { unavailabilityFor } from './availability';
 import { addDays, localParts, toIso, zonedToUtc } from './clock';
 import { BABYSITTERS, PIZZA_VENDOR, draftBabysitterMessage, pizzaOpenAt, quotePizza, sitterAvailable } from './fakes';
-import type { ActionCard, HomemindState, Member, Rule, RuleRun, Why } from './types';
+import type { ActionCard, Activity, HomemindState, Member, Rule, RuleRun, Why } from './types';
 import { ID_PATTERN } from './types';
 
 const MINUTE = 60_000;
@@ -344,6 +344,8 @@ function withdrawRun(state: HomemindState, run: RuleRun, reason: string, now: nu
 }
 
 const CALENDAR_CHANGED = 'The calendar changed, so Homemind replaced this card';
+/** T9.1: a parent changed the rule's cap or time while its card waited. */
+export const RULE_CHANGED = 'The rule changed, so Homemind withdrew this card';
 
 /**
  * One step for every enabled rule, on every scheduler tick and after every change. Not while paused
@@ -407,23 +409,44 @@ export function prepareRuleNow(state: HomemindState, ruleId: string, now: number
 // --- turning rules on and off, creating them (POST /rules) ------------------------------------------------
 
 export type RuleRequest =
-  | { action: 'enable' | 'disable'; id: string }
+  | { action: 'enable' | 'disable' | 'delete'; id: string }
+  /** T9.1: a parent edits the price cap and/or the time of the order. */
+  | { action: 'update'; id: string; maxPrice?: number; time?: string }
+  /** T9.1: Undo of a delete: the rule as it was, from that Activity. */
+  | { action: 'restore'; activityId: string }
   | { action: 'create'; title: string; titleZh?: string; weekday: number; time: string; leadMinutes: number; items: Line[]; maxPrice: number };
 
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/;
+const MAX_PRICE = 5000;
+
+const validPrice = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= MAX_PRICE;
+
+const ALLOWED: Record<string, string[]> = {
+  create: ['action', 'title', 'titleZh', 'weekday', 'time', 'leadMinutes', 'items', 'maxPrice'],
+  update: ['action', 'id', 'maxPrice', 'time'],
+  restore: ['action', 'activityId']
+};
 
 /** Checks a `POST /rules` body by hand. Unknown fields are refused. */
 export function parseRuleBody(body: Record<string, unknown>): { ok: true; value: RuleRequest } | { ok: false; message: string } {
-  const allowed = body.action === 'create' ? ['action', 'title', 'titleZh', 'weekday', 'time', 'leadMinutes', 'items', 'maxPrice'] : ['action', 'id'];
+  const allowed = ALLOWED[typeof body.action === 'string' ? body.action : ''] ?? ['action', 'id'];
   const extra = Object.keys(body).find(k => !allowed.includes(k));
   if (extra) return { ok: false, message: `Unknown rule field: ${extra.slice(0, 40)}` };
-  if (body.action === 'enable' || body.action === 'disable') {
-    if (typeof body.id !== 'string' || !ID_PATTERN.test(body.id)) return { ok: false, message: 'id is not a valid id' };
-    return { ok: true, value: { action: body.action, id: body.id } };
+  if (body.action === 'restore') {
+    if (typeof body.activityId !== 'string' || !ID_PATTERN.test(body.activityId)) return { ok: false, message: 'activityId is not a valid id' };
+    return { ok: true, value: { action: 'restore', activityId: body.activityId } };
   }
-  if (body.action !== 'create') return { ok: false, message: 'action is create, enable or disable' };
+  if (body.action === 'enable' || body.action === 'disable' || body.action === 'delete' || body.action === 'update') {
+    if (typeof body.id !== 'string' || !ID_PATTERN.test(body.id)) return { ok: false, message: 'id is not a valid id' };
+    if (body.action !== 'update') return { ok: true, value: { action: body.action, id: body.id } };
+    if (body.maxPrice === undefined && body.time === undefined) return { ok: false, message: 'Say maxPrice, time, or both' };
+    if (body.maxPrice !== undefined && !validPrice(body.maxPrice)) return { ok: false, message: `maxPrice is a number from 1 to ${MAX_PRICE}` };
+    if (body.time !== undefined && (typeof body.time !== 'string' || !HHMM.test(body.time))) return { ok: false, message: 'time is HH:MM' };
+    return { ok: true, value: { action: 'update', id: body.id, ...(body.maxPrice !== undefined ? { maxPrice: body.maxPrice as number } : {}), ...(body.time !== undefined ? { time: body.time as string } : {}) } };
+  }
+  if (body.action !== 'create') return { ok: false, message: 'action is create, update, enable, disable, delete or restore' };
   const text = (v: unknown) => typeof v === 'string' && v.trim().length >= 1 && v.length <= RULE_LIMITS.title && !CONTROL.test(v);
   if (!text(body.title)) return { ok: false, message: `title is 1 to ${RULE_LIMITS.title} characters` };
   if (body.titleZh !== undefined && !text(body.titleZh)) return { ok: false, message: `titleZh is 1 to ${RULE_LIMITS.title} characters` };
@@ -433,7 +456,7 @@ export function parseRuleBody(body: Record<string, unknown>): { ok: true; value:
   if (typeof lead !== 'number' || !Number.isInteger(lead) || lead < RULE_LIMITS.leadMinutes.min || lead > RULE_LIMITS.leadMinutes.max) return { ok: false, message: `leadMinutes is ${RULE_LIMITS.leadMinutes.min} to ${RULE_LIMITS.leadMinutes.max}` };
   const quote = quotePizza(body.items);
   if (!quote.ok) return { ok: false, message: quote.error };
-  if (typeof body.maxPrice !== 'number' || !Number.isFinite(body.maxPrice) || body.maxPrice <= 0 || body.maxPrice > 5000) return { ok: false, message: 'maxPrice is a number from 1 to 5000' };
+  if (!validPrice(body.maxPrice)) return { ok: false, message: `maxPrice is a number from 1 to ${MAX_PRICE}` };
   const items = (body.items as Line[]).map(l => ({ id: l.id, qty: l.qty }));
   return {
     ok: true,
@@ -452,10 +475,26 @@ export type RuleChangeResult =
 export function applyRuleRequest(state: HomemindState, request: RuleRequest, memberId: string, now: number): RuleChangeResult {
   const member = state.family.members.find(m => m.id === memberId);
   if (!member || member.role !== 'parent' || !member.hasAccount) return { ok: false, status: 403, code: 'forbidden', message: 'Only a parent can change a rule that spends money' };
-  const log = (next: HomemindState, rule: Rule, note: 'created' | 'enabled' | 'disabled'): { state: HomemindState; activityId: string } => {
+  const log = (next: HomemindState, rule: Rule, note: 'created' | 'enabled' | 'disabled' | 'changed' | 'deleted' | 'restored', extra: Partial<Activity> = {}): { state: HomemindState; activityId: string } => {
     const activityId = freeId(`act-${Math.max(0, Math.floor(now)).toString(36)}`, id => next.activity.some(a => a.id === id));
-    return { activityId, state: { ...next, activity: [...next.activity, { id: activityId, at: toIso(now), actor: memberId, what: `Rule ${rule.id} ${note}`, kind: 'rule', ref: rule.id, note }] } };
+    return { activityId, state: { ...next, activity: [...next.activity, { id: activityId, at: toIso(now), actor: memberId, what: `Rule ${rule.id} ${note}`, kind: 'rule', ref: rule.id, note, ...extra }] } };
   };
+  const withdrawAll = (next: HomemindState, ruleId: string, reason: string): HomemindState => {
+    for (const card of next.actionCards) if (card.ruleId === ruleId && card.status === 'pending') next = withdrawCard(next, card.id, reason, now).state;
+    return next;
+  };
+  if (request.action === 'restore') {
+    // T9.1: Undo of a delete. The rule comes back as it was, turned on or off as it was; its old cards stay withdrawn.
+    const target = state.activity.find(a => a.id === request.activityId);
+    if (!target || target.kind !== 'rule' || target.note !== 'deleted' || !target.ruleUndo) return { ok: false, status: 404, code: 'not_found', message: 'Nothing to undo' };
+    if (target.undone) return { ok: false, status: 409, code: 'already_undone', message: 'This was already undone' };
+    const rule = target.ruleUndo;
+    if (state.rules.some(r => r.id === rule.id)) return { ok: false, status: 409, code: 'exists', message: 'The rule is already there' };
+    if (state.rules.length >= RULE_LIMITS.rules) return { ok: false, status: 409, code: 'too_many', message: 'Too many rules' };
+    const logged = log({ ...state, rules: [...state.rules, rule] }, rule, 'restored');
+    const marked = logged.state.activity.map(a => (a.id === target.id ? { ...a, undone: { at: toIso(now), by: memberId, activityId: logged.activityId } } : a));
+    return { ok: true, rule, changed: true, activityId: logged.activityId, state: { ...logged.state, activity: marked } };
+  }
   if (request.action === 'create') {
     if (state.rules.length >= RULE_LIMITS.rules) return { ok: false, status: 409, code: 'too_many', message: 'Too many rules' };
     const quote = quotePizza(request.items);
@@ -476,12 +515,28 @@ export function applyRuleRequest(state: HomemindState, request: RuleRequest, mem
   }
   const rule = state.rules.find(r => r.id === request.id);
   if (!rule) return { ok: false, status: 404, code: 'not_found', message: 'No such rule' };
+  if (request.action === 'delete') {
+    // T9.1: the rule goes, its waiting cards are withdrawn, and the Activity keeps it for Undo.
+    const next = withdrawAll({ ...state, rules: state.rules.filter(r => r.id !== rule.id) }, rule.id, 'The rule was turned off');
+    return { ok: true, rule, changed: true, ...log(next, rule, 'deleted', { ruleUndo: rule }) };
+  }
+  if (request.action === 'update') {
+    // T9.1: a new cap or a new time. A waiting card no longer shows what the rule says, so it is withdrawn
+    // (visibly) and the runs for occurrences still ahead are dropped: the next rule step (the bridge runs it
+    // right after) plans that occurrence again from the new rule, so a tap always runs what was shown.
+    const time = request.time ?? rule.trigger.time;
+    const maxPrice = request.maxPrice ?? rule.limits.maxPrice;
+    if (time === rule.trigger.time && maxPrice === rule.limits.maxPrice) return { ok: true, state, rule, changed: false };
+    const updated: Rule = { ...rule, trigger: { ...rule.trigger, time }, limits: { ...rule.limits, ...(maxPrice !== undefined ? { maxPrice } : {}) } };
+    const notes = [time !== rule.trigger.time ? `time ${rule.trigger.time} → ${time}` : '', maxPrice !== rule.limits.maxPrice ? `cap ${rule.limits.maxPrice ?? '-'} → ${maxPrice}` : ''].filter(Boolean).join('; ');
+    const withdrawn = withdrawAll(state, rule.id, RULE_CHANGED);
+    const runs = runsOf(withdrawn).filter(r => r.ruleId !== rule.id || Date.parse(r.occurrence) <= now);
+    const next: HomemindState = { ...withdrawn, rules: withdrawn.rules.map(r => (r.id === rule.id ? updated : r)), ruleRuns: runs };
+    return { ok: true, rule: updated, changed: true, ...log(next, updated, 'changed', { what: `Rule ${rule.id} changed: ${notes}` }) };
+  }
   const enabled = request.action === 'enable';
   if (rule.enabled === enabled) return { ok: true, state, rule, changed: false };
   const updated: Rule = { ...rule, enabled };
-  let next: HomemindState = { ...state, rules: state.rules.map(r => (r.id === rule.id ? updated : r)) };
-  if (!enabled) {
-    for (const card of next.actionCards) if (card.ruleId === rule.id && card.status === 'pending') next = withdrawCard(next, card.id, 'The rule was turned off', now).state;
-  }
+  const next = enabled ? { ...state, rules: state.rules.map(r => (r.id === rule.id ? updated : r)) } : withdrawAll({ ...state, rules: state.rules.map(r => (r.id === rule.id ? updated : r)) }, rule.id, 'The rule was turned off');
   return { ok: true, rule: updated, changed: true, ...log(next, updated, enabled ? 'enabled' : 'disabled') };
 }

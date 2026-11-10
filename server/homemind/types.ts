@@ -340,6 +340,7 @@ export type ActivityKind =
    * `note` is that outcome. No Undo: what an adapter did outside cannot be taken back from here. */
   | 'action'
   /** T7.3: a standing rule was created, turned on or off. `ref` is the rule id, `note` is `created`, `enabled` or `disabled`. No Undo.
+   * T9.1: also `changed` (cap or time), `deleted` (Undo through `ruleUndo`) and `restored`.
    * T7.4: also a group's claim setting (`ref` is the group id, `note` `enabled`, `disabled`, `auto` or `ask`). */
   | 'rule'
   /** T7.5: items marked or cleared because a message they came from changed (`ref` is the source change,
@@ -363,6 +364,8 @@ export interface Activity {
   undo?: UndoPatch;
   /** T5.4: the preference as it was before this change (`null`: it did not exist), for Undo. */
   prefUndo?: { preferenceId: string; before: Preference | null };
+  /** T9.1: a deleted rule as it was, for Undo (`POST /rules {action: 'restore'}`). */
+  ruleUndo?: Rule;
   /** Set once the change has been undone, so it can't be undone twice. */
   undone?: { at: string; by: string; activityId: string };
 }

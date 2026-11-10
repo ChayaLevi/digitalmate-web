@@ -7380,5 +7380,22 @@ a {
   cursor: pointer;
 }
 .hm-demo-clock button:disabled { opacity: .6; cursor: default; }
+/* T9.1: the presenter's demo panel, closed by default. */
+.hm-demo-panel { font-size: 12px; color: var(--text); border: 1px dashed var(--line, rgba(128,128,128,.45)); border-radius: 10px; padding: 4px 8px; }
+.hm-demo-panel > summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.hm-demo-panel-note { margin: 4px 0 6px; }
+.hm-demo-panel-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.hm-demo-panel-row button {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line, rgba(128,128,128,.35));
+  background: var(--surface, #fff);
+  color: var(--accent-deep);
+  font: inherit;
+  cursor: pointer;
+}
+.hm-demo-panel-row button.is-danger { color: #a3271f; }
+.hm-demo-panel-row button:disabled { opacity: .6; cursor: default; }
 @keyframes hm-alert-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .hm-alert { animation: none; } }

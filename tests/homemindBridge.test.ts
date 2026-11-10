@@ -9,6 +9,7 @@ import { SESSION_HEADER, handleHomemindRequest, resetHomemindRuntime, setHomemin
 import type { LlmClient, LlmRequest } from '../server/homemind/llm';
 import type { HomemindState, Item } from '../server/homemind/types';
 import { A2uiSurfaceStore } from '../src/protocol/a2ui/store';
+import { useFixedTime, useRealTime } from './homemindFixedTime';
 
 const SECRET = 'test-secret-0123456789';
 const ENV_KEYS = ['HOMEMIND_ENABLED', 'HOMEMIND_SECRET', 'HOMEMIND_DEMO', 'HOMEMIND_DATA_FILE', 'HOMEMIND_LLM'] as const;
@@ -71,10 +72,13 @@ beforeEach(async () => {
   process.env.HOMEMIND_DEMO = '1';
   process.env.HOMEMIND_DATA_FILE = join(dir, 'state.json');
   process.env.HOMEMIND_LLM = 'fake';
+  // T9.1: a fixed Wednesday afternoon, so the seed and the fake model's weekdays never depend on when the suite runs.
+  useFixedTime();
   resetHomemindRuntime();
 });
 
 afterEach(async () => {
+  useRealTime();
   setHomemindLlmForTests(undefined);
   resetHomemindRuntime();
   await rm(dir, { recursive: true, force: true });

@@ -15,14 +15,16 @@ import {
   fetchHomemindScreen,
   homemindSignIn,
   jumpHomemindClock,
+  jumpHomemindToNext,
   readHomemindSession,
+  resetHomemindDemo,
   runHomemindAction,
   saveHomemindSettings,
   sendHomemindWrite,
   undoHomemind,
   writeHomemindSession
 } from '../transport/homemind';
-import type { HomemindHealth, HomemindMember, HomemindSession, MutationResult, ScreenParams } from '../transport/homemind';
+import type { HomemindHealth, HomemindMember, HomemindPreset, HomemindSession, MutationResult, ScreenParams } from '../transport/homemind';
 import { connectHomemindEvents } from '../transport/homemindEvents';
 import type { StreamStatus } from '../transport/homemindEvents';
 import type { HomemindAlert, PpmaStatus } from '../../server/homemind/types';
@@ -42,8 +44,18 @@ interface Nav {
 interface Notice {
   text: string;
   tone: 'info' | 'error';
-  undo?: { itemId: string; activityId: string };
+  /** An item change (`itemId`), or a deleted rule (`rule`, T9.1): Undo puts it back. */
+  undo?: { itemId?: string; activityId: string; rule?: boolean };
 }
+
+/** T9.1: the demo panel's scene presets, with what the presenter does next. */
+const PRESETS: Array<{ id: HomemindPreset; en: string; zh: string; nextEn: string; nextZh: string }> = [
+  { id: 'scene-1', en: 'Prepare Scene 1', zh: '准备场景 1', nextEn: 'Mom assigns the pickup to Dad, then "Jump to next reminder".', nextZh: '妈妈把接孩子交给爸爸，然后点“跳到下一个提醒”。' },
+  { id: 'scene-2', en: 'Prepare Scene 2', zh: '准备场景 2', nextEn: 'Claims are on. Tap "Post group message" twice.', nextZh: '认领已开启。点两次“发布群消息”。' },
+  { id: 'scene-3', en: 'Prepare Scene 3', zh: '准备场景 3', nextEn: 'In the Family chat: "Noa is sick today".', nextZh: '在家庭聊天里说：“诺娅今天生病了”。' },
+  { id: 'scene-4', en: 'Prepare Scene 4', zh: '准备场景 4', nextEn: 'In the Family chat: "I\'m at my cousin\'s wedding from Tuesday to Saturday".', nextZh: '在家庭聊天里说：“我周二到周六参加表妹的婚礼”。' },
+  { id: 'scene-5', en: 'Prepare Scene 5', zh: '准备场景 5', nextEn: 'The party and the 接龙 are in. Tap "Post group message" once.', nextZh: '派对消息和接龙已到。点一次“发布群消息”。' }
+];
 
 const TABS: Array<{ screen: HomemindScreenName; en: string; zh: string }> = [
   { screen: 'my-day', en: 'My day', zh: '我的一天' },
@@ -91,12 +103,27 @@ interface DemoClockView {
   heardAt: number;
 }
 
-function clockText(view: DemoClockView, at: number): string {
+const CHIP_WEEKDAYS = { en: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], zh: ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] } as const;
+
+/** The demo clock's weekday and time (a preset can move it days ahead, so the weekday matters). */
+function clockText(view: DemoClockView, at: number, lang: 'en' | 'zh'): string {
   try {
-    return new Intl.DateTimeFormat('en-GB', { timeZone: view.timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(view.now + (at - view.heardAt)));
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: view.timezone, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(view.now + (at - view.heardAt)));
+    const get = (type: string) => parts.find(p => p.type === type)?.value ?? '';
+    const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(get('weekday'));
+    return `${day >= 0 ? `${CHIP_WEEKDAYS[lang][day]} ` : ''}${get('hour')}:${get('minute')}`;
   } catch {
     return '';
   }
+}
+
+/** How far ahead the demo clock is: "+95 min", or "+2 d 3 h" once it is a day or more. */
+function offsetText(offsetMs: number, lang: 'en' | 'zh'): string {
+  const minutes = Math.round(offsetMs / 60_000);
+  if (minutes < 24 * 60) return lang === 'zh' ? `+${minutes} 分钟` : `+${minutes} min`;
+  const days = Math.floor(minutes / (24 * 60));
+  const hours = Math.floor((minutes % (24 * 60)) / 60);
+  return lang === 'zh' ? `+${days} 天 ${hours} 小时` : `+${days} d ${hours} h`;
 }
 
 function demoMemberFromUrl(): string | null {
@@ -140,6 +167,8 @@ export function FamilyView({
   /** PPMA connection (T6.1), from the stream. Shown only when it is offline. */
   const [ppma, setPpma] = useState<PpmaStatus | null>(null);
   const [clock, setClock] = useState<DemoClockView | null>(null);
+  /** T9.1: the notice to show when this window's own demo reset arrives on the stream. */
+  const afterReset = useRef<Notice | null>(null);
   /** Re-renders the clock chip every 20 s. */
   const [tickAt, setTickAt] = useState(() => Date.now());
   useEffect(() => {
@@ -276,7 +305,9 @@ export function FamilyView({
             setAlerts([]);
             history.current = [];
             setForm({});
-            setNotice(null);
+            // T9.1: the window that pressed a preset keeps its "ready, next do..." notice.
+            setNotice(afterReset.current);
+            afterReset.current = null;
             setNav(HOME);
             return refreshSoon(true);
         }
@@ -476,6 +507,39 @@ export function FamilyView({
       }
       return;
     }
+    // T9.1: a rule's details, and a parent's changes to it.
+    if (verb === 'open-rule') return go({ screen: 'rules', params: { id: str(args.ruleId) } });
+    if (verb === 'save-rule' || verb === 'rule-delete') {
+      setBusy(true);
+      try {
+        if (verb === 'rule-delete') {
+          const outcome = await runHomemindAction(action, session.token);
+          const activityId = outcome.kind === 'mutation' ? outcome.result.activityId : undefined;
+          back(true);
+          setNotice({ text: tr('Rule deleted. Its waiting cards were withdrawn.', '规则已删除，等待中的卡片已撤回。'), tone: 'info', ...(activityId ? { undo: { activityId, rule: true } } : {}) });
+          return;
+        }
+        const { values, defaults } = surface ? formValues(surface, form) : { values: {} as Record<string, unknown>, defaults: {} as Record<string, unknown> };
+        const capText = String(values.ruleMaxPrice ?? '').trim();
+        const timeText = String(values.ruleTime ?? '').trim();
+        const cap = Number(capText);
+        if (!/^\d{1,4}$/.test(capText) || cap < 1 || cap > 5000) return setNotice({ text: tr('The price cap is a whole number from 1 to 5000.', '价格上限是 1 到 5000 之间的整数。'), tone: 'error' });
+        if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(timeText)) return setNotice({ text: tr('Check the time (HH:MM).', '请检查时间（HH:MM）。'), tone: 'error' });
+        const update = { ...(capText !== String(defaults.ruleMaxPrice ?? '') ? { maxPrice: cap } : {}), ...(timeText !== String(defaults.ruleTime ?? '') ? { time: timeText } : {}) };
+        if (!Object.keys(update).length) return setNotice({ text: tr('Nothing changed.', '没有修改。'), tone: 'info' });
+        await runHomemindAction({ ...action, args: { verb: 'rule-update', ruleId: args.ruleId, ...update } }, session.token);
+        setForm({});
+        refresh();
+        setNotice({ text: tr('Rule saved. A card that was waiting is prepared again from the new rule.', '规则已保存。正在等待的卡片会按新规则重新准备。'), tone: 'info' });
+      } catch (error) {
+        if (error instanceof HomemindError && error.status === 401) return signOut(tr('Your demo sign-in ended. Pick a member again.', '演示登录已结束，请重新选择成员。'));
+        setNotice({ text: describe(error), tone: 'error' });
+        refresh();
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     // T8.2: the evening summary or the week ahead.
     if (verb === 'summary-period') return go({ screen: 'summary', params: args.period === 'week' ? { period: 'week' } : {} }, { replace: nav.screen === 'summary' });
     if (verb === 'search') {
@@ -570,10 +634,18 @@ export function FamilyView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incoming, session]);
 
-  const undo = async (target: { itemId: string; activityId: string }) => {
+  const undo = async (target: NonNullable<Notice['undo']>) => {
     if (!session) return;
     setBusy(true);
     try {
+      if (target.rule) {
+        // T9.1: a deleted rule comes back as it was.
+        await runHomemindAction({ id: `homemind.rule-restore:${target.activityId}`, label: 'undo', kind: 'homemind', args: { verb: 'rule-restore', activityId: target.activityId } }, session.token);
+        setNotice({ text: tr('Undone. The rule is back.', '已撤销，规则已恢复。'), tone: 'info' });
+        refresh();
+        return;
+      }
+      if (!target.itemId) return;
       await undoHomemind(session.token, target.itemId, target.activityId);
       setNotice({ text: tr('Undone.', '已撤销。'), tone: 'info' });
       // An undone create removes the item, so an edit screen for it would show "not on your board".
@@ -615,11 +687,60 @@ export function FamilyView({
     }
   };
 
+  // --- T9.1: the demo panel ---------------------------------------------------------------------------
+
+  /** Runs one panel control: busy while it runs, its error as a notice. */
+  const demoControl = async (run: (token: string) => Promise<void>) => {
+    if (!session || busy) return;
+    setBusy(true);
+    try {
+      await run(session.token);
+    } catch (error) {
+      if (error instanceof HomemindError && error.status === 401) return signOut(tr('Your demo sign-in ended. Pick a member again.', '演示登录已结束，请重新选择成员。'));
+      afterReset.current = null;
+      setNotice({ text: describe(error), tone: 'error' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const heard = (result: { now: string; offsetMs: number; timezone: string }) => {
+    setClock({ now: Date.parse(result.now), offsetMs: result.offsetMs, timezone: result.timezone, heardAt: Date.now() });
+    setTickAt(Date.now());
+  };
+
+  /** A reset clears every window's notice when its `demo.reset` arrives; this window then shows what to do next. */
+  const reset = async (token: string, preset: HomemindPreset | undefined, done: Notice) => {
+    afterReset.current = done;
+    const result = await resetHomemindDemo(token, preset);
+    heard(result);
+    history.current = [];
+    setForm({});
+    setNav(HOME);
+    setNotice(done);
+  };
+
+  const prepareScene = (p: (typeof PRESETS)[number]) => async (token: string) => {
+    await reset(token, p.id, { text: `${tr(`${p.en.replace('Prepare ', '')} is ready.`, `${p.zh.replace('准备', '')}已就绪。`)} ${tr(p.nextEn, p.nextZh)}`, tone: 'info' });
+  };
+
+  const resetNow = (token: string) => reset(token, undefined, { text: tr('Reset: a fresh board at the current time.', '已重置：按当前时间生成新的看板。'), tone: 'info' });
+
+  const jumpToNext = async (token: string) => {
+    const result = await jumpHomemindToNext(token);
+    heard(result);
+    refresh();
+    setNotice({ text: result.kind === 'summary' ? tr('The demo clock moved to the evening summary.', '演示时钟已跳到晚间摘要。') : tr('The demo clock moved to the next reminder.', '演示时钟已跳到下一个提醒。'), tone: 'info' });
+  };
+
+  /** A panel button that is also a card button elsewhere (group message, rule card): the same path and notice. */
+  const demoAction = (verb: 'post-group-message' | 'update-group-message' | 'run-rule') => onAction({ id: `homemind.${verb}:panel`, label: verb, kind: 'homemind', args: { verb } });
+
   const noticeBar = notice ? (
     <div className={`hm-notice ${notice.tone === 'error' ? 'is-error' : ''}`} role={notice.tone === 'error' ? 'alert' : 'status'}>
       <span>{notice.text}</span>
       {notice.undo ? (
-        <button type="button" onClick={() => void undo(notice.undo as { itemId: string; activityId: string })} disabled={busy}>
+        <button type="button" onClick={() => void undo(notice.undo as NonNullable<Notice['undo']>)} disabled={busy}>
           {tr('Undo', '撤销')}
         </button>
       ) : null}
@@ -709,8 +830,8 @@ export function FamilyView({
       {health.demo && clock ? (
         <div className="hm-demo-clock" data-demo-clock={new Date(clock.now + (tickAt - clock.heardAt)).toISOString()} data-offset={clock.offsetMs}>
           <span>
-            <span className="hm-demo-tag">{tr('Demo clock', '演示时钟')}</span> <strong>{clockText(clock, tickAt)}</strong>
-            {clock.offsetMs > 0 ? <em> {tr(`+${Math.round(clock.offsetMs / 60_000)} min`, `+${Math.round(clock.offsetMs / 60_000)} 分钟`)}</em> : null}
+            <span className="hm-demo-tag">{tr('Demo clock', '演示时钟')}</span> <strong>{clockText(clock, tickAt, lang)}</strong>
+            {clock.offsetMs > 0 ? <em> {offsetText(clock.offsetMs, lang)}</em> : null}
           </span>
           <button type="button" onClick={() => void jumpClock(15)} disabled={busy} aria-label={tr('+15 min (demo clock)', '+15 分钟（演示时钟）')}>
             +15 {tr('min', '分钟')}
@@ -719,6 +840,49 @@ export function FamilyView({
             +1 {tr('h', '小时')}
           </button>
         </div>
+      ) : null}
+      {health.demo ? (
+        // T9.1: the presenter's panel. Closed by default, so the audience sees the product, not the controls.
+        <details className="hm-demo-panel" data-demo-panel>
+          <summary>
+            <span className="hm-demo-tag">{tr('Demo panel', '演示面板')}</span> {tr('Scenes, clock and simulated messages', '场景、时钟和模拟消息')}
+          </summary>
+          <p className="hm-demo-panel-note">{tr('Each scene starts from a fresh board, with the demo clock where that scene works. Both windows follow.', '每个场景都从新的看板开始，演示时钟会调到适合该场景的时间。两个窗口会一起更新。')}</p>
+          <div className="hm-demo-panel-row" role="group" aria-label={tr('Scene presets', '场景预设')}>
+            {PRESETS.map(p => (
+              <button key={p.id} type="button" onClick={() => void demoControl(prepareScene(p))} disabled={busy} data-preset={p.id}>
+                {tr(p.en, p.zh)}
+              </button>
+            ))}
+          </div>
+          <div className="hm-demo-panel-row" role="group" aria-label={tr('Demo clock', '演示时钟')}>
+            <button type="button" onClick={() => void jumpClock(15)} disabled={busy}>
+              +15 {tr('min', '分钟')}
+            </button>
+            <button type="button" onClick={() => void jumpClock(60)} disabled={busy}>
+              +1 {tr('h', '小时')}
+            </button>
+            <button type="button" onClick={() => void demoControl(jumpToNext)} disabled={busy}>
+              {tr('Jump to next reminder', '跳到下一个提醒')}
+            </button>
+          </div>
+          <div className="hm-demo-panel-row" role="group" aria-label={tr('Simulated services', '模拟服务')}>
+            <button type="button" onClick={() => void demoAction('post-group-message')} disabled={busy}>
+              {tr('Post group message', '发布群消息')}
+            </button>
+            <button type="button" onClick={() => void demoAction('update-group-message')} disabled={busy}>
+              {tr('Update message', '修改群消息')}
+            </button>
+            <button type="button" onClick={() => void demoAction('run-rule')} disabled={busy}>
+              {tr('Prepare the next card now', '立即准备下一张卡片')}
+            </button>
+          </div>
+          <div className="hm-demo-panel-row" role="group" aria-label={tr('Reset', '重置')}>
+            <button type="button" className="is-danger" onClick={() => void demoControl(resetNow)} disabled={busy}>
+              {tr('Reset (now)', '重置（当前时间）')}
+            </button>
+          </div>
+        </details>
       ) : null}
       <AlertBanner alerts={alerts} lang={lang} busy={busy} onButton={onAlertButton} />
       {noticeBar}

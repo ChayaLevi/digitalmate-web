@@ -312,8 +312,8 @@ function fakeExtraction(today: Today, text: string | undefined, image: boolean):
   const party = nextWeekday(today, 4);
   const entries = {
     events: [
-      { title: '秋季水果派对', start: at(today, party, '15:00'), end: null, confidence: 0.95, quote: '本周四（11月5日）下午3点在班里举办秋季水果派对' },
-      { title: '全园体检', start: at(today, addDays(party, 1), '09:00'), end: null, confidence: 0.9, quote: '周五（11月6日）上午9点全园体检' }
+      { title: '秋季水果派对', start: at(today, party, '15:00'), end: null, confidence: 0.95, quote: '本周四下午3点在班里举办秋季水果派对' },
+      { title: '全园体检', start: at(today, addDays(party, 1), '09:00'), end: null, confidence: 0.9, quote: '周五上午9点全园体检' }
     ],
     preparations: [
       { title: '切好装盒的水果（够8个小朋友）', due: at(today, party, '08:00'), for_event: '秋季水果派对', confidence: 0.9, quote: '切好装盒，够8个小朋友吃' },

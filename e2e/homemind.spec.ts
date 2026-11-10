@@ -9,12 +9,22 @@ const BASE = 'http://127.0.0.1:5176';
 
 test.describe.configure({ mode: 'serial' });
 
+/**
+ * A fresh board with the demo clock on the next Wednesday 14:30 (T9.1), so no test depends on the real day
+ * or hour: today's pickup is at 16:30, and "Tuesday to Saturday" never means today.
+ */
 async function resetBoard(request: APIRequestContext) {
   const session = await request.post(`${BASE}/api/homemind/session`, { data: { memberId: 'mom' } });
   expect(session.ok()).toBe(true);
   const { token } = (await session.json()) as { token: string };
-  const reset = await request.post(`${BASE}/api/homemind/demo/reset`, { headers: { 'x-homemind-session': token }, data: {} });
+  const reset = await request.post(`${BASE}/api/homemind/demo/reset`, { headers: { 'x-homemind-session': token }, data: { weekday: 3, time: '14:30' } });
   expect(reset.ok()).toBe(true);
+}
+
+/** The demo clock's offset and "now", from the bridge. */
+async function demoClock(request: APIRequestContext): Promise<{ offsetMs: number; now: number }> {
+  const state = (await (await request.get(`${BASE}/api/homemind/debug/state`)).json()) as { clockOffsetMs: number };
+  return { offsetMs: state.clockOffsetMs, now: Date.now() + state.clockOffsetMs };
 }
 
 async function openFamily(page: Page, lang: 'en' | 'zh', member?: string, persona?: string) {
@@ -311,10 +321,13 @@ test('reminders: the demo clock jumps, Dad is reminded, Mom gets the escalation,
     await openFamily(dad, 'zh', 'dad');
     await expect(mom.locator('[data-stream="live"]')).toBeVisible();
     await expect(dad.locator('[data-stream="live"]')).toBeVisible();
-    // The demo clock chip shows in both windows, with no offset after a reset.
+    // The demo clock chip shows in both windows, with the reset's offset (Wednesday 14:30) and its weekday.
+    const before = await demoClock(request);
     await expect(mom.locator('.hm-demo-clock')).toContainText('Demo clock');
+    await expect(mom.locator('.hm-demo-clock')).toContainText('Wed 14:3');
     await expect(dad.locator('.hm-demo-clock')).toContainText('演示时钟');
-    await expect(mom.locator('.hm-demo-clock')).toHaveAttribute('data-offset', '0');
+    await expect(dad.locator('.hm-demo-clock')).toContainText('周三 14:3');
+    await expect(mom.locator('.hm-demo-clock')).toHaveAttribute('data-offset', String(before.offsetMs));
 
     await mom.getByRole('button', { name: 'Assign to Dad: Kindergarten pickup' }).first().click();
     const dadAlert = dad.locator('.hm-alert[data-item-id="pickup-today"]');
@@ -323,11 +336,11 @@ test('reminders: the demo clock jumps, Dad is reminded, Mom gets the escalation,
     // Jump to 25 minutes before the pickup (the panel with exact jumps is T9.1; the API does it here).
     const session = await request.post(`${BASE}/api/homemind/session`, { data: { memberId: 'mom' } });
     const { token } = (await session.json()) as { token: string };
-    const minutes = Math.ceil(((await pickupStart(request)) - Date.now()) / 60_000) - 25;
+    const minutes = Math.ceil(((await pickupStart(request)) - (await demoClock(request)).now) / 60_000) - 25;
     const jump = await request.post(`${BASE}/api/homemind/demo/clock`, { headers: { 'x-homemind-session': token }, data: { minutes } });
     expect(jump.ok()).toBe(true);
-    await expect(dad.locator('.hm-demo-clock')).toHaveAttribute('data-offset', String(minutes * 60_000));
-    await expect(mom.locator('.hm-demo-clock')).toContainText(`+${minutes} min`);
+    await expect(dad.locator('.hm-demo-clock')).toHaveAttribute('data-offset', String(before.offsetMs + minutes * 60_000));
+    await expect(mom.locator('.hm-demo-clock')).toContainText('Wed 16:0');
 
     await expect(dadAlert).toHaveAttribute('data-kind', 'reminder');
     await expect(dadAlert).toContainText('请确认：');
@@ -385,7 +398,7 @@ test('Scene 1: Mom assigns the pickup, Dad does not confirm, the clock jumps, Mo
 
     // 2. The demo clock jumps to 55 minutes before the pickup: Dad is reminded, on the alert and on the row.
     const token = await momToken(request);
-    const minutes = Math.ceil(((await pickupStart(request)) - Date.now()) / 60_000) - 55;
+    const minutes = Math.ceil(((await pickupStart(request)) - (await demoClock(request)).now) / 60_000) - 55;
     expect((await request.post(`${BASE}/api/homemind/demo/clock`, { headers: { 'x-homemind-session': token }, data: { minutes } })).ok()).toBe(true);
     await expect(dad.locator('.hm-alert[data-item-id="pickup-today"]')).toHaveAttribute('data-kind', 'reminder');
     await expect(dadRow).toContainText('已提醒');
@@ -1201,7 +1214,7 @@ test('Scene 5: the "不着急" note waits for the evening summary with its reaso
 
     // 3. A memory detail is corrected on the Memory tab.
     await momNav.getByRole('button', { name: 'Memory', exact: true }).click();
-    await momSurface.getByRole('button', { name: /^Correct: For kindergarten parties, bake a cake/ }).click();
+    await momSurface.getByRole('button', { name: /^Edit: For kindergarten parties, bake a cake/ }).click();
     await expect(momSurface).toContainText('Correct a saved preference');
     await expect(mom.getByLabel('What Homemind should remember')).toHaveValue('For kindergarten parties, bake a cake');
     await noOverflow(mom);
@@ -1255,5 +1268,119 @@ test('Scene 5: the "不着急" note waits for the evening summary with its reaso
   } finally {
     await momContext.close();
     await dadContext.close();
+  }
+});
+
+// T9.1: the presenter's demo panel. Each scene preset starts a fresh board with the demo clock where that
+// scene works, in both windows; the other controls move the clock, post group messages and prepare the card.
+test('demo panel: scene presets set the clock in both windows; Jump to next reminder, Post group message and Prepare the next card work; Reset (now)', async ({ browser, request }) => {
+  const momContext = await browser.newContext();
+  const dadContext = await browser.newContext();
+  try {
+    const mom = await momContext.newPage();
+    const dad = await dadContext.newPage();
+    await openFamily(mom, 'en', 'mom');
+    await openFamily(dad, 'zh', 'dad');
+    await expect(mom.locator('[data-stream="live"]')).toBeVisible();
+    await expect(dad.locator('[data-stream="live"]')).toBeVisible();
+
+    // Closed by default: the audience sees the board, not the controls.
+    const panel = mom.locator('[data-demo-panel]');
+    await expect(panel.getByRole('button', { name: 'Prepare Scene 1' })).toBeHidden();
+    await panel.locator('summary').click();
+    await expect(panel.getByRole('button', { name: 'Prepare Scene 1' })).toBeVisible();
+    await noOverflow(mom);
+    expect(await seriousIssues(mom)).toEqual([]);
+    await mom.screenshot({ path: test.info().outputPath('demo-panel-en.png') });
+
+    // Scene 2: Monday 10:00 in both windows, claims on; two posts claim apples, and Dad hears of it.
+    await panel.getByRole('button', { name: 'Prepare Scene 2' }).click();
+    await expect(family(mom).locator('.hm-notice')).toContainText('Scene 2 is ready. Claims are on.');
+    await expect(mom.locator('.hm-demo-clock strong')).toHaveText('Mon 10:00');
+    await expect(dad.locator('.hm-demo-clock strong')).toHaveText('周一 10:00');
+    await panel.getByRole('button', { name: 'Post group message' }).click();
+    await expect(family(mom).locator('.hm-notice')).toContainText('A new message arrived');
+    await panel.getByRole('button', { name: 'Post group message' }).click();
+    await expect(dad.locator('.hm-alert[data-kind="group"]')).toContainText('Homemind 已替家里认领苹果');
+
+    // Scene 4: Sunday 12:00; the panel prepares the Friday card, and it waits on My day for a tap.
+    await panel.getByRole('button', { name: 'Prepare Scene 4' }).click();
+    await expect(mom.locator('.hm-demo-clock strong')).toHaveText('Sun 12:00');
+    await expect(dad.locator(QUIET_ALERTS)).toHaveCount(0);
+    await panel.getByRole('button', { name: 'Prepare the next card now' }).click();
+    await expect(mom.locator('.approval-card', { hasText: 'Friday pizza night: order' })).toBeVisible();
+
+    // Scene 1: a weekday 14:30. Mom assigns the pickup; "Jump to next reminder" brings Dad's reminder.
+    await panel.getByRole('button', { name: 'Prepare Scene 1' }).click();
+    await expect(mom.locator('.hm-demo-clock strong')).toHaveText(/^(Mon|Tue|Wed|Thu|Fri) 14:30$/);
+    await family(mom).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'Family', exact: true }).click();
+    await mom.getByRole('button', { name: 'Assign to Dad: Kindergarten pickup' }).first().click();
+    await expect(dad.locator('.hm-alert[data-item-id="pickup-today"]')).toContainText('交给了你');
+    await panel.getByRole('button', { name: 'Jump to next reminder' }).click();
+    await expect(dad.locator('.hm-alert[data-item-id="pickup-today"]')).toHaveAttribute('data-kind', 'reminder');
+
+    // Scene 5: Monday 19:30, the party and the 接龙 are in; +1 h brings the evening summary.
+    await panel.getByRole('button', { name: 'Prepare Scene 5' }).click();
+    await expect(mom.locator('.hm-demo-clock strong')).toHaveText('Mon 19:30');
+    await panel.getByRole('button', { name: 'Post group message' }).click();
+    await expect(family(mom).locator('.hm-notice')).toContainText('A new message arrived');
+    await panel.getByRole('button', { name: '+1 h' }).click();
+    await expect(dad.locator('.hm-alert[data-kind="summary"]')).toBeVisible();
+
+    // Reset (now): the clock is back to the real time.
+    await panel.getByRole('button', { name: 'Reset (now)' }).click();
+    await expect(mom.locator('.hm-demo-clock')).toHaveAttribute('data-offset', '0');
+    await expect(dad.locator('.hm-demo-clock')).toHaveAttribute('data-offset', '0');
+    expect((await demoClock(request)).offsetMs).toBe(0);
+  } finally {
+    await momContext.close();
+    await dadContext.close();
+  }
+});
+
+// T9.1: tapping a rule opens its details; a parent changes the cap, deletes it, and Undo puts it back.
+test('rules: a rule opens with its details; a parent saves a new cap, deletes the rule and undoes it', async ({ page }) => {
+  await openFamily(page, 'en', 'mom');
+  await family(page).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'Rules', exact: true }).click();
+  await page.getByRole('button', { name: 'Details: Friday pizza night' }).click();
+  const surface = page.locator('.a2ui-surface');
+  await expect(surface).toContainText('Every Fri at 18:30 · card prepared 30 min before');
+  await expect(surface).toContainText('Price cap 250 CNY');
+  await expect(surface).toContainText('Next run');
+  await noOverflow(page);
+  expect(await seriousIssues(page)).toEqual([]);
+  await page.screenshot({ path: test.info().outputPath('rule-detail-en.png'), fullPage: true });
+
+  await page.getByLabel('Price cap (CNY)').fill('300');
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(family(page).locator('.hm-notice')).toContainText('Rule saved.');
+  await expect(surface).toContainText('Price cap 300 CNY');
+
+  await page.getByRole('button', { name: 'Delete rule' }).click();
+  await expect(family(page).locator('.hm-notice')).toContainText('Rule deleted.');
+  await expect(page.getByRole('button', { name: 'Details: Friday pizza night' })).toHaveCount(0);
+  await family(page).locator('.hm-notice').getByRole('button', { name: 'Undo' }).click();
+  await expect(page.getByRole('button', { name: 'Details: Friday pizza night' })).toBeVisible();
+});
+
+test('rules: the details in Chinese, and a teen sees them with no edit fields', async ({ browser }) => {
+  const contexts = await Promise.all([browser.newContext(), browser.newContext()]);
+  try {
+    const [dad, maya] = await Promise.all(contexts.map(c => c.newPage()));
+    await openFamily(dad, 'zh', 'dad');
+    await family(dad).getByRole('navigation', { name: '家庭页面' }).getByRole('button', { name: '规则', exact: true }).click();
+    await dad.getByRole('button', { name: '详情: 周五披萨之夜' }).click();
+    await expect(dad.locator('.a2ui-surface')).toContainText('每周五 18:30');
+    await expect(dad.locator('.a2ui-surface')).toContainText('价格上限 250 CNY');
+    await noOverflow(dad);
+    expect(await seriousIssues(dad)).toEqual([]);
+    await dad.screenshot({ path: test.info().outputPath('rule-detail-zh.png'), fullPage: true });
+    await openFamily(maya, 'en', 'maya');
+    await family(maya).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'Rules', exact: true }).click();
+    await maya.getByRole('button', { name: 'Details: Friday pizza night' }).click();
+    await expect(maya.locator('.a2ui-surface')).toContainText('Only a parent can turn a rule');
+    await expect(maya.getByLabel('Price cap (CNY)')).toHaveCount(0);
+  } finally {
+    await Promise.all(contexts.map(c => c.close()));
   }
 });

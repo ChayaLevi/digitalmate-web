@@ -191,6 +191,21 @@ FRIDGE2TABLE_URL=http://127.0.0.1:8020 npm run dev
 The GitHub Pages build has no bridge, so Fridge2Table works only with `npm run dev`, `npm run preview`,
 `npm start` or Docker.
 
+## Homemind (branch `feat/homemind`)
+
+A family board on the Family tab: ownership, "Who's taking this?", reminders and escalation, availability,
+standing rules that only prepare a card, and simulated services. Off unless `HOMEMIND_ENABLED=1`; without it
+the app is unchanged.
+
+- Plan: `docs/PLAN.md`. Progress and decisions: `docs/PROGRESS.md`.
+- Run the demo (start order, two browser profiles, the demo panel and its scene presets, the failure plan):
+  `docs/homemind-demo.md`.
+- Measured numbers (tests, scenes, model latency, sync time): `docs/homemind-stats.md`.
+- Try it with no key: `HOMEMIND_ENABLED=1 HOMEMIND_DEMO=1 HOMEMIND_SECRET=<16+ characters> HOMEMIND_LLM=fake npm run dev`,
+  then open `http://127.0.0.1:5173/?member=mom` and the Family tab.
+- Live model check before a demo: `npx tsx scripts/homemind-live-check.mts` (paid calls; reads `.env.local`).
+- Sync time between two windows: `node scripts/measure-sync.mjs` against a running Homemind dev server.
+
 ## Local RSS proxy
 
 Discovery can import a real RSS 2.0, Atom or RDF feed during `npm run dev` and `npm run preview`.

@@ -271,7 +271,13 @@ describe('creating and switching rules (POST /rules)', () => {
     expect(parseRuleBody({ action: 'enable', id: 'rule-friday-pizza' })).toMatchObject({ ok: true });
     expect(parseRuleBody({ action: 'enable', id: 'Bad Id' })).toMatchObject({ ok: false });
     expect(parseRuleBody({ action: 'enable', id: 'x', extra: 1 })).toMatchObject({ ok: false });
-    expect(parseRuleBody({ action: 'delete', id: 'x' })).toMatchObject({ ok: false });
+    // T9.1 added delete, update and restore; anything else is still refused.
+    expect(parseRuleBody({ action: 'delete', id: 'x' })).toMatchObject({ ok: true });
+    expect(parseRuleBody({ action: 'rename', id: 'x' })).toMatchObject({ ok: false });
+    expect(parseRuleBody({ action: 'update', id: 'x', maxPrice: 120, time: '19:00' })).toEqual({ ok: true, value: { action: 'update', id: 'x', maxPrice: 120, time: '19:00' } });
+    expect(parseRuleBody({ action: 'update', id: 'x', title: 'y' })).toMatchObject({ ok: false });
+    expect(parseRuleBody({ action: 'restore', activityId: 'act-1' })).toEqual({ ok: true, value: { action: 'restore', activityId: 'act-1' } });
+    expect(parseRuleBody({ action: 'restore', activityId: 'Bad Id' })).toMatchObject({ ok: false });
     const good = { action: 'create', title: 'Sunday pizza', weekday: 0, time: '12:00', leadMinutes: 30, items: [{ id: 'veggie-m', qty: 1 }], maxPrice: 100 };
     expect(parseRuleBody(good)).toMatchObject({ ok: true });
     expect(parseRuleBody({ ...good, items: [{ id: 'sushi', qty: 1 }] })).toMatchObject({ ok: false });

@@ -171,6 +171,19 @@ export async function jumpHomemindClock(token: string, minutes: number): Promise
   return call('/api/homemind/demo/clock', { method: 'POST', token, body: JSON.stringify({ minutes }) });
 }
 
+export type HomemindPreset = 'scene-1' | 'scene-2' | 'scene-3' | 'scene-4' | 'scene-5';
+type ClockResult = { ok: true; now: string; offsetMs: number; timezone: string };
+
+/** Demo only (T9.1): a fresh board, optionally at the moment a scene needs (`preset`). Both windows hear `demo.reset`. */
+export async function resetHomemindDemo(token: string, preset?: HomemindPreset): Promise<ClockResult & { preset?: HomemindPreset }> {
+  return call('/api/homemind/demo/reset', { method: 'POST', token, body: JSON.stringify(preset ? { preset } : {}) });
+}
+
+/** Demo only (T9.1): the demo clock jumps to the next reminder attempt or evening summary. 409 when nothing is due. */
+export async function jumpHomemindToNext(token: string): Promise<ClockResult & { kind: 'reminder' | 'summary'; minutes: number; delivered: number }> {
+  return call('/api/homemind/demo/next-reminder', { method: 'POST', token, body: '{}' });
+}
+
 /** Settings (T4.2): only the fields that changed. Quiet hours are the member's own; the rest is parents only. */
 export async function saveHomemindSettings(token: string, body: Record<string, unknown>): Promise<{ ok: true; changed: string[]; activityId?: string }> {
   return call('/api/homemind/settings', { method: 'PUT', token, body: JSON.stringify(body) });
@@ -216,7 +229,19 @@ export async function runHomemindAction(action: A2uiAction, token: string): Prom
   }
   if (verb === 'run-rule') {
     // Demo only (`HOMEMIND_DEMO=1`): the rule prepares its next card now instead of at its lead time.
-    const result = await call<MutationResult>('/api/homemind/demo/run-rule', { method: 'POST', token, body: JSON.stringify({ ruleId: args.ruleId }) });
+    // The demo panel names no rule: the bridge takes the first rule that is on.
+    const result = await call<MutationResult>('/api/homemind/demo/run-rule', { method: 'POST', token, body: JSON.stringify(typeof args.ruleId === 'string' ? { ruleId: args.ruleId } : {}) });
+    return { kind: 'mutation', result, verb };
+  }
+  if (verb === 'rule-delete' || verb === 'rule-restore' || verb === 'rule-update') {
+    // T9.1: delete a rule (Undo restores it from that Activity), or change its cap and time. Parents only.
+    const body =
+      verb === 'rule-delete'
+        ? { action: 'delete', id: args.ruleId }
+        : verb === 'rule-restore'
+          ? { action: 'restore', activityId: args.activityId }
+          : { action: 'update', id: args.ruleId, ...(args.maxPrice !== undefined ? { maxPrice: args.maxPrice } : {}), ...(args.time !== undefined ? { time: args.time } : {}) };
+    const result = await call<MutationResult>('/api/homemind/rules', { method: 'POST', token, body: JSON.stringify(body) });
     return { kind: 'mutation', result, verb };
   }
   if (verb === 'undo-preference' || verb === 'save-preference') {

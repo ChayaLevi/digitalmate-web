@@ -321,7 +321,7 @@ describe('extraction', () => {
   });
 
   it('from text, reports only what the text says', async () => {
-    const text = '王老师：各位家长好！本周四（11月5日）下午3点在班里举办秋季水果派对🍎 请家长们接龙认领要带的水果，切好装盒，够8个小朋友吃。';
+    const text = '王老师：各位家长好！本周四下午3点在班里举办秋季水果派对🍎 请家长们接龙认领要带的水果，切好装盒，够8个小朋友吃。';
     const result = await runExtraction(fake, { now: NOW, timezone: TZ, text });
     expect(result.ok).toBe(true);
     if (!result.ok) return;

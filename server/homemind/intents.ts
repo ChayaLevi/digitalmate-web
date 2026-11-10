@@ -313,6 +313,7 @@ Reply with ONE JSON object, no prose. "intent" is one of:
 {"intent":"create_rule","title":string,"weekday":0-6 (0 = Sunday),"time":"HH:MM","leadMinutes":number,"action":string}
 {"intent":"report_situation","situation":"sick"|"away"|"late"|"other","memberId":member id|null,"date":"YYYY-MM-DD","summary":string}
    memberId: who it is about ("Noa is sick" = Noa), or null for the member writing. date: the day it is about (today unless the MESSAGE says another day). summary: the MESSAGE in a few words.
+   Only for something that went wrong (sick, running late). Being away for a planned stretch (a wedding, a trip, a conference, "I'm at X from Tuesday to Saturday", "我周二到周六出差") is create_event: the event, all day over those days unless times are given, with the people who are away in unavailableMemberIds.
 {"intent":"why","itemId":item id}
 Titles in the language the member wrote in. "visibility":"parents" only if the member asks to keep it from the children.`;
   const recent = recentChatText(input.recent ?? []);

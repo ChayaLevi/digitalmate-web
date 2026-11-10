@@ -85,6 +85,9 @@ export interface HomemindScreenData {
   judgments?: MessageJudgment[];
   /** T8.2, the `memory` screen (`?id=`): the saved preference to correct, in a small form. */
   correctPreferenceId?: string;
+  /** T9.1, the `rules` screen (`?id=`): one rule's details, and (when it is on) when it next runs. */
+  ruleId?: string;
+  ruleNext?: { at: string; prepareAt: string };
 }
 
 /** What the bridge sends the browser for every Homemind screen. Same shape as a Fridge2Table turn. */
@@ -194,6 +197,7 @@ const T = {
   cardCancelled: { en: 'cancelled, nothing happened', zh: '已取消，什么都没发生' },
   cardReplaced: { en: 'replaced: the calendar changed', zh: '已替换：日程有变' },
   cardRuleOff: { en: 'withdrawn: the rule was turned off', zh: '已撤回：规则已关闭' },
+  cardRuleChanged: { en: 'withdrawn: the rule was changed', zh: '已撤回：规则已修改' },
   ruleAhead: { en: 'card prepared {n} min before', zh: '提前 {n} 分钟准备卡片' },
   ruleTurnOff: { en: 'Turn off', zh: '关闭' },
   ruleTurnOn: { en: 'Turn on', zh: '开启' },
@@ -556,6 +560,7 @@ function cardEnd(card: ActionCard, lang: HomemindLang): string {
   if (card.status === 'expired') return hx(lang, 'cardExpired');
   if (card.executedBy === 'homemind' && card.error?.startsWith('The calendar changed')) return hx(lang, 'cardReplaced');
   if (card.executedBy === 'homemind' && card.error?.startsWith('The rule was turned off')) return hx(lang, 'cardRuleOff');
+  if (card.executedBy === 'homemind' && card.error?.startsWith('The rule changed')) return hx(lang, 'cardRuleChanged');
   return hx(lang, 'cardCancelled');
 }
 
@@ -774,8 +779,100 @@ function runLine(run: RuleRun, view: HomemindViewData, lang: HomemindLang): stri
   return [`${name} · ${day}`, outcome, people, money, sitter, trigger].filter(Boolean).join(' · ');
 }
 
+/** T9.1: words of the rule details screen. */
+const R = {
+  details: { en: 'About this rule', zh: '规则详情' },
+  status: { en: 'Status', zh: '状态' },
+  paused: { en: 'Paused: automatic actions are stopped in Settings', zh: '已暂停：设置里停止了自动操作' },
+  trigger: { en: 'When', zh: '时间' },
+  every: { en: 'Every {day} at {time}', zh: '每{day} {time}' },
+  what: { en: 'What it prepares', zh: '准备什么' },
+  order: { en: 'An order from the simulated pizza shop, usually {total} {cur}. The size follows who is home.', zh: '向模拟披萨店下单，平时 {total} {cur}。份量按在家人数调整。' },
+  limits: { en: 'Limits', zh: '限制' },
+  cap: { en: 'Price cap {cap} {cur}. Over it, no card is prepared.', zh: '价格上限 {cap} {cur}。超过就不准备卡片。' },
+  noCap: { en: 'No price cap', zh: '没有价格上限' },
+  area: { en: 'Area', zh: '领域' },
+  areas: { food: { en: 'Food', zh: '饮食' } } as Record<string, { en: string; zh: string }>,
+  setBy: { en: 'Set by', zh: '设置人' },
+  lastRun: { en: 'Last run', zh: '上次运行' },
+  never: { en: 'Not run yet', zh: '还没有运行过' },
+  nextRun: { en: 'Next run', zh: '下次运行' },
+  nextAt: { en: '{when}: the card is prepared at {prep} and waits for a parent’s tap', zh: '{when}：{prep} 准备卡片，等家长点一下' },
+  noNext: { en: 'None while the rule is off', zh: '规则关闭时不会运行' },
+  noNextPaused: { en: 'None while automatic actions are paused', zh: '自动操作暂停时不会运行' },
+  why: { en: 'Why? (the last run)', zh: '为什么？（上次运行）' },
+  whySource: { en: 'Source: a Homemind rule, not PPMA', zh: '来源：Homemind 规则，不是 PPMA' },
+  edit: { en: 'Change the rule', zh: '修改规则' },
+  editNote: { en: 'A card that waits is withdrawn and prepared again from the new rule, so a tap always runs what is shown.', zh: '正在等待的卡片会撤回，并按新规则重新准备，确保点一下执行的就是显示的内容。' },
+  capField: { en: 'Price cap ({cur})', zh: '价格上限（{cur}）' },
+  timeField: { en: 'Delivery time', zh: '送达时间' },
+  save: { en: 'Save changes', zh: '保存修改' },
+  delete: { en: 'Delete rule', zh: '删除规则' },
+  open: { en: 'Details', zh: '详情' },
+  gone: { en: 'This rule is not here any more. It may have been deleted (Undo is on the notice or in Activity).', zh: '这条规则已经不在了，可能已被删除（可以在通知上撤销）。' }
+} as const;
+const rx = (lang: HomemindLang, key: Exclude<keyof typeof R, 'areas'>, vars: Record<string, string | number> = {}): string =>
+  Object.entries(vars).reduce<string>((s, [k, v]) => s.split(`{${k}}`).join(String(v)), R[key][lang]);
+
+/** T9.1: one rule, opened from the Rules list: trigger, limits, area, on or off, last and next run, Why, and a parent's edits. */
+function ruleDetail(input: HomemindScreenData, ruleId: string): HomemindTurn {
+  const { lang, view } = input;
+  const zone = view.family.timezone;
+  const isParent = memberOf(view.family, view.memberId)?.role === 'parent';
+  const back: A2uiAction = { id: 'homemind.back', label: hx(lang, 'back'), variant: 'ghost', kind: 'homemind', args: { verb: 'back' } };
+  const rule = view.rules.find(r => r.id === ruleId);
+  if (!rule) return turn('rules', hx(lang, 'rules'), undefined, [{ id: 'gone', component: 'ErrorNotice', title: hx(lang, 'rules'), body: rx(lang, 'gone') }, { id: 'actions', component: 'ActionBar', actions: [back] }], {});
+  const cur = rule.limits.currency ?? (typeof rule.actionTemplate.payload.currency === 'string' ? rule.actionTemplate.payload.currency : 'CNY');
+  const total = typeof rule.actionTemplate.payload.total === 'number' ? rule.actionTemplate.payload.total : '?';
+  const runs = (view.ruleRuns ?? []).filter(r => r.ruleId === rule.id);
+  const last = runs[runs.length - 1];
+  const at = (iso: string) => {
+    const p = dateParts(iso, zone);
+    return p ? `${WEEKDAYS[lang][p.weekday]} ${p.date.slice(5)} ${p.time}` : iso;
+  };
+  const next = input.ruleNext;
+  const author = nameOf(memberOf(view.family, rule.createdBy), lang) || rule.createdBy;
+  const area = R.areas[rule.area]?.[lang] ?? rule.area;
+  const rows = [
+    { label: rx(lang, 'status'), value: rule.enabled ? (view.family.paused ? `${hx(lang, 'ruleOn')} · ${rx(lang, 'paused')}` : hx(lang, 'ruleOn')) : hx(lang, 'ruleOff'), tone: rule.enabled && !view.family.paused ? 'accent' : 'muted' },
+    { label: rx(lang, 'trigger'), value: `${rx(lang, 'every', { day: WEEKDAYS[lang][rule.trigger.weekday] ?? '', time: rule.trigger.time })} · ${hx(lang, 'ruleAhead').replace('{n}', String(rule.trigger.leadMinutes))}`, tone: 'muted' },
+    { label: rx(lang, 'what'), value: `${rx(lang, 'order', { total, cur })} (${hx(lang, 'simulated')})`, tone: 'muted' },
+    { label: rx(lang, 'limits'), value: rule.limits.maxPrice !== undefined ? rx(lang, 'cap', { cap: rule.limits.maxPrice, cur }) : rx(lang, 'noCap'), tone: 'muted' },
+    { label: rx(lang, 'area'), value: area, tone: 'muted' },
+    { label: rx(lang, 'setBy'), value: author, tone: 'muted' },
+    { label: rx(lang, 'lastRun'), value: last ? `${runLine(last, view, lang)} (${at(last.at)})` : rx(lang, 'never'), tone: 'muted' },
+    { label: rx(lang, 'nextRun'), value: next ? rx(lang, 'nextAt', { when: at(next.at), prep: at(next.prepareAt).split(' ').pop() ?? '' }) : rx(lang, !rule.enabled ? 'noNext' : 'noNextPaused'), tone: 'muted' }
+  ];
+  const children: A2uiComponent[] = [text('note', hx(lang, 'rulesNote')), { id: 'details', component: 'InfoRows', title: rx(lang, 'details'), dataPath: '/details' }];
+  const data: Record<string, unknown> = { details: rows };
+  const why = last ? view.whys.find(w => w.id === last.whyId) : undefined;
+  if (why) {
+    children.push({ id: 'why', component: 'InfoRows', title: rx(lang, 'why'), dataPath: '/why' });
+    data.why = [
+      { label: hx(lang, 'why'), value: (lang === 'zh' && why.summaryZh ? why.summaryZh : why.summary) ?? '', tone: 'muted' },
+      { label: hx(lang, 'simulated'), value: rx(lang, 'whySource'), tone: 'muted' }
+    ];
+  }
+  const actions: A2uiAction[] = [];
+  if (isParent) {
+    const field = (name: string, label: string, value: string, extra: Record<string, unknown>): A2uiComponent => ({ id: `f-${name}`, component: 'TextField', name, label, default: value, ...extra });
+    children.push(text('edit-title', `**${rx(lang, 'edit')}**\n\n${rx(lang, 'editNote')}`));
+    children.push(field('ruleMaxPrice', rx(lang, 'capField', { cur }), rule.limits.maxPrice !== undefined ? String(rule.limits.maxPrice) : '', { maxLength: 4 }));
+    children.push(field('ruleTime', rx(lang, 'timeField'), rule.trigger.time, { inputType: 'time' }));
+    actions.push(
+      { id: `homemind.save-rule:${rule.id}`, label: rx(lang, 'save'), variant: 'primary', kind: 'homemind', args: { verb: 'save-rule', ruleId: rule.id } },
+      { id: `homemind.rule-toggle:${rule.id}`, label: hx(lang, rule.enabled ? 'ruleTurnOff' : 'ruleTurnOn'), variant: 'secondary', kind: 'homemind', args: { verb: 'rule-toggle', ruleId: rule.id, action: rule.enabled ? 'disable' : 'enable' } },
+      { id: `homemind.rule-delete:${rule.id}`, label: rx(lang, 'delete'), variant: 'secondary', kind: 'homemind', args: { verb: 'rule-delete', ruleId: rule.id } }
+    );
+  } else children.push(text('rules-parents', hx(lang, 'ruleParentsOnly')));
+  actions.push(back);
+  children.push({ id: 'actions', component: 'ActionBar', actions });
+  return turn('rules', lang === 'zh' && rule.titleZh ? rule.titleZh : rule.title, undefined, children, data);
+}
+
 function rulesScreen(input: HomemindScreenData): HomemindTurn {
   const { lang, view } = input;
+  if (input.ruleId) return ruleDetail(input, input.ruleId);
   const me = memberOf(view.family, view.memberId);
   const isParent = me?.role === 'parent';
   const rows: TaskRow[] = view.rules.map(rule => {
@@ -796,7 +893,9 @@ function rulesScreen(input: HomemindScreenData): HomemindTurn {
       tone: rule.enabled ? 'accent' : 'muted',
       // The rule acts only on a simulated service, and the badge says so on the row.
       simulated: true,
-      actions
+      actions,
+      // T9.1: tapping the rule opens its details (trigger, limits, last and next run, Why, edits).
+      open: { id: `homemind.open-rule:${rule.id}`, label: rx(lang, 'open'), kind: 'homemind', args: { verb: 'open-rule', ruleId: rule.id } }
     };
   });
   const children: A2uiComponent[] = [text('note', hx(lang, 'rulesNote'))];
@@ -864,7 +963,7 @@ const M = {
     zh: '这些保存在 Homemind 自己的看板上，决定它的建议。删除一条也会通知 PPMA。'
   },
   remove: { en: 'Remove', zh: '删除' },
-  correct: { en: 'Correct', zh: '更正' },
+  correct: { en: 'Edit', zh: '编辑' },
   correctTitle: { en: 'Correct a saved preference', zh: '更正一条已保存的偏好' },
   correctNote: {
     en: 'Write it the way it is true now. The next suggestions use the corrected words; the old ones are kept in Activity for Undo.',
@@ -1025,7 +1124,8 @@ function activityLine(a: Activity, view: HomemindViewData, lang: HomemindLang): 
     const w = words[a.note ?? ''] ?? words.corrected;
     return lang === 'zh' ? `${who} ${w[1]} ${a.note === 'removed' ? '' : what}`.trim() : `${who} ${w[0]} ${a.note === 'removed' ? '' : what}`.trim();
   }
-  if (a.kind === 'rule' && !view.rules.some(r => r.id === a.ref) && /^(enabled|disabled|auto|ask)(,|$)/.test(a.note ?? '')) {
+  // A rule's own Activity says "Rule <id> ..."; a group's claim setting does not.
+  if (a.kind === 'rule' && !a.what.startsWith('Rule ') && /^(enabled|disabled|auto|ask)(,|$)/.test(a.note ?? '')) {
     // T7.4: a group's claim setting. `ref` is the group id.
     const words: Record<string, [string, string]> = {
       enabled: ['turned on sign-up claims in the group', '开启了群接龙认领'],
@@ -1037,9 +1137,17 @@ function activityLine(a: Activity, view: HomemindViewData, lang: HomemindLang): 
     return `${who} ${parts.join(lang === 'zh' ? '，' : ', ')} (${hx(lang, 'simulated')})`;
   }
   if (a.kind === 'rule') {
-    const rule = view.rules.find(r => r.id === a.ref);
+    // A deleted rule is named from the Activity that kept it for Undo.
+    const rule = view.rules.find(r => r.id === a.ref) ?? view.activity.find(x => x.ruleUndo?.id === a.ref)?.ruleUndo;
     const what = rule ? `“${lang === 'zh' && rule.titleZh ? rule.titleZh : rule.title}”` : '';
-    const words: Record<string, [string, string]> = { created: ['created the rule', '创建了规则'], enabled: ['turned on the rule', '开启了规则'], disabled: ['turned off the rule', '关闭了规则'] };
+    const words: Record<string, [string, string]> = {
+      created: ['created the rule', '创建了规则'],
+      enabled: ['turned on the rule', '开启了规则'],
+      disabled: ['turned off the rule', '关闭了规则'],
+      changed: ['changed the rule', '修改了规则'],
+      deleted: ['deleted the rule', '删除了规则'],
+      restored: ['put back the rule', '恢复了规则']
+    };
     const w = words[a.note ?? ''] ?? words.enabled;
     return lang === 'zh' ? `${who} ${w[1]} ${what}`.trim() : `${who} ${w[0]} ${what}`.trim();
   }

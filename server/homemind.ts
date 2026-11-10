@@ -31,11 +31,13 @@ import { startScheduler, stopScheduler } from './homemind/scheduler';
 import { createEventHub } from './homemind/events';
 import type { EventHub } from './homemind/events';
 import type { Change, ChangeError, ItemPatch, NewItem } from './homemind/core';
-import { seedState } from './homemind/seed';
+import { machineTimezone, seedState } from './homemind/seed';
+import { PRESETS, PRESET_IDS, isPresetId, nextDueAt, nextLocalTime } from './homemind/presets';
+import type { Preset } from './homemind/presets';
 import { cancelCard, executeAction, expireCards, issueConfirmation } from './homemind/actions';
 import type { ActionErrorCode, AdapterRegistry } from './homemind/actions';
 import { applySettings, parseSettingsPatch } from './homemind/settings';
-import { applyRuleRequest, parseRuleBody, prepareRuleNow, runRules } from './homemind/rules';
+import { applyRuleRequest, nextOccurrence, parseRuleBody, prepareRuleNow, runRules } from './homemind/rules';
 import { afterGroupCard, applyGroupPolicy, considerSignUps, groupAutoAllowed, groupsView, parseGroupPolicyBody, reconsiderSignUp, requestGroupChange } from './homemind/groupClaims';
 import { planMailItem } from './homemind/inbox';
 import { KINDERGARTEN_GROUP, createSimulatedAdapters, postNextGroupMessage, servicesViewFor, updateGroupMessages } from './homemind/fakes';
@@ -537,6 +539,68 @@ async function runSourceChanges(rt: Runtime): Promise<string[]> {
 
 const claimSummary = (c: GroupClaim) => ({ id: c.id, status: c.status, ...(c.reason ? { reason: c.reason } : {}), ...(c.choice ? { choice: c.choice } : {}) });
 
+// --- demo controls (T4.1, T7.2, T9.1) -----------------------------------------------------------------
+
+/** Moves the demo clock forward, tells every window, and ticks at once so whatever came due shows now. */
+async function jumpClock(rt: Runtime, minutes: number): Promise<TickResult> {
+  const offsetMs = rt.clock.advance(minutes * 60_000);
+  rt.state = { ...rt.state, clockOffsetMs: offsetMs };
+  rt.hub.broadcast({ event: 'clock', data: clockData(rt) });
+  const ticked = await tickNow(rt);
+  await rt.store.save(rt.state);
+  return ticked;
+}
+
+type PostedGroupMessage = { ok: true; body: Record<string, unknown> } | { ok: false; code: string; message: string };
+
+/**
+ * The next sample message arrives in the simulated kindergarten group: PPMA hears of it (queued), a
+ * sign-up is claimed when claims are on (T7.4), and the message is judged for how soon to show it (T8.2).
+ */
+async function postGroupMessage(rt: Runtime): Promise<PostedGroupMessage> {
+  const posted = postNextGroupMessage(rt.state, rt.clock.now());
+  if (!posted.ok) return { ok: false, code: posted.code, message: posted.message };
+  rt.state = posted.state;
+  await rt.store.save(posted.state);
+  rt.hub.broadcast({ event: 'services.changed', data: {} });
+  reportToPpma(rt, [groupMessageReport(posted.message, KINDERGARTEN_GROUP)]);
+  const claims = await runGroupClaims(rt);
+  // A sign-up Homemind just claimed already sent its own notice.
+  const handled = claims.some(c => c.messageId === posted.message.id && c.status === 'claimed');
+  const judged = judgeMessage(rt.state, posted.message, KINDERGARTEN_GROUP.id, rt.clock.now(), handled);
+  if (judged) await commit(rt, judged.state, [], undefined, judged.deliveries);
+  return {
+    ok: true,
+    body: {
+      message: posted.message,
+      remaining: posted.remaining,
+      claims: claims.map(claimSummary),
+      ...(judged ? { judgment: { tier: judged.judgment.tier, reason: judged.judgment.reason, ...(judged.judgment.summaryAt ? { summaryAt: judged.judgment.summaryAt } : {}) } } : {})
+    }
+  };
+}
+
+/**
+ * T9.1: what a scene preset turns on after its reset: claims for the class group in Mom's name (the first
+ * parent; posting on its own, level 4, simulated group only), then the sample messages the scene starts after.
+ */
+async function preparePreset(rt: Runtime, preset: Preset): Promise<void> {
+  if (preset.claims) {
+    const parent = rt.state.family.members.find(m => m.role === 'parent' && m.hasAccount);
+    if (parent) {
+      const result = applyGroupPolicy(rt.state, { action: 'group-claims', groupId: KINDERGARTEN_GROUP.id, enabled: true, auto: true }, parent.id, rt.clock.now());
+      if (result.ok && result.changed) {
+        rt.state = result.state;
+        await rt.store.save(result.state);
+      }
+    }
+  }
+  for (let i = 0; i < (preset.groupMessages ?? 0); i++) {
+    const posted = await postGroupMessage(rt);
+    if (!posted.ok) break;
+  }
+}
+
 // --- requests -----------------------------------------------------------------------------------------
 
 interface Ctx {
@@ -999,6 +1063,20 @@ async function groupPolicyHandler(ctx: Ctx, body: Record<string, unknown>): Prom
   json(ctx.response, 200, { ok: true, changed: result.changed, policy: result.policy, claims: claims.map(claimSummary), ...(result.activityId ? { activityId: result.activityId } : {}) });
 }
 
+/**
+ * T9.1, `GET /screen/rules?id=`: one rule's details. The surface finds the rule, its runs and Why in the
+ * member's view; the bridge adds when it next runs (rules.ts owns that arithmetic). A bad id is a 400.
+ */
+function ruleDetailFor(ctx: Ctx): { ruleId?: string; ruleNext?: { at: string; prepareAt: string } } {
+  const raw = ctx.url.searchParams.get('id');
+  if (!raw) return {};
+  const ruleId = idOf(raw, 'id');
+  const rule = ctx.rt.state.rules.find(r => r.id === ruleId);
+  if (!rule?.enabled || ctx.rt.state.family.paused) return { ruleId };
+  const next = nextOccurrence(rule, ctx.rt.clock.now(), ctx.rt.state.family.timezone);
+  return { ruleId, ruleNext: { at: new Date(next.at).toISOString(), prepareAt: new Date(next.at - rule.trigger.leadMinutes * 60_000).toISOString() } };
+}
+
 // --- handlers -----------------------------------------------------------------------------------------
 
 const MEMBER_VIEW = (m: Member) => ({ id: m.id, name: m.name, nameZh: m.nameZh, role: m.role, hasAccount: m.hasAccount, lang: m.lang });
@@ -1097,7 +1175,7 @@ const routes: Route[] = [
         ...(name === 'services' || name === 'my-day' ? { groups: groupsView(ctx.rt.state), sourceChanges: sourceChangesView(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()) } : {}),
         // T8.1: "Noa is sick" and what Homemind suggested for that day, limited to what this member can see.
         ...(name === 'my-day' ? { situations: situationsView(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()) } : {}),
-        ...(name === 'rules' ? { demo: demo() } : {}),
+        ...(name === 'rules' ? { demo: demo(), ...ruleDetailFor(ctx) } : {}),
         // T8.2: the memory screen's correction form for one saved preference (`?id=`, checked like any id).
         ...(name === 'memory' && ctx.url.searchParams.get('id') ? { correctPreferenceId: idOf(ctx.url.searchParams.get('id') as string, 'id') } : {}),
         // T8.2: the evening summary or the week ahead (`?period=week`), from this member's view only.
@@ -1378,11 +1456,7 @@ const routes: Route[] = [
         throw new HttpError(400, 'invalid', `minutes must be a whole number from 1 to ${MAX_JUMP_MINUTES}`);
       }
       const { rt } = ctx;
-      const offsetMs = rt.clock.advance(minutes * 60_000);
-      rt.state = { ...rt.state, clockOffsetMs: offsetMs };
-      rt.hub.broadcast({ event: 'clock', data: clockData(rt) });
-      const ticked = await tickNow(rt);
-      await rt.store.save(rt.state);
+      const ticked = await jumpClock(rt, minutes);
       json(ctx.response, 200, { ok: true, ...clockData(rt), delivered: ticked.deliveries.length });
     }
   },
@@ -1394,26 +1468,26 @@ const routes: Route[] = [
     // The next sample message arrives in the simulated kindergarten group. PPMA hears of it (queued, never awaited).
     handler: async ctx => {
       pick(await readBody(ctx.request), [], 'post-group-message');
+      const result = await postGroupMessage(ctx.rt);
+      if (!result.ok) return fail(ctx.response, 409, result.code, result.message);
+      json(ctx.response, 200, { ok: true, ...result.body });
+    }
+  },
+  {
+    method: 'POST',
+    pattern: /^\/demo\/next-reminder$/,
+    auth: true,
+    demoOnly: true,
+    // T9.1: "Jump to next reminder": the demo clock moves to the next reminder attempt or evening summary, and ticks.
+    handler: async ctx => {
+      pick(await readBody(ctx.request), [], 'next-reminder');
       const { rt } = ctx;
-      const posted = postNextGroupMessage(rt.state, rt.clock.now());
-      if (!posted.ok) return fail(ctx.response, 409, posted.code, posted.message);
-      rt.state = posted.state;
-      await rt.store.save(posted.state);
-      rt.hub.broadcast({ event: 'services.changed', data: {} });
-      reportToPpma(rt, [groupMessageReport(posted.message, KINDERGARTEN_GROUP)]);
-      // T7.4: a sign-up in a group whose claims are on is read, and claimed or stopped on, at once.
-      const claims = await runGroupClaims(rt);
-      // T8.2: how soon the family should see it, and why. A sign-up Homemind just claimed already sent its own notice.
-      const handled = claims.some(c => c.messageId === posted.message.id && c.status === 'claimed');
-      const judged = judgeMessage(rt.state, posted.message, KINDERGARTEN_GROUP.id, rt.clock.now(), handled);
-      if (judged) await commit(rt, judged.state, [], undefined, judged.deliveries);
-      json(ctx.response, 200, {
-        ok: true,
-        message: posted.message,
-        remaining: posted.remaining,
-        claims: claims.map(claimSummary),
-        ...(judged ? { judgment: { tier: judged.judgment.tier, reason: judged.judgment.reason, ...(judged.judgment.summaryAt ? { summaryAt: judged.judgment.summaryAt } : {}) } } : {})
-      });
+      const due = nextDueAt(rt.state, rt.clock.now());
+      if (!due) return fail(ctx.response, 409, 'nothing_due', 'No reminder or summary is scheduled');
+      const minutes = Math.max(1, Math.ceil((due.at - rt.clock.now()) / 60_000));
+      if (minutes > MAX_JUMP_MINUTES) return fail(ctx.response, 409, 'too_far', 'The next reminder is more than a week away');
+      const ticked = await jumpClock(rt, minutes);
+      json(ctx.response, 200, { ok: true, kind: due.kind, minutes, ...clockData(rt), delivered: ticked.deliveries.length });
     }
   },
   {
@@ -1444,9 +1518,12 @@ const routes: Route[] = [
     // it prepares a card that spends money (the card still needs its own tap).
     handler: async ctx => {
       const body = pick(await readBody(ctx.request), ['ruleId'], 'run-rule');
-      const ruleId = idOf(body.ruleId, 'ruleId');
       if (ctx.member.role !== 'parent') return fail(ctx.response, 403, 'forbidden', 'Only a parent can run a rule');
       const { rt } = ctx;
+      // T9.1: the demo panel names no rule: the first rule that is on.
+      const firstOn = rt.state.rules.find(r => r.enabled)?.id;
+      if (body.ruleId === undefined && !firstOn) return fail(ctx.response, 409, 'no_rule', 'No rule is turned on');
+      const ruleId = body.ruleId === undefined ? (firstOn as string) : idOf(body.ruleId, 'ruleId');
       const result = prepareRuleNow(rt.state, ruleId, rt.clock.now(), adaptersOf(rt));
       if (!result.ok) return fail(ctx.response, result.status, result.code, result.message);
       if (!result.existing) await commitCards(rt, result.state);
@@ -1458,14 +1535,39 @@ const routes: Route[] = [
     pattern: /^\/demo\/reset$/,
     auth: true,
     demoOnly: true,
+    // A fresh board. T9.1: `{preset: 'scene-N'}` makes it at the moment that scene needs (presets.ts), and
+    // `{weekday, time}` at the next such local time (tests use it, so they never depend on the real day).
     handler: async ctx => {
-      await readBody(ctx.request);
-      const state = await ctx.rt.store.reset();
-      ctx.rt.state = state;
-      ctx.rt.chats?.clear();
-      ctx.rt.clock.setOffset(state.clockOffsetMs);
-      ctx.rt.hub.broadcast({ event: 'demo.reset', data: {} });
-      json(ctx.response, 200, { ok: true });
+      const body = pick(await readBody(ctx.request), ['preset', 'weekday', 'time'], 'reset');
+      const { rt } = ctx;
+      let preset: Preset | undefined;
+      let at: { weekdays: readonly number[]; time: string } | undefined;
+      if (body.preset !== undefined) {
+        if (!isPresetId(body.preset)) throw new HttpError(400, 'invalid', `preset is one of ${PRESET_IDS.join(', ')}`);
+        if (body.weekday !== undefined || body.time !== undefined) throw new HttpError(400, 'invalid', 'Send a preset, or a weekday and a time, not both');
+        preset = PRESETS[body.preset];
+        at = preset;
+      } else if (body.weekday !== undefined || body.time !== undefined) {
+        const { weekday, time } = body;
+        if (typeof weekday !== 'number' || !Number.isInteger(weekday) || weekday < 0 || weekday > 6) throw new HttpError(400, 'invalid', 'weekday is 0 (Sunday) to 6');
+        if (typeof time !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new HttpError(400, 'invalid', 'time is HH:MM');
+        at = { weekdays: [weekday], time };
+      }
+      let state: HomemindState;
+      if (!at) state = await rt.store.reset();
+      else {
+        const realNow = Date.now();
+        const target = nextLocalTime(realNow, machineTimezone(), at.weekdays, at.time);
+        state = { ...seedState({ now: target, realNow }), clockOffsetMs: target - realNow };
+        await rt.store.save(state);
+      }
+      rt.state = state;
+      rt.chats?.clear();
+      rt.clock.setOffset(state.clockOffsetMs);
+      if (preset) await preparePreset(rt, preset);
+      rt.hub.broadcast({ event: 'demo.reset', data: {} });
+      rt.hub.broadcast({ event: 'clock', data: clockData(rt) });
+      json(ctx.response, 200, { ok: true, ...(preset ? { preset: preset.id } : {}), ...clockData(rt) });
     }
   },
   {

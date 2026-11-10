@@ -502,6 +502,31 @@ Idea taken from Orbit's revision model. Do not copy Orbit code: it has no licens
 **Default demo setup:** one laptop running the bridge (`npm run build && npm start`) and PPMA locally, with two browser profiles side by side. Phones on the same network are optional, using
 `HOST=0.0.0.0` and checking allowed origins. Hosting is a stretch goal, since free hosting sleeps and PPMA needs persistent storage.
 
+### Added outside the plan: family shopping lists (S.1)
+
+**Built 2026-11-10 by Shira Zaloshinki, outside this task list; recorded here afterwards at the human's request.** Not part of any phase and
+not in the demo script (`docs/homemind-demo.md`). Details, test results and open points: `docs/PROGRESS.md`, log entry "S.1".
+
+- **What it is.** A **Shopping** screen in the Family tab: one list per store type. Six default stores with fixed ids and both languages
+  (Supermarket 超市, Pharmacy 药店, Mall 商场, Post office 邮局, Hardware store 五金店, Market 菜市场); a family can add its own stores (at most 20)
+  and remove one only when its list is empty.
+- **Items.** Any member with an account adds an item with an optional note and a quantity (1 to 99, shown as "− n +"), marks it bought and back,
+  removes it, and clears the bought items of a store. Adding something already waiting at that store adds nothing: the screen names the item and
+  offers +1, "Make it n" or keeping it. Item ids are never reused (`lastItem`).
+- **Runs.** One member takes a store's run ("I'll go", 我去买). Only that member releases it; another member taking it gets a 409. Taking a run puts a
+  task "Shopping at <store>" on the member's board for today (source kind `shopping`), so it is on their My day with the normal item actions and Undo.
+  **The task leads:** reassigned on the board, the run follows; handed off or removed, the store is free and its list stays; **marked done, that
+  store's list is emptied** (bought and not bought) and the store is free.
+- **Seed.** A reset puts 14 items across the six stores, in English and Chinese, with nobody going.
+- **Code.** Pure core `server/homemind/shopping.ts` (`shoppingOf`, `settleShoppingRuns`, `applyShopping`, `parseShoppingBody`); `HomemindState.shopping`
+  and `ShoppingStore`/`ShoppingItem`/`ShoppingState` in `types.ts`; `POST /api/homemind/shopping` (session needed) and the `shopping` screen in
+  `server/homemind.ts`, with `settleShoppingRuns` in `commit()`; the `shopping.changed` stream event; surfaces in `src/lib/homemindSurfaces.ts`;
+  `TaskList` rows take an optional `quantity`, and the shared `TextField` accepts `inputType: "number"`. Tests: `tests/homemindShopping.test.ts`.
+- **Rules it keeps.** Nothing is bought or ordered: a list is a note for the family. The whole family sees the lists; there is no "Parents only".
+  The model and PPMA are not involved.
+- **For later phases.** The lists live in the family's state document, so P11 stores them with it, and T11.3's two-household test should include them.
+  The chat cannot add to a list yet.
+
 ### P10 to P14: Homemind in the cloud (several families)
 
 **Added 2026-11-10, after T9.1, for the human's review. No code yet.** Checked against the code on that date.

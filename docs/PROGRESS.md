@@ -5,10 +5,11 @@ Update this file at the end of every task, per the session protocol in `CLAUDE.m
 ## Where we are
 
 - **Current task:** T9.1 done (Demo panel and run guide). The demo panel (closed by default, `HOMEMIND_DEMO=1`) has "Prepare Scene 1" to "Prepare Scene 5": each resets the board at the moment that scene needs (the demo clock moves forward, so they work at any real day and hour), and turns on claims for Scenes 2 and 5. Rules open into details with a parent's cap and time edits, delete and Undo. Tests no longer depend on the real day or hour. `docs/homemind-demo.md` (run guide) and `docs/homemind-stats.md` (measured numbers) are written. Before that, T8.3, P8.
-- **Next task:** T9.2 (Rehearsal). 🧑 Someone to review the Chinese text; a Huawei phone if available; the human's OK on the run guide after the team-lead run
+- **Planning added (2026-11-10):** `docs/PLAN.md` now has **P10 to P14** (Homemind in the cloud, several families, on Render), 19 tasks, written for the human's review. **No code was written.** Nothing in P10 to P14 is started. The human's answers to the 5 questions at the end of that section decide the details.
+- **Next task:** T9.2 (Rehearsal). 🧑 Someone to review the Chinese text; a Huawei phone if available; the human's OK on the run guide after the team-lead run. In parallel, the human may start **T10.1** (P10 does not depend on T9.2) once they answered the P10 to P14 questions.
 - **Scenes working end to end:** **Scene 1**, as scripted, in two windows: Mom assigns the pickup, it is on Dad's screen at once, he does not confirm, the demo clock jumps, Dad is reminded (alert and row), Mom gets "not confirmed yet" (alert and row), and she takes it from her board, which closes every alert in both windows. Covered by the e2e test "Scene 1: ...". Settings (quiet hours, autonomy, pause, backup contact) are editable and sync live. **Scene 4**, in two windows: Mom tells the Family chat she is at a wedding from Tuesday to Saturday, her Tuesday pickup becomes "Who's taking this?" on Dad's board, the Friday pizza card comes smaller (154 CNY for 3) and waits for a tap, Dad taps "为什么？" and sees the rule's reason, Dad's Friday work dinner makes it 89 CNY for 2 plus a babysitter card (Xiao Chen), and Dad's tap on Friday orders once from the simulated shop. Covered by the e2e test "Scene 4: ...". **Scene 2**, in two windows: Mom turns on claims for the group (level 4), the teacher's message and the 接龙 arrive, Homemind claims apples in the simulated group, Dad's window gets "Homemind 已替家里认领苹果", Mom's My day shows the claim with "Why?" and "Change to" (cake first, "because Noa enjoys baking it with us the most"), she taps Change on cake, the correction is posted, the apples preparations leave and "为派对做蛋糕（8个小朋友）" arrives on Dad's board as "谁来负责？". Covered by the e2e test "Scene 2: ...". The screenshot extraction part of Scene 2 is T5.3's chat card. **Scene 3**, in two windows: Mom tells the Family chat "Noa is sick today"; the card shows the pickup "not needed", swimming "postpone a week" and the stay-home task; Dad's window gets "谁来负责？在家照顾诺娅" and My day shows "谁可以留在家" (both "当天没有标记外出"); Dad taps 我来; Mom taps "Apply all (2)" (pickup cancelled, swimming a week later, "妈妈已采纳" in Dad's window); "Why?" says fixed rules and "Source: a Homemind rule"; on a weekday Mom confirms the teacher message and it shows on Services. Covered by the e2e test "Scene 3: ...". **Scene 2's last beat (T7.5)**, in the same e2e test: "Update message (demo)" moves the party to Friday, Dad gets the changed-message notice, Mom's My day shows "4 items depend on it" (cake: event and 3 preparations), she taps Apply changes (the party is on Friday, the flags clear, nothing posted since cake is still wanted), then Undo puts it back. **Scene 5**, in two windows: claims on, the party message reaches Dad as "王老师在班级群：… 现在提醒", the 接龙 is claimed (no second alert), the "不着急" note brings **no alert** and shows on Services and on both parents' My day as "Waits for the evening summary (20:00): the sender wrote “不着急” (not urgent)"; Mom corrects the cake preference to cookies on Memory, and the sign-up choices now show cookies with her reason and cake without; the clock jumps to 20:01, Dad gets "你的晚间摘要已送达 … 有 1 条群消息等到了现在", taps 查看, and the summary lists 你需要做的事 first and the note with its reason. Covered by the e2e test "Scene 5: ..."
 - **Blocked on:** nothing
-- **Last updated:** 2026-11-10, after T9.1
+- **Last updated:** 2026-11-10, after planning P10 to P14
 
 ## Task status
 
@@ -48,6 +49,25 @@ Status values: `not started`, `in progress`, `partial`, `done`, `skipped`, `cut`
 | T9.1 | Demo panel and run guide | done | `server/homemind/presets.ts`, demo panel in `FamilyView.tsx`, `POST /demo/reset {preset}`, `POST /demo/next-reminder`, rule details and edits, 接龙 sample without dates, `docs/homemind-demo.md`, `docs/homemind-stats.md`. 1006 unit tests (26 new), 73 of 73 e2e (3 new). Live Flash 21 of 21 on the presets |
 | T9.2 | Rehearsal | not started |  |
 | T9.3 | Backup video | not started |  |
+| T10.1 | Cloud mode and closing the other bridges | not started | P10, planned 2026-11-10 |
+| T10.2 | Time zone from an env var | not started |  |
+| T10.3 | Access code gate | not started |  |
+| T10.4 | Render files, local dry run and first guide | not started | STOP: the human deploys |
+| T11.1 | Store interface | not started | P11 |
+| T11.2 | Postgres store and migrations | not started | 🧑 OK to add `pg`; a throwaway Postgres |
+| T11.3 | A runtime per family | not started |  |
+| T12.1 | Passwords and the new token | not started | P12 |
+| T12.2 | Sign up, sign in, sign out | not started |  |
+| T12.3 | Create a family | not started |  |
+| T12.4 | Sign-in, sign-up and create-family screens | not started |  |
+| T13.1 | Members and removing access | not started | P13 |
+| T13.2 | Pre-approved emails | not started |  |
+| T13.3 | Join link and requests | not started |  |
+| T13.4 | Waiting, approval and people screens | not started |  |
+| T14.1 | Isolation test | not started | P14 |
+| T14.2 | Rate limits and the daily model cap | not started |  |
+| T14.3 | e2e with two families and four contexts | not started | 🧑 a throwaway Postgres |
+| T14.4 | Deploy with Postgres and the cloud guide | not started | STOP: the human deploys |
 
 ## Decisions made during the build
 
@@ -390,6 +410,11 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 - [x] OK on the P4 STOP: Scene 1 approved (2026-11-05)
 - [x] PPMA clone at `../ppma`, for T0.2
 - [x] Real 接龙 screenshot: none available. A simulated one is used instead
+- [ ] Answers to the 5 questions at the end of the P10 to P14 section of `docs/PLAN.md` (tabs in cloud mode, the picker in P10, Render plan and region, an admin script, moving `tsx`)
+- [ ] OK to add the `pg` dependency (before T11.2)
+- [ ] A throwaway Postgres for tests (before T11.2 and T14.3)
+- [ ] A Render account, the access code, the sign-up email list, and the model variables for the cloud (before T10.4)
+- [ ] The team lead to open the first link from the company network and report (T10.4)
 - [ ] Huawei phone for a browser test, if available, for T9.2
 - [ ] Someone to review the Chinese text, for T9.2
 - [ ] Ask the team: will PPMA go behind DigitalMate, and who owns the PPMA-Orbit integration?
@@ -463,6 +488,18 @@ Template (copy for each task):
 - Expected output:
 - Manual check:
 ```
+
+### Planning: P10 to P14, Homemind in the cloud: done (2026-11-10)
+**Built:** only `docs/PLAN.md`: a new section "P10 to P14: Homemind in the cloud (several families)" before section 5, and one phrase changed in section 6 ("production-grade auth and multi-tenancy"). It holds the human's decisions as given, the decisions made while planning, a list of 14 things in the current code that make this harder, a day estimate per phase, the new env vars, 19 tasks (T10.1 to T14.4) with files and "Done when", and 5 questions. No code, no config, no tests changed.
+**Decisions (made while planning, the human can change them):** one family per user; only emails on the global list can create a family; `hasAccount` stays in the state and is derived from the memberships; removing someone removes access, not the member; sign out is client-side; `GET /members` does not exist in cloud mode (`GET /me` replaces it); P10 keeps the member picker, only behind the access code.
+**Deviations:** `CLAUDE.md` says "The app has no accounts" and section 6 of the plan put multi-tenancy out of scope. The new phases change both for the cloud build only; local mode and the flag-off behavior stay as they are. `CLAUDE.md` was not edited (it says not to); the human may want its "What the code already tells us" bullet about accounts updated when P12 starts.
+**Test results:** `npm test` before any change: the first run failed with 1 test failed, 3 files failed (999 passed, 7 skipped); the output showed an `afterEach` of a test that stops PPMA clients (`clients.map(c => c.stop())`). Two runs right after: 1006 passed, 1 skipped, 62 files passed, 24 s. The first failure was not reproduced, so it looks like a timing flake, but its test name was not captured. `tsc` and e2e were not run (docs only).
+**Not done or not verified:** Render's current plan terms, regions, how `x-forwarded-for` is ordered behind Render's proxy, and whether `onrender.com` is reachable from the company network were not checked (no network use in this session). The plan marks each as something to check.
+**Next task should know:** the largest risks are T11.3 (the dispatcher, scheduler and test hooks), the zero-downtime deploy overlap (T11.2's lock and version check), and the shared browser `localStorage` (T12.4). P11 to P14 should wait until T9.2 is done.
+**How to verify:**
+- Commands: `git diff --stat HEAD~1` and open `docs/PLAN.md` at "### P10 to P14".
+- Expected output: only `docs/PLAN.md` and `docs/PROGRESS.md` changed; 19 tasks listed, each with "Done when".
+- Manual check: read the "What in the current code makes this harder" list and the 5 questions, and answer them.
 
 ### T9.1 Demo panel and run guide: done (2026-11-10)
 **Built:**

@@ -1092,7 +1092,9 @@ export interface ShoppingItem {
   name: string;
   /** Chinese words for seeded demo items. What the family types has one language, shown as written. */
   nameZh?: string;
-  /** Optional quantity or note ("2 kg", "the blue one"). */
+  /** How many (1 to 99). Absent in older files: one. */
+  qty?: number;
+  /** Optional note ("1 kg", "the blue one"). */
   note?: string;
   noteZh?: string;
   addedBy: string;

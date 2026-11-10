@@ -486,8 +486,8 @@ export function FamilyView({
     try {
       const result = await homemindShopping(session.token, request);
       if (result.duplicateOf) {
-        // Already on that list: the Shopping screen says which item it is.
-        go({ screen: 'shopping', params: { id: result.duplicateOf } }, { replace: nav.screen === 'shopping' });
+        // Already on that list: the Shopping screen asks what to do (+1, the typed quantity, or keep it).
+        go({ screen: 'shopping', params: { id: result.duplicateOf, q: request.action === 'add-item' && request.qty && request.qty > 1 ? String(request.qty) : '' } }, { replace: nav.screen === 'shopping' });
         return;
       }
       if (clear.length) setForm(f => Object.fromEntries(Object.entries(f).filter(([k]) => !clear.includes(k))));
@@ -542,7 +542,9 @@ export function FamilyView({
       switch (verb) {
         case 'shop-add': {
           if (!field('shopItem')) return setNotice({ text: tr('Write what to buy first.', '请先写下要买什么。'), tone: 'error' });
-          return shoppingRequest({ action: 'add-item', storeId: field('shopStore'), name: field('shopItem'), ...(field('shopNote') ? { note: field('shopNote') } : {}) }, ['shopItem', 'shopNote'], tr('Added to the list.', '已加到清单。'));
+          const qty = Number(field('shopQty') || '1');
+          if (!Number.isInteger(qty) || qty < 1 || qty > 99) return setNotice({ text: tr('The quantity is a whole number from 1 to 99.', '数量是 1 到 99 之间的整数。'), tone: 'error' });
+          return shoppingRequest({ action: 'add-item', storeId: field('shopStore'), name: field('shopItem'), qty, ...(field('shopNote') ? { note: field('shopNote') } : {}) }, ['shopItem', 'shopQty', 'shopNote'], tr('Added to the list.', '已加到清单。'));
         }
         case 'shop-add-store': {
           if (!field('shopStoreName')) return setNotice({ text: tr('Write the name of the store first.', '请先写下商店名称。'), tone: 'error' });
@@ -558,6 +560,12 @@ export function FamilyView({
           return shoppingRequest({ action: 'release', storeId: str(args.storeId) ?? '' }, [], tr('Released. Someone else can take it.', '已放弃，其他人可以认领。'));
         case 'shop-clear':
           return shoppingRequest({ action: 'clear-bought', storeId: str(args.storeId) ?? '' }, [], tr('Bought items cleared.', '已清除已买的东西。'));
+        case 'shop-bump':
+          return shoppingRequest({ action: 'bump', itemId: str(args.itemId) ?? '' }, [], tr('One more on the list.', '数量加一。'));
+        case 'shop-unbump':
+          return shoppingRequest({ action: 'unbump', itemId: str(args.itemId) ?? '' }, [], tr('One less on the list.', '数量减一。'));
+        case 'shop-set-qty':
+          return shoppingRequest({ action: 'set-qty', itemId: str(args.itemId) ?? '', qty: typeof args.qty === 'number' ? args.qty : 1 }, [], tr('Quantity changed.', '数量已更改。'));
         case 'shop-keep':
           return go({ screen: 'shopping', params: {} }, { replace: true });
         case 'shop-remove-store':

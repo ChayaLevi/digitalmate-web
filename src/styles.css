@@ -7399,3 +7399,10 @@ a {
 .hm-demo-panel-row button:disabled { opacity: .6; cursor: default; }
 @keyframes hm-alert-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .hm-alert { animation: none; } }
+
+/* Shopping: "− 3 +" on a list row. */
+.hm-qty { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; min-height: 32px; }
+.hm-qty-btn { min-width: 34px; min-height: 32px; border: 0; background: transparent; color: var(--text); font-size: 17px; line-height: 1; cursor: pointer; }
+.hm-qty-btn:hover:not(:disabled) { background: var(--line-soft); }
+.hm-qty-btn:disabled { opacity: .35; cursor: default; }
+.hm-qty-value { min-width: 26px; text-align: center; font-weight: 600; font-size: 14px; font-variant-numeric: tabular-nums; }

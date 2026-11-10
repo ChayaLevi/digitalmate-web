@@ -1204,11 +1204,11 @@ const routes: Route[] = [
         ...(name === 'my-day' ? { situations: situationsView(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()) } : {}),
         ...(name === 'rules' ? { demo: demo(), ...ruleDetailFor(ctx) } : {}),
         // The family's shopping lists, per store. The whole family sees them.
-        // `?id=`: an item someone tried to add twice: the screen says so.
+        // `?id=&q=`: an item someone tried to add twice, and the quantity they asked for: the screen asks what to do.
         ...(name === 'shopping'
           ? {
               shopping: shoppingOf(ctx.rt.state),
-              ...(ctx.url.searchParams.get('id') ? { shoppingAsk: { itemId: idOf(ctx.url.searchParams.get('id') as string, 'id') } } : {})
+              ...(ctx.url.searchParams.get('id') ? { shoppingAsk: { itemId: idOf(ctx.url.searchParams.get('id') as string, 'id'), ...(/^[1-9]\d?$/.test(query) ? { qty: Number(query) } : {}) } } : {})
             }
           : {}),
         // T8.2: the memory screen's correction form for one saved preference (`?id=`, checked like any id).

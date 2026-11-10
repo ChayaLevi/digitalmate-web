@@ -17,7 +17,7 @@ import { applyChange } from './core';
 import type { CoreEvent } from './core';
 import type { HomemindState, ShoppingItem, ShoppingState, ShoppingStore } from './types';
 
-export const SHOPPING_LIMITS = { maxStores: 20, maxItems: 300, maxName: 80, maxNote: 120, maxStoreName: 40 } as const;
+export const SHOPPING_LIMITS = { maxStores: 20, maxItems: 300, maxName: 80, maxNote: 120, maxStoreName: 40, maxQty: 99 } as const;
 
 /** The stores every family starts with. Fixed ids, so a reset gives the same lists. */
 export const DEFAULT_STORES: readonly ShoppingStore[] = [
@@ -68,14 +68,20 @@ function withoutRun(store: ShoppingStore): ShoppingStore {
 }
 
 export type ShoppingRequest =
-  | { action: 'add-item'; storeId: string; name: string; note?: string }
+  | { action: 'add-item'; storeId: string; name: string; qty?: number; note?: string }
   | { action: 'remove-item'; itemId: string }
   | { action: 'bought'; itemId: string; bought: boolean }
   | { action: 'clear-bought'; storeId: string }
   | { action: 'claim'; storeId: string }
   | { action: 'release'; storeId: string }
   | { action: 'add-store'; name: string }
-  | { action: 'remove-store'; storeId: string };
+  | { action: 'remove-store'; storeId: string }
+  /** One more of an item already on the list. */
+  | { action: 'bump'; itemId: string }
+  /** One less, never below one (Remove takes the item off). */
+  | { action: 'unbump'; itemId: string }
+  /** A new quantity for an item already on the list. */
+  | { action: 'set-qty'; itemId: string; qty: number };
 
 /** How an item's name is compared: case, spaces and the Chinese name don't make it a different item. */
 const sameName = (a: string, b: string) => a.toLowerCase().replace(/\s+/g, ' ').trim() === b.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -85,18 +91,24 @@ export function findDuplicate(shopping: ShoppingState, storeId: string, name: st
   return shopping.items.find(i => i.storeId === storeId && !i.bought && (sameName(i.name, name) || (!!i.nameZh && sameName(i.nameZh, name))));
 }
 
+/** How many: absent means one. */
+export const qtyOf = (item: Pick<ShoppingItem, 'qty'>): number => item.qty ?? 1;
+
 export type ShoppingParse = { ok: true; value: ShoppingRequest } | { ok: false; message: string };
 
 const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const KEYS: Record<ShoppingRequest['action'], string[]> = {
-  'add-item': ['storeId', 'name', 'note'],
+  'add-item': ['storeId', 'name', 'qty', 'note'],
   'remove-item': ['itemId'],
   bought: ['itemId', 'bought'],
   'clear-bought': ['storeId'],
   claim: ['storeId'],
   release: ['storeId'],
   'add-store': ['name'],
-  'remove-store': ['storeId']
+  'remove-store': ['storeId'],
+  bump: ['itemId'],
+  unbump: ['itemId'],
+  'set-qty': ['itemId', 'qty']
 };
 
 /** One line of the family's own words: control characters out, spaces collapsed, trimmed. */
@@ -107,9 +119,10 @@ function line(value: unknown): string {
 /** Checks a request body (`POST /shopping`). Unknown fields, bad ids and over-long words are refused. */
 export function parseShoppingBody(body: Record<string, unknown>): ShoppingParse {
   const action = body.action as ShoppingRequest['action'];
-  if (typeof action !== 'string' || !(action in KEYS)) return { ok: false, message: 'action is add-item, remove-item, bought, clear-bought, claim, release, add-store or remove-store' };
+  if (typeof action !== 'string' || !(action in KEYS)) return { ok: false, message: 'action is add-item, remove-item, bought, clear-bought, claim, release, add-store, remove-store, bump, unbump or set-qty' };
   const extra = Object.keys(body).find(k => k !== 'action' && !KEYS[action].includes(k));
   if (extra) return { ok: false, message: `Unknown shopping field: ${extra.slice(0, 40)}` };
+  const qty = (value: unknown): number | null => (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= SHOPPING_LIMITS.maxQty ? value : null);
   const id = (key: 'storeId' | 'itemId'): string | null => (typeof body[key] === 'string' && ID.test(body[key] as string) ? (body[key] as string) : null);
   switch (action) {
     case 'add-item': {
@@ -121,13 +134,22 @@ export function parseShoppingBody(body: Record<string, unknown>): ShoppingParse 
       if (body.note !== undefined && typeof body.note !== 'string') return { ok: false, message: 'note must be text' };
       const note = line(body.note);
       if (note.length > SHOPPING_LIMITS.maxNote) return { ok: false, message: `Keep the quantity or note to ${SHOPPING_LIMITS.maxNote} characters` };
-      return { ok: true, value: { action, storeId, name, ...(note ? { note } : {}) } };
+      if (body.qty !== undefined && qty(body.qty) === null) return { ok: false, message: `The quantity is a whole number from 1 to ${SHOPPING_LIMITS.maxQty}` };
+      return { ok: true, value: { action, storeId, name, ...(body.qty !== undefined ? { qty: body.qty as number } : {}), ...(note ? { note } : {}) } };
     }
     case 'remove-item':
+    case 'bump':
+    case 'unbump':
+    case 'set-qty':
     case 'bought': {
       const itemId = id('itemId');
       if (!itemId) return { ok: false, message: 'itemId is not a valid id' };
-      if (action === 'remove-item') return { ok: true, value: { action, itemId } };
+      if (action === 'remove-item' || action === 'bump' || action === 'unbump') return { ok: true, value: { action, itemId } };
+      if (action === 'set-qty') {
+        const value = qty(body.qty);
+        if (value === null) return { ok: false, message: `The quantity is a whole number from 1 to ${SHOPPING_LIMITS.maxQty}` };
+        return { ok: true, value: { action, itemId, qty: value } };
+      }
       if (typeof body.bought !== 'boolean') return { ok: false, message: 'bought must be true or false' };
       return { ok: true, value: { action, itemId, bought: body.bought } };
     }
@@ -195,12 +217,12 @@ export function applyShopping(state: HomemindState, request: ShoppingRequest, me
   switch (request.action) {
     case 'add-item': {
       if (!store) return refuse(404, 'not_found', 'No such store');
-      // Already on that list (and not bought yet): nothing is added, and the member is told which item it is.
+      // Already on that list (and not bought yet): nothing is added; the member chooses +1, a new quantity, or to keep it.
       const twin = findDuplicate(current, store.id, request.name);
       if (twin) return { ok: true, state, changed: false, duplicateOf: twin.id, itemId: twin.id, storeId: store.id };
       if (current.items.length >= SHOPPING_LIMITS.maxItems) return refuse(409, 'full', 'The shopping lists are full. Clear the bought items first.');
       const { id: itemId, n } = nextId('shop', new Set(current.items.map(i => i.id)), current.lastItem);
-      const added: ShoppingItem = { id: itemId, storeId: store.id, name: request.name, ...(request.note ? { note: request.note } : {}), addedBy: memberId, addedAt: at };
+      const added: ShoppingItem = { id: itemId, storeId: store.id, name: request.name, qty: request.qty ?? 1, ...(request.note ? { note: request.note } : {}), addedBy: memberId, addedAt: at };
       return done({ ...current, items: [...current.items, added], lastItem: n }, { itemId, storeId: store.id });
     }
     case 'remove-item': {
@@ -213,6 +235,15 @@ export function applyShopping(state: HomemindState, request: ShoppingRequest, me
       const { bought: _was, ...rest } = item;
       const next: ShoppingItem = request.bought ? { ...rest, bought: { by: memberId, at } } : rest;
       return done({ ...current, items: current.items.map(i => (i.id === item.id ? next : i)) }, { itemId: item.id, storeId: item.storeId });
+    }
+    case 'bump':
+    case 'unbump':
+    case 'set-qty': {
+      if (!item) return refuse(404, 'not_found', 'That item is no longer on the list');
+      const have = qtyOf(item);
+      const next = request.action === 'bump' ? Math.min(have + 1, SHOPPING_LIMITS.maxQty) : request.action === 'unbump' ? Math.max(have - 1, 1) : request.qty;
+      if (next === have) return same();
+      return done({ ...current, items: current.items.map(i => (i.id === item.id ? { ...i, qty: next } : i)) }, { itemId: item.id, storeId: item.storeId });
     }
     case 'clear-bought': {
       if (!store) return refuse(404, 'not_found', 'No such store');

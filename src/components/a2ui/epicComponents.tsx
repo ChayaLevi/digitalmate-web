@@ -101,8 +101,8 @@ export function renderEpicComponent(component: A2uiComponent, ctx: Ctx, key: str
 
     case 'TextField': {
       const value = current === undefined ? str(component.default) : str(current);
-      // `inputType` (Homemind forms) picks a date or time input; anything else stays a text field.
-      const inputType = ['date', 'time'].includes(str(component.inputType)) ? str(component.inputType) : 'text';
+      // `inputType` (Homemind forms) picks a date, time or number input; anything else stays a text field.
+      const inputType = ['date', 'time', 'number'].includes(str(component.inputType)) ? str(component.inputType) : 'text';
       return (
         <label className="epic-field epic-text" key={key}>
           <span className="block-title">{str(component.label)}</span>

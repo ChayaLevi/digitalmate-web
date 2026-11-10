@@ -6,7 +6,8 @@ import { Icon } from '../Icons';
 /**
  * Homemind catalog components (T3.1):
  * - `TaskList`: rows with an owner, a meta line, a state, and per-row actions (same pattern as `RecipeOptions`).
- *   Data: Array<{id, title, meta, ownerLabel, state, tone, simulated?, actions: A2uiAction[]}>.
+ *   Data: Array<{id, title, meta, ownerLabel, state, tone, simulated?, actions: A2uiAction[], quantity?}>.
+ *   `quantity: {value, label, less?, more?}` draws "− 3 +" before the actions (shopping); no `less`: "−" is off.
  * - `CalendarBoard`: day, week and month views with a person and a type filter.
  *   Data: {today, weekStartsOn, weekdays, members[{id,label}], entries[]}. Dates and times are already
  *   local to the family's zone, so nothing here converts time zones. Date math is on `YYYY-MM-DD` strings.
@@ -84,6 +85,7 @@ interface TaskRowData {
   simulated: boolean;
   actions: A2uiAction[];
   open?: A2uiAction;
+  quantity?: { value: number; label: string; less?: A2uiAction; more?: A2uiAction };
 }
 
 const actionOf = (value: unknown): A2uiAction | undefined =>
@@ -112,8 +114,34 @@ function readRows(raw: unknown): TaskRowData[] {
       tone: toneOf(row.tone),
       simulated: row.simulated === true,
       actions: Array.isArray(row.actions) ? (row.actions.filter(a => a && typeof a === 'object' && typeof (a as A2uiAction).label === 'string') as A2uiAction[]) : [],
-      ...(actionOf(row.open) ? { open: actionOf(row.open) } : {})
+      ...(actionOf(row.open) ? { open: actionOf(row.open) } : {}),
+      ...(quantityOf(row.quantity) ? { quantity: quantityOf(row.quantity) } : {})
     }));
+}
+
+function quantityOf(raw: unknown): TaskRowData['quantity'] {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const q = raw as Record<string, unknown>;
+  if (typeof q.value !== 'number' || !Number.isFinite(q.value)) return undefined;
+  return { value: q.value, label: str(q.label), less: actionOf(q.less), more: actionOf(q.more) };
+}
+
+/** "− 3 +": the number between its two buttons. A missing action turns its button off. */
+function QuantityStepper({ quantity, title, onAction }: { quantity: NonNullable<TaskRowData['quantity']>; title: string; onAction: Ctx['onAction'] }) {
+  const { value, label, less, more } = quantity;
+  return (
+    <span className="hm-qty" role="group" aria-label={`${label}: ${title}`}>
+      <button type="button" className="hm-qty-btn" disabled={!less} onClick={() => less && onAction(less)} aria-label={less ? `${less.label}: ${title}` : undefined}>
+        −
+      </button>
+      <output className="hm-qty-value" aria-live="polite">
+        {value}
+      </output>
+      <button type="button" className="hm-qty-btn" disabled={!more} onClick={() => more && onAction(more)} aria-label={more ? `${more.label}: ${title}` : undefined}>
+        +
+      </button>
+    </span>
+  );
 }
 
 function TaskList({ component, ctx, id }: { component: A2uiComponent; ctx: Ctx; id: string }) {
@@ -143,8 +171,11 @@ function TaskList({ component, ctx, id }: { component: A2uiComponent; ctx: Ctx; 
               {row.simulated ? <SimulatedBadge tr={ctx.tr} /> : null}
             </div>
             {row.meta ? <p className="hm-task-meta">{row.meta}</p> : null}
-            {row.actions.length ? (
-              <div className="hm-task-actions">{row.actions.map((action, index) => actionButton(action, ctx.onAction, `${row.id}-${index}`, row.title))}</div>
+            {row.actions.length || row.quantity ? (
+              <div className="hm-task-actions">
+                {row.quantity ? <QuantityStepper quantity={row.quantity} title={row.title} onAction={ctx.onAction} /> : null}
+                {row.actions.map((action, index) => actionButton(action, ctx.onAction, `${row.id}-${index}`, row.title))}
+              </div>
             ) : null}
           </li>
         ))}

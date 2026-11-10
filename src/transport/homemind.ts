@@ -191,14 +191,17 @@ export async function saveHomemindSettings(token: string, body: Record<string, u
 
 /** The family's shopping lists (server/homemind/shopping.ts). The server checks every request again. */
 export type ShoppingRequest =
-  | { action: 'add-item'; storeId: string; name: string; note?: string }
+  | { action: 'add-item'; storeId: string; name: string; qty?: number; note?: string }
   | { action: 'remove-item'; itemId: string }
   | { action: 'bought'; itemId: string; bought: boolean }
   | { action: 'clear-bought'; storeId: string }
   | { action: 'claim'; storeId: string }
   | { action: 'release'; storeId: string }
   | { action: 'add-store'; name: string }
-  | { action: 'remove-store'; storeId: string };
+  | { action: 'remove-store'; storeId: string }
+  | { action: 'bump'; itemId: string }
+  | { action: 'unbump'; itemId: string }
+  | { action: 'set-qty'; itemId: string; qty: number };
 
 export async function homemindShopping(token: string, request: ShoppingRequest): Promise<{ ok: true; changed: boolean; itemId?: string; storeId?: string; duplicateOf?: string }> {
   return call('/api/homemind/shopping', { method: 'POST', token, body: JSON.stringify(request) });

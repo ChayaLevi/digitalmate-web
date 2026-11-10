@@ -90,8 +90,8 @@ export interface HomemindScreenData {
   ruleNext?: { at: string; prepareAt: string };
   /** The `shopping` screen: the family's lists per store (the whole family sees them). */
   shopping?: ShoppingState;
-  /** The `shopping` screen: an item someone tried to add again. */
-  shoppingAsk?: { itemId: string };
+  /** The `shopping` screen: an item someone tried to add again, and the quantity they asked for. */
+  shoppingAsk?: { itemId: string; qty?: number };
 }
 
 /** What the bridge sends the browser for every Homemind screen. Same shape as a Fridge2Table turn. */
@@ -119,6 +119,8 @@ export interface TaskRow {
   actions: A2uiAction[];
   /** Tapping the title opens the item in Add and edit (T3.2). */
   open?: A2uiAction;
+  /** Shopping: "− 3 +" on the row. No `less`: the "−" is off (one is the least). */
+  quantity?: { value: number; label: string; less?: A2uiAction; more?: A2uiAction };
 }
 
 /** One entry of `CalendarBoard`: local date and time in the family's zone, so no conversion on the client. */
@@ -2662,29 +2664,46 @@ function shoppingScreen(input: HomemindScreenData): HomemindTurn {
   const shop = (verb: string, label: string, variant: A2uiAction['variant'], args: Record<string, unknown>, id: string): A2uiAction => ({ id: `homemind.${verb}:${id}`, label, variant, kind: 'homemind', args: { verb, ...args } });
   const children: A2uiComponent[] = [];
   const data: Record<string, unknown> = {};
-  // Tried to add something that is already waiting at that store: say so, instead of listing it twice.
+  // Tried to add something that is already waiting at that store: ask, instead of listing it twice.
   const twin = input.shoppingAsk ? shopping.items.find(i => i.id === input.shoppingAsk?.itemId && !i.bought) : undefined;
   if (twin) {
     // The family's own words go inside screen text, so link and bold marks are dropped there.
     const plain = (s: string) => s.replace(/[[\]()*`_\\]/g, '');
     const twinStore = shopping.stores.find(s => s.id === twin.storeId);
     const twinName = plain(lang === 'zh' && twin.nameZh ? twin.nameZh : twin.name);
+    const has = twin.qty ?? 1;
+    const asked = input.shoppingAsk?.qty;
     const where = twinStore ? storeName(twinStore) : '';
     children.push(
       text(
         'shop-ask',
-        t(`**${twinName}** is already on the ${where} list, added by ${who(twin.addedBy)}. It was not added again.`, `**${twinName}**已经在${where}清单上了，是${who(twin.addedBy)}加的，没有重复添加。`)
+        t(`**${twinName}** is already on the ${where} list (quantity ${has}), added by ${who(twin.addedBy)}. Change the quantity?`, `**${twinName}**已经在${where}清单上了（数量 ${has}），是${who(twin.addedBy)}加的。要改数量吗？`)
       )
     );
-    children.push({ id: 'shop-ask-actions', component: 'ActionBar', actions: [shop('shop-keep', t('OK', '好的'), 'secondary', {}, twin.id)] });
+    const asks: A2uiAction[] = [shop('shop-bump', '+1', 'primary', { itemId: twin.id }, twin.id)];
+    if (asked && asked !== has) asks.push(shop('shop-set-qty', t(`Make it ${asked}`, `改成 ${asked}`), 'secondary', { itemId: twin.id, qty: asked }, twin.id));
+    asks.push(shop('shop-keep', t('Keep it as it is', '保持不变'), 'ghost', {}, twin.id));
+    children.push({ id: 'shop-ask-actions', component: 'ActionBar', actions: asks });
   }
 
   if (shopping.stores.length) {
     children.push({ id: 'f-shopItem', component: 'TextField', name: 'shopItem', label: t('What to buy', '要买什么'), default: '', maxLength: 80 });
-    children.push({ id: 'f-shopNote', component: 'TextField', name: 'shopNote', label: t('Quantity or note (optional)', '数量或备注（可选）'), default: '', maxLength: 120 });
+    children.push({ id: 'f-shopQty', component: 'TextField', name: 'shopQty', label: t('Quantity', '数量'), default: '1', inputType: 'number', maxLength: 2 });
+    children.push({ id: 'f-shopNote', component: 'TextField', name: 'shopNote', label: t('Note (optional)', '备注（可选）'), default: '', maxLength: 120 });
     children.push({ id: 'f-shopStore', component: 'ChoiceGroup', name: 'shopStore', title: t('Where', '在哪儿买'), default: shopping.stores[0].id, options: shopping.stores.map(s => ({ value: s.id, label: storeName(s) })) });
     children.push({ id: 'shop-add', component: 'ActionBar', actions: [shop('shop-add', t('Add to list', '加到清单'), 'primary', {}, 'form')] });
   }
+
+  const quantityOf = (i: ShoppingState['items'][number]): NonNullable<TaskRow['quantity']> => {
+    const value = i.qty ?? 1;
+    const open = !i.bought;
+    return {
+      value,
+      label: t('Quantity', '数量'),
+      ...(open && value > 1 ? { less: shop('shop-unbump', t('One less', '减一'), 'ghost', { itemId: i.id }, i.id) } : {}),
+      ...(open && value < 99 ? { more: shop('shop-bump', t('One more', '加一'), 'ghost', { itemId: i.id }, i.id) } : {})
+    };
+  };
 
   const quiet: string[] = [];
   for (const store of shopping.stores) {
@@ -2707,7 +2726,9 @@ function shoppingScreen(input: HomemindScreenData): HomemindTurn {
       actions: [
         i.bought ? shop('shop-bought', t('Not bought', '没买到'), 'ghost', { itemId: i.id, bought: false }, i.id) : shop('shop-bought', t('Bought', '已买'), 'secondary', { itemId: i.id, bought: true }, i.id),
         shop('shop-remove', t('Remove', '删除'), 'ghost', { itemId: i.id }, i.id)
-      ]
+      ],
+      // The quantity: "− 3 +". One is the least (Remove takes the item off); a bought item keeps its number.
+      quantity: quantityOf(i)
     }));
     const title = `${storeName(store)} · ${runLine}`;
     if (rows.length) {

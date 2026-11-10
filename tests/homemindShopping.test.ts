@@ -75,10 +75,10 @@ describe('shopping lists (core)', () => {
   });
 
   it('lets any member add an item with a note, and says who added it', () => {
-    const state = run(fresh(), ['maya', { action: 'add-item', storeId: 'supermarket', name: 'Milk', note: '2 cartons' }], ['maya', { action: 'add-item', storeId: 'supermarket', name: 'Bread' }]);
+    const state = run(fresh(), ['maya', { action: 'add-item', storeId: 'supermarket', name: 'Milk', qty: 2, note: 'cartons' }], ['maya', { action: 'add-item', storeId: 'supermarket', name: 'Bread' }]);
     expect(shoppingOf(state).items).toEqual([
-      { id: 'shop-1', storeId: 'supermarket', name: 'Milk', note: '2 cartons', addedBy: 'maya', addedAt: new Date(NOW).toISOString() },
-      { id: 'shop-2', storeId: 'supermarket', name: 'Bread', addedBy: 'maya', addedAt: new Date(NOW).toISOString() }
+      { id: 'shop-1', storeId: 'supermarket', name: 'Milk', qty: 2, note: 'cartons', addedBy: 'maya', addedAt: new Date(NOW).toISOString() },
+      { id: 'shop-2', storeId: 'supermarket', name: 'Bread', qty: 1, addedBy: 'maya', addedAt: new Date(NOW).toISOString() }
     ]);
   });
 
@@ -179,8 +179,8 @@ describe('shopping lists (core)', () => {
   });
 
   it('checks request bodies', () => {
-    expect(parseShoppingBody({ action: 'add-item', storeId: 'supermarket', name: 'Milk', note: '2 cartons' })).toEqual({ ok: true, value: { action: 'add-item', storeId: 'supermarket', name: 'Milk', note: '2 cartons' } });
-    expect(parseShoppingBody({ action: 'add-item', storeId: 'supermarket', name: 'Milk', qty: 2 }).ok).toBe(false);
+    expect(parseShoppingBody({ action: 'add-item', storeId: 'supermarket', name: 'Milk', qty: 2, note: 'cartons' })).toEqual({ ok: true, value: { action: 'add-item', storeId: 'supermarket', name: 'Milk', qty: 2, note: 'cartons' } });
+    for (const qty of [0, 100, 1.5, '2']) expect(parseShoppingBody({ action: 'add-item', storeId: 'supermarket', name: 'Milk', qty }).ok).toBe(false);
     expect(parseShoppingBody({ action: 'add-item', storeId: 'supermarket', name: '   ' }).ok).toBe(false);
     expect(parseShoppingBody({ action: 'add-item', storeId: 'supermarket', name: 'x'.repeat(81) }).ok).toBe(false);
     expect(parseShoppingBody({ action: 'add-item', storeId: '../x', name: 'Milk' }).ok).toBe(false);
@@ -191,8 +191,8 @@ describe('shopping lists (core)', () => {
   });
 });
 
-describe('no duplicates', () => {
-  const base = () => run(fresh(), ['mom', { action: 'add-item', storeId: 'supermarket', name: 'Milk', note: '2 cartons' }]);
+describe('no duplicates, and the quantity', () => {
+  const base = () => run(fresh(), ['mom', { action: 'add-item', storeId: 'supermarket', name: 'Milk', qty: 2, note: 'cartons' }]);
 
   it('does not add an item already waiting at that store, and says which one it is', () => {
     const state = base();
@@ -207,14 +207,42 @@ describe('no duplicates', () => {
     expect(ok(applyShopping(bought, { action: 'add-item', storeId: 'supermarket', name: 'Milk' }, 'dad', NOW)).changed).toBe(true);
   });
 
-  it('says so on the Shopping screen', () => {
+  it('counts one more and one less, never below one, and takes a typed quantity', () => {
+    const qty = (s: HomemindState) => shoppingOf(s).items[0].qty;
+    let state = run(base(), ['dad', { action: 'bump', itemId: 'shop-1' }]);
+    expect(qty(state)).toBe(3);
+    state = run(state, ['dad', { action: 'unbump', itemId: 'shop-1' }], ['dad', { action: 'unbump', itemId: 'shop-1' }]);
+    expect(qty(state)).toBe(1);
+    expect(ok(applyShopping(state, { action: 'unbump', itemId: 'shop-1' }, 'dad', NOW)).changed).toBe(false);
+    state = run(state, ['maya', { action: 'set-qty', itemId: 'shop-1', qty: 6 }]);
+    expect(qty(state)).toBe(6);
+    expect(shoppingOf(state).items[0].note).toBe('cartons');
+    // An item from an older file has no quantity: it counts as one.
+    const old = { ...state, shopping: { ...shoppingOf(state), items: shoppingOf(state).items.map(({ qty: _q, ...rest }) => rest) } };
+    expect(shoppingOf(run(old, ['mom', { action: 'bump', itemId: 'shop-1' }])).items[0].qty).toBe(2);
+    expect(parseShoppingBody({ action: 'set-qty', itemId: 'shop-1', qty: 0 }).ok).toBe(false);
+    expect(parseShoppingBody({ action: 'unbump', itemId: 'shop-1', by: 2 }).ok).toBe(false);
+  });
+
+  it('asks on the Shopping screen, and puts "− n +" on the rows', () => {
     const state = base();
     const surface = A2uiSurfaceStore.fromJsonl(
-      screenTurn('shopping', { lang: 'en', now: new Date(NOW).toISOString(), view: viewFor(state, 'dad')!, shopping: shoppingOf(state), shoppingAsk: { itemId: 'shop-1' } }).jsonl
+      screenTurn('shopping', { lang: 'en', now: new Date(NOW).toISOString(), view: viewFor(state, 'dad')!, shopping: shoppingOf(state), shoppingAsk: { itemId: 'shop-1', qty: 6 } }).jsonl
     ).list()[0];
-    expect(surface.components['shop-ask'].text).toBe('**Milk** is already on the Supermarket list, added by Mom. It was not added again.');
-    expect((surface.components['shop-ask-actions'].actions ?? []).map(a => [a.label, a.args?.verb])).toEqual([['OK', 'shop-keep']]);
-    const plain = A2uiSurfaceStore.fromJsonl(screenTurn('shopping', { lang: 'en', now: new Date(NOW).toISOString(), view: viewFor(state, 'dad')!, shopping: shoppingOf(state) }).jsonl).list()[0];
+    expect(surface.components['shop-ask'].text).toBe('**Milk** is already on the Supermarket list (quantity 2), added by Mom. Change the quantity?');
+    const asks = (surface.components['shop-ask-actions'].actions ?? []).map(a => [a.label, a.args?.verb, a.args?.qty]);
+    expect(asks).toEqual([['+1', 'shop-bump', undefined], ['Make it 6', 'shop-set-qty', 6], ['Keep it as it is', 'shop-keep', undefined]]);
+    type Row = { meta: string; actions: Array<{ label: string }>; quantity: { value: number; less?: { args: Record<string, unknown> }; more?: { args: Record<string, unknown> } } };
+    const row = (surface.data['shop-supermarket'] as Row[])[0];
+    expect(row.meta).toBe('cartons · Added by Mom');
+    expect(row.actions.map(a => a.label)).toEqual(['Bought', 'Remove']);
+    expect(row.quantity.value).toBe(2);
+    expect([row.quantity.less?.args.verb, row.quantity.more?.args.verb]).toEqual(['shop-unbump', 'shop-bump']);
+    // Just one: the "−" is off.
+    const one = run(fresh(), ['mom', { action: 'add-item', storeId: 'supermarket', name: 'Bread' }]);
+    const plain = A2uiSurfaceStore.fromJsonl(screenTurn('shopping', { lang: 'en', now: new Date(NOW).toISOString(), view: viewFor(one, 'dad')!, shopping: shoppingOf(one) }).jsonl).list()[0];
+    const single = (plain.data['shop-supermarket'] as Row[])[0].quantity;
+    expect([single.value, single.less, single.more?.args.verb]).toEqual([1, undefined, 'shop-bump']);
     expect(plain.components['shop-ask']).toBeUndefined();
   });
 });
@@ -223,7 +251,7 @@ describe('the Shopping screen', () => {
   it('shows each store with something on it, who is going, and the right buttons per member', () => {
     const state = run(
       fresh(),
-      ['mom', { action: 'add-item', storeId: 'supermarket', name: 'Milk', note: '2 cartons' }],
+      ['mom', { action: 'add-item', storeId: 'supermarket', name: 'Milk', qty: 2, note: 'cartons' }],
       ['maya', { action: 'add-item', storeId: 'supermarket', name: 'Bread' }],
       ['maya', { action: 'bought', itemId: 'shop-2', bought: true }],
       ['dad', { action: 'claim', storeId: 'supermarket' }]
@@ -236,7 +264,7 @@ describe('the Shopping screen', () => {
     expect(dad.components['shop-supermarket'].title).toBe("Supermarket · You're going (on your My day)");
     const rows = dad.data['shop-supermarket'] as Array<{ title: string; meta: string; state: string; actions: Array<{ args: Record<string, unknown> }> }>;
     expect(rows.map(r => [r.title, r.meta, r.state])).toEqual([
-      ['Milk', '2 cartons · Added by Mom', ''],
+      ['Milk', 'cartons · Added by Mom', ''],
       ['Bread', 'Bought by Maya', 'done']
     ]);
     const verbs = (surface: typeof dad, id: string) => (surface.components[id]?.actions ?? []).map(a => a.args?.verb);
@@ -329,7 +357,7 @@ describe('shopping through the bridge', () => {
     const screen = await as(await login('mom')).screen();
     expect(screen.components['shop-pharmacy'].title).toBe('Pharmacy · Dad is going');
     const rows = screen.data['shop-pharmacy'] as Array<{ title: string; meta: string; state: string }>;
-    expect(rows.find(r => r.title === 'Cough syrup')).toMatchObject({ meta: 'kids · Bought by Dad', state: 'done' });
+    expect(rows.find(r => r.title === 'Cough syrup')).toMatchObject({ meta: 'kids · Bought by Dad', state: 'done', quantity: { value: 1 } });
     // The run is on Dad's board as a task.
     const dadDay = await as(await login('dad')).get('/screen/my-day?lang=en');
     expect(JSON.stringify(await dadDay.json())).toContain('Shopping at Pharmacy');

@@ -54,6 +54,7 @@ import { summaryFor, tickSummaries } from './homemind/summary';
 import { applyPreferenceRequest, blockedChange, parsePreferenceBody, preferencesForItem } from './homemind/preferences';
 import type { BlockedChoice, PreferenceRequest, PreferenceResult } from './homemind/preferences';
 import { HomemindStore, dataFileFromEnv } from './homemind/store';
+import { applyShopping, parseShoppingBody, settleShoppingRuns, shoppingOf } from './homemind/shopping';
 import { createPpmaClient, fileSyncStore, isStatementId, ppmaConfigFromEnv, ppmaSyncFileFor } from './homemind/ppma';
 import type { PpmaClient } from './homemind/ppma';
 import { groupMessageReport, handlePpmaCommand, preferenceReport, reminderReport, reportsForChange } from './homemind/ppmaMap';
@@ -77,7 +78,7 @@ const CONFLICT_HORIZON_MS = 90 * 24 * 60 * 60 * 1000;
 /** The demo clock jumps at most a week at a time. */
 const MAX_JUMP_MINUTES = 7 * 24 * 60;
 
-const SCREENS = ['my-day', 'family', 'calendar', 'search', 'rules', 'memory', 'activity', 'settings', 'edit', 'item', 'services', 'summary'] as const;
+const SCREENS = ['my-day', 'family', 'calendar', 'search', 'rules', 'memory', 'activity', 'settings', 'edit', 'item', 'services', 'summary', 'shopping'] as const;
 type Screen = (typeof SCREENS)[number];
 
 /** Verbs on `POST /items/:id/:verb` that map straight to a core change. `ack` is the core's `confirm`. */
@@ -314,9 +315,12 @@ async function commit(rt: Runtime, state: HomemindState, events: readonly CoreEv
   const now = rt.clock.now();
   // `extraAlerts`: notices Homemind itself makes with the change (T7.4: "signed up in the group").
   const alerts = [...(actorId ? alertsForChange(before, state, events, actorId, new Date(now).toISOString()) : []), ...extraAlerts];
-  const ticked = tickReminders(state, now, alerts);
+  // A shopping task marked done empties its store's list; removed or handed off, it frees the store.
+  const settled = settleShoppingRuns(state);
+  const ticked = tickReminders(settled, now, alerts);
   rt.state = ticked.state;
   await rt.store.save(ticked.state);
+  if (settled !== state) rt.hub.broadcast({ event: 'shopping.changed', data: {} });
   rt.hub.publishChanges(ticked.state, events);
   publishTick(rt, ticked);
   // A calendar change can change what a waiting rule card should say (who is home): check at once.
@@ -1077,6 +1081,29 @@ function ruleDetailFor(ctx: Ctx): { ruleId?: string; ruleNext?: { at: string; pr
   return { ruleId, ruleNext: { at: new Date(next.at).toISOString(), prepareAt: new Date(next.at - rule.trigger.leadMinutes * 60_000).toISOString() } };
 }
 
+/**
+ * `POST /shopping`: the family's shopping lists (shopping.ts). Any member adds, marks bought and clears;
+ * one member takes a store's run and only they release it. Saved, then every window re-reads.
+ */
+async function shoppingHandler(ctx: Ctx): Promise<void> {
+  const parsed = parseShoppingBody(await readBody(ctx.request));
+  if (!parsed.ok) throw new HttpError(400, 'invalid', parsed.message);
+  const { rt, member } = ctx;
+  // Read and replace the state with no await in between.
+  const result = applyShopping(rt.state, parsed.value, member.id, rt.clock.now());
+  if (!result.ok) return fail(ctx.response, result.status, result.code, result.message);
+  if (result.changed) {
+    // Taking or releasing a run adds or removes its task on the board: committed like any item change.
+    if (result.events?.length) await commit(rt, result.state, result.events, member.id);
+    else {
+      rt.state = result.state;
+      await rt.store.save(result.state);
+    }
+    rt.hub.broadcast({ event: 'shopping.changed', data: {} });
+  }
+  json(ctx.response, 200, { ok: true, changed: result.changed, items: [], opened: [], conflicts: [], ...(result.itemId ? { itemId: result.itemId } : {}), ...(result.storeId ? { storeId: result.storeId } : {}) });
+}
+
 // --- handlers -----------------------------------------------------------------------------------------
 
 const MEMBER_VIEW = (m: Member) => ({ id: m.id, name: m.name, nameZh: m.nameZh, role: m.role, hasAccount: m.hasAccount, lang: m.lang });
@@ -1176,6 +1203,8 @@ const routes: Route[] = [
         // T8.1: "Noa is sick" and what Homemind suggested for that day, limited to what this member can see.
         ...(name === 'my-day' ? { situations: situationsView(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()) } : {}),
         ...(name === 'rules' ? { demo: demo(), ...ruleDetailFor(ctx) } : {}),
+        // The family's shopping lists, per store. The whole family sees them.
+        ...(name === 'shopping' ? { shopping: shoppingOf(ctx.rt.state) } : {}),
         // T8.2: the memory screen's correction form for one saved preference (`?id=`, checked like any id).
         ...(name === 'memory' && ctx.url.searchParams.get('id') ? { correctPreferenceId: idOf(ctx.url.searchParams.get('id') as string, 'id') } : {}),
         // T8.2: the evening summary or the week ahead (`?period=week`), from this member's view only.
@@ -1442,6 +1471,12 @@ const routes: Route[] = [
       }
       json(ctx.response, 200, { ok: true, changed: result.changed, ...(result.activity ? { activityId: result.activity.id } : {}) });
     }
+  },
+  {
+    method: 'POST',
+    pattern: /^\/shopping$/,
+    auth: true,
+    handler: shoppingHandler
   },
   {
     method: 'POST',

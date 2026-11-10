@@ -15,10 +15,10 @@
  * Components that do not render the flag (rules, settings rows) say the word in their text instead.
  */
 import type { A2uiAction, A2uiComponent } from '../types';
-import type { ActionCard, Activity, ExtractedEntry, Family, GroupMessage, GroupsView, Item, ItemExplanation, Lang, Member, MessageJudgment, PendingReminder, PpmaExplanationData, PpmaMemoryData, Preference, Reminder, Rule, RuleRun, ServicesView, SignUpInfo, SituationView, SkippedExtraction, SourceChangeView, SummaryView, Why } from '../../server/homemind/types';
+import type { ActionCard, Activity, ExtractedEntry, Family, GroupMessage, GroupsView, Item, ItemExplanation, Lang, Member, MessageJudgment, PendingReminder, PpmaExplanationData, PpmaMemoryData, Preference, Reminder, Rule, RuleRun, ServicesView, SignUpInfo, SituationView, SkippedExtraction, SourceChangeView, ShoppingState, SummaryView, Why } from '../../server/homemind/types';
 
 export type HomemindLang = Lang;
-export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit' | 'item' | 'services' | 'summary';
+export type HomemindScreenName = 'my-day' | 'family' | 'calendar' | 'search' | 'rules' | 'memory' | 'activity' | 'settings' | 'edit' | 'item' | 'services' | 'summary' | 'shopping';
 
 /** What the Add and edit screen opens: an existing item, a new preparation under an event, or a new item.
  * The `item` screen (the short summary after a save) uses `itemId` only. */
@@ -88,6 +88,8 @@ export interface HomemindScreenData {
   /** T9.1, the `rules` screen (`?id=`): one rule's details, and (when it is on) when it next runs. */
   ruleId?: string;
   ruleNext?: { at: string; prepareAt: string };
+  /** The `shopping` screen: the family's lists per store (the whole family sees them). */
+  shopping?: ShoppingState;
 }
 
 /** What the bridge sends the browser for every Homemind screen. Same shape as a Fridge2Table turn. */
@@ -1579,7 +1581,8 @@ const SOURCE_KIND: Record<string, [string, string]> = {
   email: ['Read from an email', '从邮件中读取'],
   group: ['From the group chat', '来自群聊'],
   rule: ['Added by a Homemind rule', '由 Homemind 规则添加'],
-  ppma: ['Suggested by PPMA', '由 PPMA 建议']
+  ppma: ['Suggested by PPMA', '由 PPMA 建议'],
+  shopping: ['From the shopping list', '来自购物清单']
 };
 
 /**
@@ -2641,6 +2644,74 @@ function summaryScreen(input: HomemindScreenData): HomemindTurn {
   return turn('summary', title, nameOf(me, lang), children, data);
 }
 
+// --- shopping ---------------------------------------------------------------------------------------
+
+/**
+ * The family's shopping lists, per store. One form adds an item to the chosen store's list; each store
+ * with something on it (or a run, or that the family added) gets its own list: Bought / Not bought and
+ * Remove per item, "I'll go" or Release for the run, and Clear bought. The words are the family's own.
+ */
+function shoppingScreen(input: HomemindScreenData): HomemindTurn {
+  const { lang, view } = input;
+  const t = (en: string, zh: string) => (lang === 'zh' ? zh : en);
+  const shopping = input.shopping ?? { stores: [], items: [] };
+  const who = (id: string) => (id === view.memberId ? t('you', '你') : nameOf(memberOf(view.family, id), lang) || t('someone', '有人'));
+  const storeName = (s: ShoppingState['stores'][number]) => (lang === 'zh' && s.nameZh ? s.nameZh : s.name);
+  const shop = (verb: string, label: string, variant: A2uiAction['variant'], args: Record<string, unknown>, id: string): A2uiAction => ({ id: `homemind.${verb}:${id}`, label, variant, kind: 'homemind', args: { verb, ...args } });
+  const children: A2uiComponent[] = [];
+  const data: Record<string, unknown> = {};
+  if (shopping.stores.length) {
+    children.push({ id: 'f-shopItem', component: 'TextField', name: 'shopItem', label: t('What to buy', '要买什么'), default: '', maxLength: 80 });
+    children.push({ id: 'f-shopNote', component: 'TextField', name: 'shopNote', label: t('Quantity or note (optional)', '数量或备注（可选）'), default: '', maxLength: 120 });
+    children.push({ id: 'f-shopStore', component: 'ChoiceGroup', name: 'shopStore', title: t('Where', '在哪儿买'), default: shopping.stores[0].id, options: shopping.stores.map(s => ({ value: s.id, label: storeName(s) })) });
+    children.push({ id: 'shop-add', component: 'ActionBar', actions: [shop('shop-add', t('Add to list', '加到清单'), 'primary', {}, 'form')] });
+  }
+
+  const quiet: string[] = [];
+  for (const store of shopping.stores) {
+    const items = shopping.items.filter(i => i.storeId === store.id);
+    if (!items.length && !store.run && !store.custom) {
+      quiet.push(storeName(store));
+      continue;
+    }
+    const open = items.filter(i => !i.bought);
+    const bought = items.filter(i => i.bought);
+    const runLine = store.run ? (store.run.memberId === view.memberId ? t("You're going (on your My day)", '你去买（在“我的一天”里）') : t(`${who(store.run.memberId)} is going`, `${who(store.run.memberId)}去买`)) : t('Nobody is going yet', '还没人认领');
+    const key = `shop-${store.id}`;
+    const rows: TaskRow[] = [...open, ...bought].map(i => ({
+      id: i.id,
+      title: lang === 'zh' && i.nameZh ? i.nameZh : i.name,
+      meta: [lang === 'zh' && i.noteZh ? i.noteZh : i.note, i.bought ? t(`Bought by ${who(i.bought.by)}`, `${who(i.bought.by)}已买`) : t(`Added by ${who(i.addedBy)}`, `${who(i.addedBy)}添加`)].filter(Boolean).join(' · '),
+      ownerLabel: '',
+      state: i.bought ? 'done' : '',
+      tone: i.bought ? 'success' : 'muted',
+      actions: [
+        i.bought ? shop('shop-bought', t('Not bought', '没买到'), 'ghost', { itemId: i.id, bought: false }, i.id) : shop('shop-bought', t('Bought', '已买'), 'secondary', { itemId: i.id, bought: true }, i.id),
+        shop('shop-remove', t('Remove', '删除'), 'ghost', { itemId: i.id }, i.id)
+      ]
+    }));
+    const title = `${storeName(store)} · ${runLine}`;
+    if (rows.length) {
+      children.push(taskList(key, title, `/${key}`));
+      data[key] = rows;
+    } else {
+      children.push(text(`${key}-empty`, `**${title}**\n\n${t('Nothing on this list.', '清单是空的。')}`));
+    }
+    const actions: A2uiAction[] = [];
+    if (!store.run && open.length) actions.push(shop('shop-claim', t("I'll go", '我去买'), 'secondary', { storeId: store.id }, store.id));
+    if (store.run?.memberId === view.memberId) actions.push(shop('shop-release', t('Release the run', '不去了'), 'ghost', { storeId: store.id }, store.id));
+    if (bought.length) actions.push(shop('shop-clear', t(`Clear bought (${bought.length})`, `清除已买（${bought.length}）`), 'ghost', { storeId: store.id }, store.id));
+    if (store.custom && !items.length) actions.push(shop('shop-remove-store', t('Remove this store', '删除这家店'), 'ghost', { storeId: store.id }, store.id));
+    if (actions.length) children.push({ id: `${key}-actions`, component: 'ActionBar', actions });
+  }
+  if (quiet.length) children.push(text('shop-quiet', `${t('Nothing on the list for', '这些商店的清单是空的')}${colon(lang)}${quiet.join(lang === 'zh' ? '、' : ', ')}`));
+
+  children.push(text('shop-store-title', `**${t('Another store', '其他商店')}**`));
+  children.push({ id: 'f-shopStoreName', component: 'TextField', name: 'shopStoreName', label: t('Store name (bakery, pet shop…)', '商店名称（面包店、宠物店…）'), default: '', maxLength: 40 });
+  children.push({ id: 'shop-store-actions', component: 'ActionBar', actions: [shop('shop-add-store', t('Add store', '添加商店'), 'secondary', {}, 'form')] });
+  return turn('shopping', t('Shopping', '购物'), undefined, children, data);
+}
+
 // --- public API -------------------------------------------------------------------------------------
 
 const SCREEN_BUILDERS: Record<HomemindScreenName, (input: HomemindScreenData) => HomemindTurn> = {
@@ -2655,7 +2726,8 @@ const SCREEN_BUILDERS: Record<HomemindScreenName, (input: HomemindScreenData) =>
   edit: editScreen,
   item: itemScreen,
   services: servicesScreen,
-  summary: summaryScreen
+  summary: summaryScreen,
+  shopping: shoppingScreen
 };
 
 /** One screen as a turn. */

@@ -13,6 +13,7 @@ import {
   HomemindError,
   fetchHomemindMembers,
   fetchHomemindScreen,
+  homemindShopping,
   homemindSignIn,
   jumpHomemindClock,
   jumpHomemindToNext,
@@ -61,6 +62,7 @@ const TABS: Array<{ screen: HomemindScreenName; en: string; zh: string }> = [
   { screen: 'my-day', en: 'My day', zh: '我的一天' },
   { screen: 'summary', en: 'Summary', zh: '摘要' },
   { screen: 'family', en: 'Family', zh: '家庭' },
+  { screen: 'shopping', en: 'Shopping', zh: '购物' },
   { screen: 'calendar', en: 'Calendar', zh: '日历' },
   { screen: 'search', en: 'Search', zh: '搜索' },
   { screen: 'rules', en: 'Rules', zh: '规则' },
@@ -298,6 +300,7 @@ export function FamilyView({
           case 'memory.changed':
           case 'actions.changed':
           case 'services.changed':
+          case 'shopping.changed':
             return refreshSoon();
           case 'ppma.status':
             return setPpma(message.data.status);
@@ -476,6 +479,24 @@ export function FamilyView({
     setNotice({ text: tr('Settings saved.', '设置已保存。'), tone: 'info' });
   };
 
+  /** Shopping: one request, then the screen again. Form fields that were sent are emptied. */
+  const shoppingRequest = async (request: Parameters<typeof homemindShopping>[1], clear: string[], done: string) => {
+    if (!session) return;
+    setBusy(true);
+    try {
+      await homemindShopping(session.token, request);
+      if (clear.length) setForm(f => Object.fromEntries(Object.entries(f).filter(([k]) => !clear.includes(k))));
+      refresh();
+      setNotice({ text: done, tone: 'info' });
+    } catch (error) {
+      if (error instanceof HomemindError && error.status === 401) return signOut(tr('Your demo sign-in ended. Pick a member again.', '演示登录已结束，请重新选择成员。'));
+      setNotice({ text: describe(error), tone: 'error' });
+      refresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onAction = async (action: A2uiAction) => {
     if (!session || busy) return;
     if (action.kind !== 'homemind') return;
@@ -504,6 +525,34 @@ export function FamilyView({
         setNotice({ text: describe(error), tone: 'error' });
       } finally {
         setBusy(false);
+      }
+      return;
+    }
+    // Shopping: add to a store's list, mark bought, take or release a store's run, clear, add a store.
+    if (verb.startsWith('shop-')) {
+      const { values } = surface ? formValues(surface, form) : { values: {} as Record<string, unknown> };
+      const field = (name: string) => String(values[name] ?? '').trim();
+      switch (verb) {
+        case 'shop-add': {
+          if (!field('shopItem')) return setNotice({ text: tr('Write what to buy first.', '请先写下要买什么。'), tone: 'error' });
+          return shoppingRequest({ action: 'add-item', storeId: field('shopStore'), name: field('shopItem'), ...(field('shopNote') ? { note: field('shopNote') } : {}) }, ['shopItem', 'shopNote'], tr('Added to the list.', '已加到清单。'));
+        }
+        case 'shop-add-store': {
+          if (!field('shopStoreName')) return setNotice({ text: tr('Write the name of the store first.', '请先写下商店名称。'), tone: 'error' });
+          return shoppingRequest({ action: 'add-store', name: field('shopStoreName') }, ['shopStoreName'], tr('Store added.', '已添加商店。'));
+        }
+        case 'shop-bought':
+          return shoppingRequest({ action: 'bought', itemId: str(args.itemId) ?? '', bought: args.bought === true }, [], args.bought === true ? tr('Marked as bought.', '已标记为已买。') : tr('Back on the list.', '已放回清单。'));
+        case 'shop-remove':
+          return shoppingRequest({ action: 'remove-item', itemId: str(args.itemId) ?? '' }, [], tr('Removed from the list.', '已从清单删除。'));
+        case 'shop-claim':
+          return shoppingRequest({ action: 'claim', storeId: str(args.storeId) ?? '' }, [], tr("You're going. The family sees it.", '你去买，全家都看得到。'));
+        case 'shop-release':
+          return shoppingRequest({ action: 'release', storeId: str(args.storeId) ?? '' }, [], tr('Released. Someone else can take it.', '已放弃，其他人可以认领。'));
+        case 'shop-clear':
+          return shoppingRequest({ action: 'clear-bought', storeId: str(args.storeId) ?? '' }, [], tr('Bought items cleared.', '已清除已买的东西。'));
+        case 'shop-remove-store':
+          return shoppingRequest({ action: 'remove-store', storeId: str(args.storeId) ?? '' }, [], tr('Store removed.', '已删除商店。'));
       }
       return;
     }

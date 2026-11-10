@@ -71,6 +71,8 @@ export function toStreamMessage(frame: { event: string; data: string }): StreamM
       return { event: 'actions.changed', data: {} };
     case 'services.changed':
       return { event: 'services.changed', data: {} };
+    case 'shopping.changed':
+      return { event: 'shopping.changed', data: {} };
     case 'memory.changed':
       return { event: 'memory.changed', data: {} };
     case 'ppma.status': {

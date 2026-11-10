@@ -84,7 +84,8 @@ export interface Recurrence {
   exceptions?: string[];
 }
 
-export type SourceKind = 'manual' | 'chat' | 'screenshot' | 'email' | 'group' | 'rule' | 'ppma';
+/** `shopping`: a store run someone took (shopping.ts). */
+export type SourceKind = 'manual' | 'chat' | 'screenshot' | 'email' | 'group' | 'rule' | 'ppma' | 'shopping';
 
 export interface ItemSource {
   kind: SourceKind;
@@ -460,6 +461,8 @@ export interface HomemindState {
   summaries?: SummaryRecord[];
   /** T8.2: the demo-clock time summaries were last checked. A summary goes out when a tick crosses 20:00 after it. */
   summaryCheckedAt?: string;
+  /** The family's shopping lists, per store (shopping.ts). Absent in older files: the default stores, no items. */
+  shopping?: ShoppingState;
 }
 
 // --- judgment and summaries (T8.2, judgment.ts and summary.ts) -----------------------------------------------
@@ -934,6 +937,8 @@ export type StreamMessage =
   | { event: 'actions.changed'; data: Record<string, never> }
   /** A simulated service changed: a group message was posted (T7.2). Carries nothing; screens re-read. */
   | { event: 'services.changed'; data: Record<string, never> }
+  /** A shopping list or run changed (shopping.ts). Carries nothing; screens re-read. */
+  | { event: 'shopping.changed'; data: Record<string, never> }
   /** The demo was reset: forget everything shown. */
   | { event: 'demo.reset'; data: Record<string, never> };
 
@@ -1061,4 +1066,44 @@ export interface PpmaExplanationData {
   summary?: string;
   rationale?: string;
   basis?: Array<{ kind: string; ref?: string; note: string }>;
+}
+
+// --- shopping (shopping.ts) ----------------------------------------------------------------------------
+
+/**
+ * A place the family shops at. Lists are grouped by store type. The defaults ("supermarket", "pharmacy"...)
+ * have fixed ids and words in both languages; a store the family adds has one name, as typed.
+ */
+export interface ShoppingStore {
+  id: string;
+  name: string;
+  nameZh?: string;
+  /** Added by the family (not a default). Only such a store can be removed, and only when its list is empty. */
+  custom?: boolean;
+  createdBy?: string;
+  /** Who took this store's shopping run. Only they release it. Absent: nobody yet. `itemId`: its task on the board. */
+  run?: { memberId: string; at: string; itemId?: string };
+}
+
+/** One thing to buy, on one store's list. Words are the family's, shown as written. */
+export interface ShoppingItem {
+  id: string;
+  storeId: string;
+  name: string;
+  /** Chinese words for seeded demo items. What the family types has one language, shown as written. */
+  nameZh?: string;
+  /** Optional quantity or note ("2 kg", "the blue one"). */
+  note?: string;
+  noteZh?: string;
+  addedBy: string;
+  addedAt: string;
+  bought?: { by: string; at: string };
+}
+
+/** The family's shopping lists. Visible to the whole family. */
+export interface ShoppingState {
+  stores: ShoppingStore[];
+  items: ShoppingItem[];
+  /** The number in the last item id given (`shop-<n>`), so ids are never used twice. */
+  lastItem?: number;
 }

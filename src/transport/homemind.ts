@@ -189,6 +189,21 @@ export async function saveHomemindSettings(token: string, body: Record<string, u
   return call('/api/homemind/settings', { method: 'PUT', token, body: JSON.stringify(body) });
 }
 
+/** The family's shopping lists (server/homemind/shopping.ts). The server checks every request again. */
+export type ShoppingRequest =
+  | { action: 'add-item'; storeId: string; name: string; note?: string }
+  | { action: 'remove-item'; itemId: string }
+  | { action: 'bought'; itemId: string; bought: boolean }
+  | { action: 'clear-bought'; storeId: string }
+  | { action: 'claim'; storeId: string }
+  | { action: 'release'; storeId: string }
+  | { action: 'add-store'; name: string }
+  | { action: 'remove-store'; storeId: string };
+
+export async function homemindShopping(token: string, request: ShoppingRequest): Promise<{ ok: true; changed: boolean; itemId?: string; storeId?: string }> {
+  return call('/api/homemind/shopping', { method: 'POST', token, body: JSON.stringify(request) });
+}
+
 /** Verbs the host handles itself (navigation and forms). */
 export const HOST_VERBS = ['add', 'edit', 'search', 'back', 'save', 'save-settings'] as const;
 

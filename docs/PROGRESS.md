@@ -410,7 +410,10 @@ Record decisions that future chats need and that are not in `docs/PLAN.md`.
 - [x] OK on the P4 STOP: Scene 1 approved (2026-11-05)
 - [x] PPMA clone at `../ppma`, for T0.2
 - [x] Real 接龙 screenshot: none available. A simulated one is used instead
-- [ ] Answers to the 5 questions at the end of the P10 to P14 section of `docs/PLAN.md` (tabs in cloud mode, the picker in P10, Render plan and region, an admin script, moving `tsx`)
+- [x] Tabs in cloud mode: none hidden; chat (in-browser mock) and Discover keep working; Orbit, Epic and Fridge bridges closed on the server (2026-11-10)
+- [x] The member picker in P10, behind the access code only (2026-11-10)
+- [x] A Render account exists (2026-11-10). Still to do at T10.4: connect GitHub, choose an always-on plan and the region, OK to push `feat/homemind`
+- [ ] Which two items "מאושר" approved (moving `tsx`, adding `pg`, or the admin script)
 - [ ] OK to add the `pg` dependency (before T11.2)
 - [ ] A throwaway Postgres for tests (before T11.2 and T14.3)
 - [ ] A Render account, the access code, the sign-up email list, and the model variables for the cloud (before T10.4)

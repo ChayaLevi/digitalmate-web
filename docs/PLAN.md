@@ -625,9 +625,11 @@ but only behind the code (see "Questions" at the end of this section).
   cookie), `/api/rss` (`server/rss.ts`: fetches any public URL for the Discover tab; no key, but it is an open fetch proxy, and `isPrivateHost` checks
   the hostname only, not what it resolves to). The DigitalMate chat itself uses its local mock unless Orbit is configured, so with the env vars unset the
   first three hold no key; the gate is belt and braces plus a stop to anyone setting them by mistake.
-- **Proposal (the human decides, see Questions):** in cloud mode `/api/orbit/*`, `/api/epic/*` and `/api/fridge/*` answer `404 not_available`, always.
-  `/api/rss` stays open behind the access code in P10 and needs a Homemind session from P12 on. Nothing in the UI is hidden by this task; the tabs that
-  call a closed bridge show their usual error state. Hiding the Discover tab, Labs and non-Family chat is a separate step the human must OK.
+- **Decided by the human (2026-11-10): nothing is hidden.** Every tab stays visible, for a real presentation. The main chat runs on its in-browser mock
+  (no Orbit variables locally either) and Discover works through `/api/rss`, so both keep working in the cloud as they do locally. In cloud mode
+  `/api/orbit/*`, `/api/epic/*` and `/api/fridge/*` answer `404 not_available`, always: Epic Replay and Fridge2Table need their own servers, which are not
+  running in the cloud (nor configured in `.env.local`), so Labs and kitchen questions show their usual error state, as they do locally without those servers.
+  `/api/rss` stays open behind the access code in P10 and needs a Homemind session from P12 on.
 - In cloud mode, `GET /api/homemind/debug/state` is a 404 even with `HOMEMIND_DEMO=1`, `?member=` is ignored, and `GET /health` returns only
   `{enabled, ready, demo}` (no `llm` mode, no PPMA detail).
 - **Done when:** bridge tests with `HOMEMIND_CLOUD=1`: each of the four prefixes answers 404 and a fake upstream is never called; `debug/state` is 404
@@ -826,10 +828,8 @@ but only behind the code (see "Questions" at the end of this section).
 
 #### Questions for the human (answers change P10 to P14)
 
-1. **Which tabs close in cloud mode?** The server-side gate (T10.1) makes Orbit, Epic Replay and Fridge2Table unreachable. That leaves Discover (RSS), Labs (Epic Replay) and the kitchen and
-   Orbit routes of the main chat showing errors. Do you want those tabs hidden in the cloud build (a UI change, needs your OK), or left to show their error states?
-2. **P10 and the picker.** Your decision says cloud mode has no password-less `POST /session`. P10 has no accounts yet, so Mom and Dad can only be chosen with the picker. The plan keeps the picker
-   in P10 only, only while `HOMEMIND_ACCESS_CODE` is set and `DATABASE_URL` is not, and removes it for good in T12.2. Is that acceptable for the first link?
+1. ~~Which tabs close in cloud mode?~~ **Answered 2026-11-10:** none is hidden; see T10.1.
+2. ~~P10 and the picker.~~ **Answered 2026-11-10: yes.** The picker stays in P10 only, only while `HOMEMIND_ACCESS_CODE` is set and `DATABASE_URL` is not, and is removed for good in T12.2.
 3. **Plan and region on Render.** Always-on instance and a region close to China? (Check Render's current plans; do not use a sleeping instance for the demo.)
 4. **Helper script for stuck people.** No reset exists. Do you want a tiny `scripts/homemind-admin.ts` (list users, delete a user, set a password) you can run in Render's shell? It is outside your list.
 5. **`tsx`.** The build command uses `npm ci --include=dev`. Moving `tsx` to `dependencies` is cleaner but is a dependency change; OK to do it in T10.4?

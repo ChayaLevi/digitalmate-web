@@ -26,10 +26,16 @@ interface BoardMember {
   nameZh?: string;
   role: string;
 }
+interface BoardStore {
+  id: string;
+  name: string;
+  nameZh?: string;
+}
 interface Board {
   me: { id: string };
   members: BoardMember[];
   items: BoardItem[];
+  stores?: BoardStore[];
 }
 
 export interface FakeCompletion {
@@ -191,6 +197,33 @@ function findMember(board: Board, text: string): BoardMember | undefined {
 
 const ask = (answer: string, itemIds: string[] = []) => ({ intent: 'ask', answer, itemIds });
 
+/** Things to buy from one message: the store it names (else the supermarket), split on "and", commas and 和. */
+function fakeShopping(stores: BoardStore[], text: string): Record<string, unknown> {
+  const t = text.toLowerCase();
+  const store = stores.find(s => t.includes(s.name.toLowerCase()) || (!!s.nameZh && text.includes(s.nameZh))) ?? stores.find(s => s.id === 'supermarket') ?? stores[0];
+  let rest = text;
+  for (const s of stores) {
+    rest = rest.replace(new RegExp(s.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig'), ' ');
+    if (s.nameZh) rest = rest.split(s.nameZh).join(' ');
+  }
+  rest = rest
+    .replace(/\b(please|add|put|to|on|onto|the|my|our|shopping|list|from|at)\b/gi, ' ')
+    .replace(/购物清单|加到|加上|清单上|清单|请|把|在|的|里|加/g, ' ');
+  const names = rest
+    .split(/,|，|、|\band\b|和|\.|。/i)
+    .map(part => part.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .slice(0, 10);
+  if (!names.length) return ask('What should I put on the list?');
+  return {
+    intent: 'add_to_shopping',
+    items: names.map(part => {
+      const m = /^(\d{1,2})\s*(?:x\s*)?(.+)$/i.exec(part);
+      return m ? { storeId: store.id, name: m[2].slice(0, 80), qty: Math.min(99, Math.max(1, Number(m[1]))), note: null } : { storeId: store.id, name: part.slice(0, 80), qty: null, note: null };
+    })
+  };
+}
+
 function fakeIntent(today: Today, board: Board, text: string, lang: 'en' | 'zh'): Record<string, unknown> {
   const t = text.toLowerCase();
   const zh = lang === 'zh';
@@ -202,6 +235,12 @@ function fakeIntent(today: Today, board: Board, text: string, lang: 'en' | 'zh')
   if (/\bwhy\b|为什么/.test(t)) {
     const item = findItem(board, text);
     return item ? { intent: 'why', itemId: item.id } : ask(which);
+  }
+  // "Add milk and eggs to the shopping list", "put plasters on the pharmacy list", "购物清单加牛奶和鸡蛋".
+  const storeNamed = !!board.stores?.some(s => t.includes(s.name.toLowerCase()) || (!!s.nameZh && text.includes(s.nameZh)));
+  const listCue = /shopping list|\bto the list\b|\bon the list\b|购物清单|加到清单|清单上/.test(t) || (storeNamed && /\blist\b|清单/.test(t));
+  if (board.stores?.length && listCue && !/\b(remove|delete)\b|删除|删掉|\?|？|\bwhat\b|什么/.test(t)) {
+    return fakeShopping(board.stores, text);
   }
   if (/\bsick\b|\bfever\b|\bill\b|生病|发烧|不舒服/.test(t)) {
     const who = findMember(board, text) ?? board.members.find(m => m.role === 'child');

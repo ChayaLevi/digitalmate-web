@@ -40,6 +40,7 @@ export const INTENT_NAMES = [
   'split_item',
   'delete_item',
   'add_preference',
+  'add_to_shopping',
   'create_rule',
   'report_situation',
   'why'
@@ -48,6 +49,22 @@ export type IntentName = (typeof INTENT_NAMES)[number];
 
 export const SITUATIONS = ['sick', 'away', 'late', 'other'] as const;
 export type Situation = (typeof SITUATIONS)[number];
+
+/** One thing to buy, as the model read it from the message. `storeId` is one of the STORES. */
+export interface ShoppingIntentItem {
+  storeId: string;
+  name: string;
+  qty?: number;
+  note?: string;
+}
+
+/** A store the family shops at, and what is already waiting there (so the model can answer "what's on the list?"). */
+export interface IntentStore {
+  id: string;
+  name: string;
+  nameZh?: string;
+  waiting: string[];
+}
 
 export type ChatIntent =
   /** A question about the board. `itemIds` are the items the answer is about (to show as rows). */
@@ -75,6 +92,8 @@ export type ChatIntent =
   /** Take an item off the board (an event takes its preparations with it). It has Undo, like any board write. */
   | { intent: 'delete_item'; itemId: string }
   | { intent: 'add_preference'; text: string; reason?: string; aboutMemberId?: string; strength: 'hard' | 'soft'; scope?: string }
+  /** Things to put on the family's shopping lists, each at one store (shopping.ts). Nothing is bought. */
+  | { intent: 'add_to_shopping'; items: ShoppingIntentItem[] }
   /** A standing rule is never live from chat: the caller turns this into a card that needs a tap. */
   | { intent: 'create_rule'; title: string; weekday: number; time: string; leadMinutes: number; action: string }
   | { intent: 'report_situation'; situation: Situation; memberId?: string; date: string; summary: string }
@@ -153,6 +172,8 @@ export interface IntentContext {
   eventIds: string[];
   /** Item titles by id: an id the model writes into an answer is replaced with the title. */
   titles?: Record<string, string>;
+  /** The family's stores (shopping lists). Absent: no list to add to. */
+  storeIds?: string[];
 }
 
 /** One line of the member's recent chat with Homemind, oldest first. Kept by the bridge, per member. */
@@ -172,7 +193,7 @@ export function contextItems(view: MemberView, now: number): Item[] {
     .slice(0, LIMITS.contextItems);
 }
 
-export function intentContextFor(view: MemberView, now: number): IntentContext {
+export function intentContextFor(view: MemberView, now: number, stores: readonly IntentStore[] = []): IntentContext {
   const items = contextItems(view, now);
   const me = view.family.members.find(m => m.id === view.memberId);
   return {
@@ -183,12 +204,13 @@ export function intentContextFor(view: MemberView, now: number): IntentContext {
     memberIds: view.family.members.map(m => m.id),
     itemIds: items.map(i => i.id),
     eventIds: items.filter(i => i.type === 'event').map(i => i.id),
-    titles: Object.fromEntries(items.map(i => [i.id, i.title]))
+    titles: Object.fromEntries(items.map(i => [i.id, i.title])),
+    storeIds: stores.map(s => s.id)
   };
 }
 
 /** The board as the model sees it: compact JSON, only from the member's view. Sensitive notes are left out. */
-export function boardContext(view: MemberView, now: number): string {
+export function boardContext(view: MemberView, now: number, stores: readonly IntentStore[] = []): string {
   const me = view.family.members.find(m => m.id === view.memberId);
   const owner = (i: Item) =>
     i.ownership.state === 'assigned'
@@ -218,7 +240,9 @@ export function boardContext(view: MemberView, now: number): string {
       ...owner(i),
       ...(i.notes && !i.sensitive ? { notes: i.notes.slice(0, 200) } : {})
     })),
-    preferences: view.preferences.map(p => ({ about: p.aboutMemberId, text: p.text, reason: p.reason, strength: p.strength, scope: p.scope }))
+    preferences: view.preferences.map(p => ({ about: p.aboutMemberId, text: p.text, reason: p.reason, strength: p.strength, scope: p.scope })),
+    // The shopping lists: each store and what is still waiting there (a few names each, the family's own words).
+    ...(stores.length ? { stores: stores.map(s => ({ id: s.id, name: s.name, ...(s.nameZh ? { nameZh: s.nameZh } : {}), waiting: s.waiting.slice(0, 15).map(w => w.slice(0, 60)) })) } : {})
   });
 }
 
@@ -268,6 +292,8 @@ export interface IntentInput {
   text: string;
   /** The member's last few turns with Homemind, oldest first, so "yes" or "no, I meant..." has a meaning. */
   recent?: ChatLine[];
+  /** The family's stores and what waits at each (shopping.ts). The whole family sees the lists. */
+  stores?: IntentStore[];
 }
 
 export function intentPrompt(input: IntentInput): LlmRequest {
@@ -292,6 +318,7 @@ When the member names the item and a time for its reminder, set that time (updat
 A preparation's due is a real time before its event starts (the evening before, or the morning of), or null.
 In "answer" never write ids or ISO datetimes: name items by title, and times in words ("tomorrow 08:00").
 You cannot send messages, buy, order or pay. If asked to, use "ask" and say that needs a card and a tap.
+Putting something on the family's shopping list is not buying: use add_to_shopping ("add milk to the list", "we need eggs", "buy plasters", "买牛奶", "加到购物清单").
 
 Reply with ONE JSON object, no prose. "intent" is one of:
 {"intent":"ask","answer":string,"itemIds":[item ids the answer is about]}
@@ -310,6 +337,9 @@ Reply with ONE JSON object, no prose. "intent" is one of:
 {"intent":"add_preference","text":string,"reason":string|null,"aboutMemberId":member id|null,"strength":"hard"|"soft","scope":string|null}
    text: the preference itself, without the reason. reason: the member's own words after "because"/"因为", copied as written (never a reason from the BOARD), or null.
    hard = allergies, dietary laws, medical; soft = likes and habits. scope: where it applies, as short English words joined by "-" (e.g. "kindergarten-party", "school-lunch"), or null for everywhere.
+{"intent":"add_to_shopping","items":[{"storeId":store id from "stores" in BOARD,"name":string,"qty":1-99|null,"note":string|null}]}
+   1 to 10 things to buy. name: the thing only ("milk", "牛奶"), in the member's words; qty: a count the member said ("2 milk", "两盒"), else null; note: a size or detail ("1 kg", "for Noa"), else null.
+   storeId: the store the member named; if none, the store that sells it (food: supermarket or market; medicine: pharmacy; tools, bulbs, batteries: hardware). A question about what is on the list is "ask".
 {"intent":"create_rule","title":string,"weekday":0-6 (0 = Sunday),"time":"HH:MM","leadMinutes":number,"action":string}
 {"intent":"report_situation","situation":"sick"|"away"|"late"|"other","memberId":member id|null,"date":"YYYY-MM-DD","summary":string}
    memberId: who it is about ("Noa is sick" = Noa), or null for the member writing. date: the day it is about (today unless the MESSAGE says another day). summary: the MESSAGE in a few words.
@@ -317,7 +347,7 @@ Reply with ONE JSON object, no prose. "intent" is one of:
 {"intent":"why","itemId":item id}
 Titles in the language the member wrote in. "visibility":"parents" only if the member asks to keep it from the children.`;
   const recent = recentChatText(input.recent ?? []);
-  const user = `${dataBlock('BOARD', boardContext(input.view, input.now))}\n\n${recent ? `${dataBlock('RECENT CHAT', recent)}\n\n` : ''}${dataBlock('MESSAGE', input.text.slice(0, LIMITS.message))}\n\nReply with the JSON object for the MESSAGE.`;
+  const user = `${dataBlock('BOARD', boardContext(input.view, input.now, input.stores ?? []))}\n\n${recent ? `${dataBlock('RECENT CHAT', recent)}\n\n` : ''}${dataBlock('MESSAGE', input.text.slice(0, LIMITS.message))}\n\nReply with the JSON object for the MESSAGE.`;
   return { purpose: 'intent', system, user, maxTokens: 800 };
 }
 
@@ -552,6 +582,26 @@ export function validateIntent(raw: unknown, ctx: IntentContext): Validation<Cha
       };
       break;
     }
+    case 'add_to_shopping': {
+      const stores = ctx.storeIds ?? [];
+      const list = Array.isArray(raw.items) ? raw.items : (c.bad('items', 'is not a list'), []);
+      if (Array.isArray(raw.items) && (list.length < 1 || list.length > 10)) c.bad('items', 'must have 1 to 10 entries');
+      const items = list.slice(0, 10).map((entry, i): ShoppingIntentItem => {
+        const p = `items[${i}]`;
+        if (!isObject(entry)) return c.bad(p, 'is not an object'), { storeId: '', name: '' };
+        const qty = absent(entry.qty) ? undefined : entry.qty;
+        if (qty !== undefined && (typeof qty !== 'number' || !Number.isInteger(qty) || qty < 1 || qty > 99)) c.bad(`${p}.qty`, 'is not a whole number from 1 to 99');
+        const note = c.optText(entry.note, `${p}.note`, 120);
+        return {
+          storeId: c.id(entry.storeId, `${p}.storeId`, stores),
+          name: c.text(entry.name, `${p}.name`, 80),
+          ...(typeof qty === 'number' ? { qty } : {}),
+          ...(note ? { note } : {})
+        };
+      });
+      value = { intent: 'add_to_shopping', items };
+      break;
+    }
     case 'create_rule': {
       const weekday = raw.weekday;
       if (typeof weekday !== 'number' || !Number.isInteger(weekday) || weekday < 0 || weekday > 6) c.bad('weekday', 'is not 0 to 6');
@@ -678,7 +728,7 @@ export async function runValidated<T>(llm: LlmClient, request: LlmRequest, valid
 }
 
 export function runIntent(llm: LlmClient, input: IntentInput): Promise<JobResult<ChatIntent>> {
-  const ctx = intentContextFor(input.view, input.now);
+  const ctx = intentContextFor(input.view, input.now, input.stores ?? []);
   return runValidated(llm, intentPrompt(input), raw => validateIntent(raw, ctx));
 }
 

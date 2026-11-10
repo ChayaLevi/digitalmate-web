@@ -208,7 +208,7 @@ for (const lang of ['en', 'zh'] as const) {
   test(`every Family screen at 390 px in ${lang}: no overflow, no serious axe issues`, async ({ page }) => {
     await openFamily(page, lang, 'mom');
     await expect(family(page)).toHaveAttribute('data-member', 'mom');
-    const names = lang === 'zh' ? ['我的一天', '摘要', '家庭', '日历', '搜索', '规则', '记忆', '服务', '动态', '设置', '+ 添加'] : ['My day', 'Summary', 'Family', 'Calendar', 'Search', 'Rules', 'Memory', 'Services', 'Activity', 'Settings', '+ Add'];
+    const names = lang === 'zh' ? ['我的一天', '摘要', '家庭', '购物', '日历', '搜索', '规则', '记忆', '服务', '动态', '设置', '+ 添加'] : ['My day', 'Summary', 'Family', 'Shopping', 'Calendar', 'Search', 'Rules', 'Memory', 'Services', 'Activity', 'Settings', '+ Add'];
     const nav = family(page).getByRole('navigation', { name: lang === 'zh' ? '家庭页面' : 'Family screens' });
     // Every screen button is in view without sideways scrolling: a hidden scroll hid the last ones.
     const navBox = await nav.boundingBox();
@@ -587,6 +587,94 @@ test('chat: "Chat with Homemind" on Family opens the chat with the Family compan
   await removed.getByRole('button', { name: 'Undo' }).click();
   await expect(family(page)).toBeVisible();
   await expect(page.locator('[data-task-id="library-books"]').first()).toBeVisible();
+});
+
+// S.1 and its follow-up: the Shopping screen in two windows at 390 px, Undo, "Finished shopping" (only the
+// bought items leave the list), and adding to a list from the Family chat, in English and Chinese.
+test('shopping (S.1): Undo, Finished shopping keeps what was not bought, live in two windows, and adding from the chat', async ({ browser }) => {
+  const momContext = await browser.newContext();
+  const dadContext = await browser.newContext();
+  try {
+    const mom = await momContext.newPage();
+    const dad = await dadContext.newPage();
+    await openFamily(mom, 'en', 'mom', 'family');
+    await openFamily(dad, 'zh', 'dad', 'family');
+    await expect(mom.locator('[data-stream="live"]')).toBeVisible();
+    await expect(dad.locator('[data-stream="live"]')).toBeVisible();
+    await family(mom).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'Shopping', exact: true }).click();
+    await family(dad).getByRole('navigation', { name: '家庭页面' }).getByRole('button', { name: '购物', exact: true }).click();
+    const row = (page: Page, name: string) => page.locator('li[data-task-id]', { hasText: name });
+    /** The buttons under one store's list (after its title, and the hint for the member going). */
+    const storeActions = (page: Page, title: RegExp) =>
+      page.locator('.hm-tasks', { has: page.locator('.block-title', { hasText: title }) }).locator('xpath=following-sibling::div[contains(@class, "a2ui-actions")][1]');
+    await expect(row(mom, 'Milk')).toBeVisible();
+    await expect(row(dad, '牛奶')).toBeVisible();
+
+    // 1. Mom adds yogurt (2) to the supermarket list, undoes it, and adds it again. Dad sees it live.
+    await mom.getByLabel('What to buy').fill('Yogurt');
+    await mom.getByLabel('Quantity', { exact: true }).fill('2');
+    await mom.getByRole('button', { name: 'Add to list' }).click();
+    await expect(row(mom, 'Yogurt')).toBeVisible();
+    await expect(row(dad, 'Yogurt')).toBeVisible();
+    await family(mom).getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(family(mom)).toContainText('Undone.');
+    await expect(row(mom, 'Yogurt')).toHaveCount(0);
+    await expect(row(dad, 'Yogurt')).toHaveCount(0);
+    await mom.getByLabel('What to buy').fill('Yogurt');
+    await mom.getByLabel('Quantity', { exact: true }).fill('2');
+    await mom.getByRole('button', { name: 'Add to list' }).click();
+    await expect(row(dad, 'Yogurt')).toBeVisible();
+
+    // 2. Dad goes to the supermarket, buys the milk only, and taps 买完了: the milk leaves, the rest stays.
+    await storeActions(dad, /^超市 ·/).getByRole('button', { name: '我去买' }).click();
+    await expect(dad.locator('.block-title', { hasText: /^超市 · 你去买/ })).toBeVisible();
+    await expect(mom.locator('.block-title', { hasText: /^Supermarket · Dad is going/ })).toBeVisible();
+    await row(dad, '牛奶').getByRole('button', { name: '已买: 牛奶' }).click();
+    await expect(row(dad, '牛奶')).toHaveAttribute('data-state', 'done');
+    await expect(row(mom, 'Milk')).toHaveAttribute('data-state', 'done');
+    await noOverflow(dad);
+    await noOverflow(mom);
+    expect(await seriousIssues(dad)).toEqual([]);
+    expect(await seriousIssues(mom)).toEqual([]);
+    await dad.screenshot({ path: test.info().outputPath('shopping-dad-zh.png'), fullPage: true });
+    await mom.screenshot({ path: test.info().outputPath('shopping-mom-en.png'), fullPage: true });
+    await storeActions(dad, /^超市 ·/).getByRole('button', { name: '买完了（已买 1）' }).click();
+    await expect(family(dad)).toContainText('买完了。1 件已买的从清单上去掉了，其余的留到下次。');
+    await expect(row(dad, '牛奶')).toHaveCount(0);
+    await expect(row(dad, '鸡蛋')).toBeVisible();
+    await expect(row(dad, 'Yogurt')).toBeVisible();
+    await expect(row(mom, 'Milk')).toHaveCount(0);
+    await expect(row(mom, 'Eggs')).toBeVisible();
+    await expect(mom.locator('.block-title', { hasText: /^Supermarket · Nobody is going yet/ })).toBeVisible();
+    // Undo brings the milk (still bought) and Dad's run back.
+    await family(dad).getByRole('button', { name: '撤销', exact: true }).click();
+    await expect(row(dad, '牛奶')).toHaveAttribute('data-state', 'done');
+    await expect(dad.locator('.block-title', { hasText: /^超市 · 你去买/ })).toBeVisible();
+
+    // 3. From the Family chat: Mom adds two things to the market list; the card's Undo takes both off.
+    await openChat(mom, 'en');
+    const added = await chatTo(mom, 'Add plums and 2 lemons to the market list');
+    await expect(added).toContainText('Added to the shopping list. The whole family sees it.');
+    await expect(added).toContainText('lemons ×2');
+    await expect(added).toContainText('Simulated model');
+    await expect(row(dad, 'plums')).toBeVisible();
+    await added.getByRole('button', { name: 'Undo' }).click();
+    await expect(family(mom)).toContainText('Undone.');
+    await expect(row(dad, 'plums')).toHaveCount(0);
+    await expect(row(dad, 'lemons')).toHaveCount(0);
+
+    // Dad, in Chinese, from his chat. Something already on the list is not added twice.
+    await openChat(dad, 'zh');
+    const zh = await chatTo(dad, '购物清单加上酸奶和鸡蛋');
+    await expect(zh).toContainText('已加到购物清单。全家都能看到。');
+    await expect(zh).toContainText('已经在清单上，没有重复添加：鸡蛋（超市）。');
+    await family(mom).getByRole('navigation', { name: 'Family screens' }).getByRole('button', { name: 'Shopping', exact: true }).click();
+    await expect(row(mom, '酸奶')).toBeVisible();
+    await expect(row(mom, 'Eggs')).toHaveCount(1);
+  } finally {
+    await momContext.close();
+    await dadContext.close();
+  }
 });
 
 test('chat (T5.2): a teen asking about a Parents-only item gets no trace of it', async ({ page }) => {

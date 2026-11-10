@@ -515,8 +515,8 @@ not in the demo script (`docs/homemind-demo.md`). Details, test results and open
   offers +1, "Make it n" or keeping it. Item ids are never reused (`lastItem`).
 - **Runs.** One member takes a store's run ("I'll go", 我去买). Only that member releases it; another member taking it gets a 409. Taking a run puts a
   task "Shopping at <store>" on the member's board for today (source kind `shopping`), so it is on their My day with the normal item actions and Undo.
-  **The task leads:** reassigned on the board, the run follows; handed off or removed, the store is free and its list stays; **marked done, that
-  store's list is emptied** (bought and not bought) and the store is free.
+  **The task leads:** reassigned on the board, the run follows; handed off or removed, the store is free and its list stays; **marked done (or
+  "Finished shopping"), only the bought items leave the list** and the store is free (S.2; in S.1 the whole list was emptied).
 - **Seed.** A reset puts 14 items across the six stores, in English and Chinese, with nobody going.
 - **Code.** Pure core `server/homemind/shopping.ts` (`shoppingOf`, `settleShoppingRuns`, `applyShopping`, `parseShoppingBody`); `HomemindState.shopping`
   and `ShoppingStore`/`ShoppingItem`/`ShoppingState` in `types.ts`; `POST /api/homemind/shopping` (session needed) and the `shopping` screen in
@@ -525,7 +525,12 @@ not in the demo script (`docs/homemind-demo.md`). Details, test results and open
 - **Rules it keeps.** Nothing is bought or ordered: a list is a note for the family. The whole family sees the lists; there is no "Parents only".
   The model and PPMA are not involved.
 - **For later phases.** The lists live in the family's state document, so P11 stores them with it, and T11.3's two-household test should include them.
-  The chat cannot add to a list yet.
+
+**Follow-up S.2 (2026-11-10, the human's request).** Browser tests (the Shopping screen in the 390 px axe loop in EN and ZH, and a two-window e2e
+test); **Undo** for every list change (a record per change, put back only while nothing it touched changed since; runs use the board's Undo);
+**"Finished shopping"** for the member going, and Done on the task, take off only the bought items, and the board's Undo brings them back; and
+**adding from the Family chat** with a new intent `add_to_shopping` (validated by hand: store ids from the family's stores, 1 to 10 items,
+quantity 1 to 99), which follows the autonomy level like a board item. Details: `docs/PROGRESS.md`, log entry "S.2".
 
 ### P10 to P14: Homemind in the cloud (several families)
 

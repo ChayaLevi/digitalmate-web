@@ -204,9 +204,31 @@ export type ShoppingRequest =
   | { action: 'remove-store'; storeId: string }
   | { action: 'bump'; itemId: string }
   | { action: 'unbump'; itemId: string }
-  | { action: 'set-qty'; itemId: string; qty: number };
+  | { action: 'set-qty'; itemId: string; qty: number }
+  | { action: 'finish'; storeId: string }
+  | { action: 'undo'; undoId: string }
+  /** Several at once (the chat card's "Add to the list"): one change, one Undo. */
+  | { action: 'add-items'; items: Array<{ storeId: string; name: string; qty?: number; note?: string }> };
 
-export async function homemindShopping(token: string, request: ShoppingRequest): Promise<{ ok: true; changed: boolean; itemId?: string; storeId?: string; duplicateOf?: string }> {
+export interface ShoppingResponse {
+  ok: true;
+  changed: boolean;
+  itemId?: string;
+  storeId?: string;
+  duplicateOf?: string;
+  /** A list change: its Undo record (`action: 'undo'`). */
+  undoId?: string;
+  /** A run (taken or finished) is a board task: the board's Undo for it. */
+  activityId?: string;
+  taskId?: string;
+  /** "Finished shopping": how many bought items left the list. */
+  cleared?: number;
+  /** `add-items`: what was added, and what was already waiting. */
+  added?: number;
+  duplicates?: number;
+}
+
+export async function homemindShopping(token: string, request: ShoppingRequest): Promise<ShoppingResponse> {
   return call('/api/homemind/shopping', { method: 'POST', token, body: JSON.stringify(request) });
 }
 

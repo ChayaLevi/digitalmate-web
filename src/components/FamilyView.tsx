@@ -25,7 +25,7 @@ import {
   undoHomemind,
   writeHomemindSession
 } from '../transport/homemind';
-import type { HomemindHealth, HomemindMember, HomemindPreset, HomemindSession, MutationResult, ScreenParams } from '../transport/homemind';
+import type { HomemindHealth, HomemindMember, HomemindPreset, HomemindSession, MutationResult, ScreenParams, ShoppingResponse } from '../transport/homemind';
 import { connectHomemindEvents } from '../transport/homemindEvents';
 import type { StreamStatus } from '../transport/homemindEvents';
 import type { HomemindAlert, PpmaStatus } from '../../server/homemind/types';
@@ -45,8 +45,8 @@ interface Nav {
 interface Notice {
   text: string;
   tone: 'info' | 'error';
-  /** An item change (`itemId`), or a deleted rule (`rule`, T9.1): Undo puts it back. */
-  undo?: { itemId?: string; activityId: string; rule?: boolean };
+  /** An item change (`itemId`), a deleted rule (`rule`, T9.1), or a shopping list change (`shopUndoId`): Undo puts it back. */
+  undo?: { itemId?: string; activityId?: string; rule?: boolean; shopUndoId?: string };
 }
 
 /** T9.1: the demo panel's scene presets, with what the presenter does next. */
@@ -480,7 +480,7 @@ export function FamilyView({
   };
 
   /** Shopping: one request, then the screen again. Form fields that were sent are emptied. */
-  const shoppingRequest = async (request: Parameters<typeof homemindShopping>[1], clear: string[], done: string) => {
+  const shoppingRequest = async (request: Parameters<typeof homemindShopping>[1], clear: string[], done: string | ((result: ShoppingResponse) => string)) => {
     if (!session) return;
     setBusy(true);
     try {
@@ -494,7 +494,9 @@ export function FamilyView({
       // An answered "already on the list?" question goes away with the change.
       if (nav.screen === 'shopping' && nav.params.id) go({ screen: 'shopping', params: {} }, { replace: true });
       else refresh();
-      setNotice({ text: done, tone: 'info' });
+      // Undo: a list change has its own record; taking or finishing a run is a board task with the board's Undo.
+      const undo = result.undoId ? { shopUndoId: result.undoId } : result.activityId && result.taskId ? { itemId: result.taskId, activityId: result.activityId } : undefined;
+      setNotice({ text: typeof done === 'function' ? done(result) : done, tone: 'info', ...(undo ? { undo } : {}) });
     } catch (error) {
       if (error instanceof HomemindError && error.status === 401) return signOut(tr('Your demo sign-in ended. Pick a member again.', '演示登录已结束，请重新选择成员。'));
       setNotice({ text: describe(error), tone: 'error' });
@@ -568,6 +570,18 @@ export function FamilyView({
           return shoppingRequest({ action: 'set-qty', itemId: str(args.itemId) ?? '', qty: typeof args.qty === 'number' ? args.qty : 1 }, [], tr('Quantity changed.', '数量已更改。'));
         case 'shop-keep':
           return go({ screen: 'shopping', params: {} }, { replace: true });
+        case 'shop-finish':
+          return shoppingRequest({ action: 'finish', storeId: str(args.storeId) ?? '' }, [], r =>
+            tr(`Shopping done. ${r.cleared ?? 0} bought item(s) left the list; the rest stay for next time.`, `买完了。${r.cleared ?? 0} 件已买的从清单上去掉了，其余的留到下次。`)
+          );
+        case 'shop-undo':
+          return shoppingRequest({ action: 'undo', undoId: str(args.undoId) ?? '' }, [], tr('Undone.', '已撤销。'));
+        case 'shop-add-many': {
+          const items = Array.isArray(args.items) ? (args.items as Array<{ storeId: string; name: string; qty?: number; note?: string }>) : [];
+          return shoppingRequest({ action: 'add-items', items }, [], r =>
+            r.added ? tr('Added to the shopping list.', '已加到购物清单。') : tr('Already on the list. Nothing was added.', '已经在清单上了，没有重复添加。')
+          );
+        }
         case 'shop-remove-store':
           return shoppingRequest({ action: 'remove-store', storeId: str(args.storeId) ?? '' }, [], tr('Store removed.', '已删除商店。'));
       }
@@ -704,6 +718,14 @@ export function FamilyView({
     if (!session) return;
     setBusy(true);
     try {
+      if (target.shopUndoId) {
+        // A shopping list change: put back what it touched (refused if someone changed it since).
+        await homemindShopping(session.token, { action: 'undo', undoId: target.shopUndoId });
+        setNotice({ text: tr('Undone.', '已撤销。'), tone: 'info' });
+        refresh();
+        return;
+      }
+      if (!target.activityId) return;
       if (target.rule) {
         // T9.1: a deleted rule comes back as it was.
         await runHomemindAction({ id: `homemind.rule-restore:${target.activityId}`, label: 'undo', kind: 'homemind', args: { verb: 'rule-restore', activityId: target.activityId } }, session.token);

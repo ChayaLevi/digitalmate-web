@@ -1081,8 +1081,12 @@ export interface ShoppingStore {
   /** Added by the family (not a default). Only such a store can be removed, and only when its list is empty. */
   custom?: boolean;
   createdBy?: string;
-  /** Who took this store's shopping run. Only they release it. Absent: nobody yet. `itemId`: its task on the board. */
-  run?: { memberId: string; at: string; itemId?: string };
+  /**
+   * Who took this store's shopping run. Only they release it. Absent: nobody yet. `itemId`: its task on the board.
+   * `settled`: the task was marked done, so the run is over and the bought items left the list (`cleared`). Kept
+   * so that Undo on the board (the task open again) brings the run and those items back.
+   */
+  run?: { memberId: string; at: string; itemId?: string; settled?: { cleared: ShoppingItem[] } };
 }
 
 /** One thing to buy, on one store's list. Words are the family's, shown as written. */
@@ -1102,10 +1106,29 @@ export interface ShoppingItem {
   bought?: { by: string; at: string };
 }
 
+/**
+ * One change to the lists, kept so the member who made it (or a parent) can undo it: each item and store it
+ * touched, as it was before and after. Undo is refused when any of them changed again since.
+ */
+export interface ShoppingUndo {
+  id: string;
+  at: string;
+  by: string;
+  /** `index`: where a removed item stood, so Undo puts it back in its place. */
+  items: Array<{ id: string; before?: ShoppingItem; after?: ShoppingItem; index?: number }>;
+  stores: Array<{ id: string; before?: ShoppingStore; after?: ShoppingStore; index?: number }>;
+  /** When it was undone. */
+  undone?: string;
+}
+
 /** The family's shopping lists. Visible to the whole family. */
 export interface ShoppingState {
   stores: ShoppingStore[];
   items: ShoppingItem[];
   /** The number in the last item id given (`shop-<n>`), so ids are never used twice. */
   lastItem?: number;
+  /** The latest list changes that can be undone, newest last (at most `SHOPPING_LIMITS.undo`). */
+  undo?: ShoppingUndo[];
+  /** The number in the last undo id given (`su-<n>`). */
+  lastUndo?: number;
 }

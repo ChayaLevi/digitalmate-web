@@ -10,6 +10,8 @@
  *   blocked  a preparation or task that a hard preference rules out (T5.4): nothing changes
  *   held     an edit, a split or a removal at autonomy level 1, or paused: nothing changes, the board can do it
  *   situation  someone is sick (T8.1): the bridge runs situations.ts (who stays home, what to change)
+ *   shopping   things to put on the family's shopping lists (shopping.ts); at level 1 or paused, a card
+ *              with an "Add to the list" button instead. Nothing is bought.
  *   later    an intent whose task is not built yet (rules from chat; situations other than "sick")
  *   missing  the item is no longer on the member's board (changed while the model was thinking)
  *
@@ -22,7 +24,7 @@
  */
 import { addDays, localParts, zonedToUtc } from './clock';
 import type { Change, ItemPatch, NewItem } from './core';
-import type { ChatIntent, IntentName } from './intents';
+import type { ChatIntent, IntentName, ShoppingIntentItem } from './intents';
 import type { MemberView } from './visibility';
 import { blockedChange, parsePreferenceInput } from './preferences';
 import type { BlockedChoice, PreferenceInput } from './preferences';
@@ -47,6 +49,8 @@ export type ChatPlan =
   | { kind: 'later'; intent: LaterIntent; task: 'T7.3' | 'T8.1' }
   /** T8.1: who is sick and which day; the bridge plans the rest with fixed rules (situations.ts). */
   | { kind: 'situation'; memberId: string; date: string; summary: string }
+  /** Things to buy: added at once (`add: true`), or, at level 1 or paused, offered with a button. */
+  | { kind: 'shopping'; items: ShoppingIntentItem[]; add: boolean; reason?: 'level1' | 'paused' }
   | { kind: 'missing'; intent: IntentName };
 
 /** Whether chat may change the board on its own (level 2 and up, not paused). */
@@ -187,6 +191,9 @@ export function planChat(view: MemberView, intent: ChatIntent): ChatPlan {
       if (!parsed.ok) return { kind: 'missing', intent: intent.intent };
       return mayWrite ? { kind: 'preference', input: parsed.value, save: true } : { kind: 'preference', input: parsed.value, save: false, reason };
     }
+    case 'add_to_shopping':
+      // A list is "organizing" (level 2 and up), like a board item: at level 1 or paused it waits for a tap.
+      return mayWrite ? { kind: 'shopping', items: intent.items, add: true } : { kind: 'shopping', items: intent.items, add: false, reason };
     case 'create_rule':
       return { kind: 'later', intent: 'create_rule', task: 'T7.3' };
     case 'report_situation': {

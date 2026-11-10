@@ -54,7 +54,10 @@ import { summaryFor, tickSummaries } from './homemind/summary';
 import { applyPreferenceRequest, blockedChange, parsePreferenceBody, preferencesForItem } from './homemind/preferences';
 import type { BlockedChoice, PreferenceRequest, PreferenceResult } from './homemind/preferences';
 import { HomemindStore, dataFileFromEnv } from './homemind/store';
-import { applyShopping, parseShoppingBody, settleShoppingRuns, shoppingOf } from './homemind/shopping';
+import { addShoppingItems, applyShopping, parseShoppingBody, parseShoppingItems, settleShoppingRuns, shoppingOf } from './homemind/shopping';
+import type { ShoppingEntry } from './homemind/shopping';
+import type { IntentStore } from './homemind/intents';
+import type { ShoppingState } from './homemind/types';
 import { createPpmaClient, fileSyncStore, isStatementId, ppmaConfigFromEnv, ppmaSyncFileFor } from './homemind/ppma';
 import type { PpmaClient } from './homemind/ppma';
 import { groupMessageReport, handlePpmaCommand, preferenceReport, reminderReport, reportsForChange } from './homemind/ppmaMap';
@@ -67,7 +70,7 @@ import { isSameOrigin } from './orbit';
 import { cloudMode } from './cloud';
 import { accessCodeFromEnv } from './accessGate';
 import { chatTurn, screenTurn } from '../src/lib/homemindSurfaces';
-import type { ChatOutcome } from '../src/lib/homemindSurfaces';
+import type { ChatOutcome, ChatShoppingItem } from '../src/lib/homemindSurfaces';
 
 export const SESSION_HEADER = 'x-homemind-session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -967,7 +970,7 @@ async function chatHandler(ctx: Ctx): Promise<void> {
   if (!before) return fail(ctx.response, 404, 'not_found', 'No such member');
 
   const started = Date.now();
-  const result = await runIntent(llmOf(rt), { view: before, now: rt.clock.now(), lang, text, recent: recentChat(rt, member.id) });
+  const result = await runIntent(llmOf(rt), { view: before, now: rt.clock.now(), lang, text, recent: recentChat(rt, member.id), stores: intentStoresOf(rt.state) });
   const answer = async (outcome: ChatOutcome, extra: Record<string, unknown> = {}) => {
     // The state may have changed while the model was thinking: the card is built from the latest view.
     const view = viewFor(rt.state, member.id) ?? before;
@@ -1010,6 +1013,16 @@ async function chatHandler(ctx: Ctx): Promise<void> {
     }
     case 'missing':
       return answer({ kind: 'missing' }, { intent });
+    case 'shopping': {
+      // Things to buy go on the family's lists (nothing is bought). At level 1 or paused: a button instead.
+      if (!plan.add) return answer({ kind: 'shopping-suggest', items: plan.items.map(i => chatShoppingItem(rt.state, i)), reason: plan.reason ?? 'level1' }, { intent });
+      const added = await addToShopping(rt, member.id, plan.items);
+      if (!added.ok) return answer({ kind: 'failed', reason: 'change', code: added.code, message: added.message }, { intent, status: added.status });
+      return answer(
+        { kind: 'shopping', added: added.added.map(i => chatShoppingItem(rt.state, i)), duplicates: added.duplicates.map(i => chatShoppingItem(rt.state, i)), ...(added.undoId ? { undoId: added.undoId } : {}) },
+        { intent, ...(added.undoId ? { undoId: added.undoId } : {}) }
+      );
+    }
     case 'situation': {
       // T8.1: someone is sick. Fixed rules decide what falls through and who could stay home (situations.ts).
       const started = startSituation(rt.state, member.id, { kind: 'sick', memberId: plan.memberId, date: plan.date, summary: plan.summary }, {
@@ -1125,7 +1138,16 @@ function ruleDetailFor(ctx: Ctx): { ruleId?: string; ruleNext?: { at: string; pr
  * one member takes a store's run and only they release it. Saved, then every window re-reads.
  */
 async function shoppingHandler(ctx: Ctx): Promise<void> {
-  const parsed = parseShoppingBody(await readBody(ctx.request));
+  const body = await readBody(ctx.request);
+  if (body.action === 'add-items') {
+    // The chat card's "Add to the list": several items, one change, one Undo.
+    const entries = parseShoppingItems(body);
+    if (!entries.ok) throw new HttpError(400, 'invalid', entries.message);
+    const result = await addToShopping(ctx.rt, ctx.member.id, entries.value);
+    if (!result.ok) return fail(ctx.response, result.status, result.code, result.message);
+    return json(ctx.response, 200, { ok: true, changed: result.added.length > 0, items: [], opened: [], conflicts: [], added: result.added.length, duplicates: result.duplicates.length, ...(result.undoId ? { undoId: result.undoId } : {}) });
+  }
+  const parsed = parseShoppingBody(body);
   if (!parsed.ok) throw new HttpError(400, 'invalid', parsed.message);
   const { rt, member } = ctx;
   // Read and replace the state with no await in between.
@@ -1140,7 +1162,52 @@ async function shoppingHandler(ctx: Ctx): Promise<void> {
     }
     rt.hub.broadcast({ event: 'shopping.changed', data: {} });
   }
-  json(ctx.response, 200, { ok: true, changed: result.changed, items: [], opened: [], conflicts: [], ...(result.itemId ? { itemId: result.itemId } : {}), ...(result.storeId ? { storeId: result.storeId } : {}), ...(result.duplicateOf ? { duplicateOf: result.duplicateOf } : {}) });
+  // "Finished shopping": how many bought items left the list (settled in the commit above).
+  const cleared = parsed.value.action === 'finish' ? rt.state.shopping?.stores.find(s => s.id === result.storeId)?.run?.settled?.cleared.length ?? 0 : undefined;
+  json(ctx.response, 200, {
+    ok: true,
+    changed: result.changed,
+    items: [],
+    opened: [],
+    conflicts: [],
+    ...(result.itemId ? { itemId: result.itemId } : {}),
+    ...(result.storeId ? { storeId: result.storeId } : {}),
+    ...(result.duplicateOf ? { duplicateOf: result.duplicateOf } : {}),
+    // Undo: a list change has its own record; a run (claim, finish) is a board task with the board's Undo.
+    ...(result.undoId ? { undoId: result.undoId } : {}),
+    ...(result.activityId && result.taskId && parsed.value.action !== 'release' ? { activityId: result.activityId, taskId: result.taskId } : {}),
+    ...(cleared !== undefined ? { cleared } : {})
+  });
+}
+
+/** Adds items (chat, or its card's button) in one change, saves and tells every window. */
+async function addToShopping(rt: Runtime, memberId: string, entries: ShoppingEntry[]) {
+  // Read and replace the state with no await in between.
+  const result = addShoppingItems(rt.state, entries, memberId, rt.clock.now());
+  if (result.ok && result.added.length) {
+    rt.state = result.state;
+    await rt.store.save(result.state);
+    rt.hub.broadcast({ event: 'shopping.changed', data: {} });
+  }
+  return result;
+}
+
+/** The stores for the chat model: each with what is still waiting there (the whole family sees the lists). */
+function intentStoresOf(state: HomemindState): IntentStore[] {
+  const shopping = shoppingOf(state);
+  return shopping.stores.map(s => ({ id: s.id, name: s.name, ...(s.nameZh ? { nameZh: s.nameZh } : {}), waiting: shopping.items.filter(i => i.storeId === s.id && !i.bought).map(i => `${i.name}${(i.qty ?? 1) > 1 ? ` x${i.qty}` : ''}`) }));
+}
+
+/** A chat card's line for one thing to buy, with the store's words. */
+function chatShoppingItem(state: HomemindState, item: ShoppingEntry & { nameZh?: string }): ChatShoppingItem {
+  const store = shoppingOf(state).stores.find(s => s.id === item.storeId);
+  return { storeId: item.storeId, store: store?.name ?? item.storeId, ...(store?.nameZh ? { storeZh: store.nameZh } : {}), name: item.name, ...(item.nameZh ? { nameZh: item.nameZh } : {}), qty: item.qty ?? 1, ...(item.note ? { note: item.note } : {}) };
+}
+
+/** The lists as a screen shows them: no Undo records or settled runs (those stay on the server). */
+function shoppingForScreen(shopping: ShoppingState): ShoppingState {
+  const { undo: _undo, lastUndo: _lastUndo, ...rest } = shopping;
+  return { ...rest, stores: rest.stores.map(s => (s.run?.settled ? { ...s, run: { memberId: s.run.memberId, at: s.run.at, ...(s.run.itemId ? { itemId: s.run.itemId } : {}) } } : s)) };
 }
 
 // --- handlers -----------------------------------------------------------------------------------------
@@ -1251,7 +1318,7 @@ const routes: Route[] = [
         // `?id=&q=`: an item someone tried to add twice, and the quantity they asked for: the screen asks what to do.
         ...(name === 'shopping'
           ? {
-              shopping: shoppingOf(ctx.rt.state),
+              shopping: shoppingForScreen(shoppingOf(ctx.rt.state)),
               ...(ctx.url.searchParams.get('id') ? { shoppingAsk: { itemId: idOf(ctx.url.searchParams.get('id') as string, 'id'), ...(/^[1-9]\d?$/.test(query) ? { qty: Number(query) } : {}) } } : {})
             }
           : {}),

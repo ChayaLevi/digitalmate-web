@@ -142,8 +142,8 @@ describe('shopping lists (core)', () => {
     expect(released.items.find(i => i.id === task!.id)?.status).toBe('cancelled');
   });
 
-  it("empties the store's list when its shopping task is done, and only frees the store when it is removed", () => {
-    const state = run(
+  it('takes only the bought items off when the shopping task is done, keeps the rest, and only frees the store when it is removed', () => {
+    const added = run(
       fresh(),
       ['mom', { action: 'add-item', storeId: 'supermarket', name: 'Milk' }],
       ['mom', { action: 'add-item', storeId: 'supermarket', name: 'Bread' }],
@@ -151,14 +151,26 @@ describe('shopping lists (core)', () => {
       ['dad', { action: 'claim', storeId: 'supermarket' }],
       ['mom', { action: 'claim', storeId: 'pharmacy' }]
     );
+    const milk = shoppingOf(added).items.find(i => i.name === 'Milk')!;
+    const state = run(added, ['dad', { action: 'bought', itemId: milk.id, bought: true }]);
     expect(settleShoppingRuns(state)).toBe(state);
     const task = (storeId: string) => state.items.find(i => i.id === shoppingOf(state).stores.find(s => s.id === storeId)?.run?.itemId)!;
     const done = applyChange(state, { kind: 'done', itemId: task('supermarket').id, version: task('supermarket').version }, 'dad', fixedClock(NOW));
     if (!done.ok) throw new Error(done.message);
     const settled = settleShoppingRuns(done.state);
-    expect(shoppingOf(settled).items.map(i => i.name)).toEqual(['Plasters']);
-    expect(settled.shopping?.stores.find(s => s.id === 'supermarket')?.run).toBeUndefined();
-    expect(settled.shopping?.stores.find(s => s.id === 'pharmacy')?.run?.memberId).toBe('mom');
+    // Milk was bought, so it leaves; Bread was not, so it stays for the next run.
+    expect(shoppingOf(settled).items.map(i => i.name)).toEqual(['Bread', 'Plasters']);
+    expect(shoppingOf(settled).stores.find(s => s.id === 'supermarket')?.run).toBeUndefined();
+    expect(shoppingOf(settled).stores.find(s => s.id === 'pharmacy')?.run?.memberId).toBe('mom');
+    // Settling twice changes nothing more.
+    expect(settleShoppingRuns(settled)).toBe(settled);
+    // Undo on the board (the task open again): the run and the bought Milk come back.
+    const undone = applyChange(settled, { kind: 'undo', activityId: done.activity.id }, 'dad', fixedClock(NOW));
+    if (!undone.ok) throw new Error(undone.message);
+    const back = settleShoppingRuns(undone.state);
+    expect(shoppingOf(back).items.map(i => i.name).sort()).toEqual(['Bread', 'Milk', 'Plasters']);
+    expect(shoppingOf(back).items.find(i => i.name === 'Milk')?.bought?.by).toBe('dad');
+    expect(shoppingOf(back).stores.find(s => s.id === 'supermarket')?.run?.memberId).toBe('dad');
     // Removed instead of done: the store is free, the list stays.
     const removed = applyChange(state, { kind: 'cancel', itemId: task('pharmacy').id, version: task('pharmacy').version }, 'mom', fixedClock(NOW));
     if (!removed.ok) throw new Error(removed.message);
@@ -283,8 +295,10 @@ describe('the Shopping screen', () => {
       ['Bread', 'Bought by Maya', 'done']
     ]);
     const verbs = (surface: typeof dad, id: string) => (surface.components[id]?.actions ?? []).map(a => a.args?.verb);
-    expect(verbs(dad, 'shop-supermarket-actions')).toEqual(['shop-release', 'shop-clear']);
+    expect(verbs(dad, 'shop-supermarket-actions')).toEqual(['shop-finish', 'shop-release', 'shop-clear']);
+    expect(String(dad.components['shop-supermarket-finish-hint'].text)).toContain('Finished shopping');
     const mom = build('mom');
+    expect(mom.components['shop-supermarket-finish-hint']).toBeUndefined();
     expect(mom.components['shop-supermarket'].title).toBe('Supermarket · Dad is going');
     expect(verbs(mom, 'shop-supermarket-actions')).toEqual(['shop-clear']);
     // Stores with nothing on them are one line, not empty boxes.
@@ -378,17 +392,21 @@ describe('shopping through the bridge', () => {
     expect(JSON.stringify(await dadDay.json())).toContain('Shopping at Pharmacy');
   });
 
-  it("Done on the shopping task (My day) empties that store's list", async () => {
+  it('Done on the shopping task (My day) takes only the bought items off that store\'s list', async () => {
     const dad = as(await login('dad'));
     expect((await dad.post({ action: 'claim', storeId: 'supermarket' })).status).toBe(200);
+    // The seed's Milk is shop-1, at the supermarket: Dad bought it; the rest he did not find.
+    expect((await dad.post({ action: 'bought', itemId: 'shop-1', bought: true })).status).toBe(200);
     const state = (await (await fetch(`${base}/api/homemind/debug/state`)).json()) as HomemindState;
     const task = state.items.find(i => i.source.kind === 'shopping')!;
     const res = await fetch(`${base}/api/homemind/items/${task.id}/done`, { method: 'POST', headers: { [SESSION_HEADER]: await login('dad') }, body: JSON.stringify({ version: task.version }) });
     expect(res.status).toBe(200);
-    const screen = await dad.screen();
-    expect(screen.data['shop-supermarket']).toBeUndefined();
-    expect(String(screen.components['shop-quiet'].text)).toContain('Supermarket');
+    const after = (await (await fetch(`${base}/api/homemind/debug/state`)).json()) as HomemindState;
+    const supermarket = after.shopping!.items.filter(i => i.storeId === 'supermarket').map(i => i.name);
+    expect(supermarket).toEqual(['Eggs', 'Apples', 'Bread']);
     // The other stores keep their lists.
+    const screen = await dad.screen();
+    expect(screen.data['shop-supermarket']).toBeDefined();
     expect(screen.data['shop-pharmacy']).toBeDefined();
   });
 

@@ -1476,10 +1476,25 @@ export type ChatOutcome =
   /** T8.1: someone is sick. `created: false`: that member and day were already reported (the same card again). */
   | { kind: 'situation'; situationId: string; created: boolean; activityId?: string }
   | { kind: 'missing' }
+  /** Things put on the shopping lists from chat (one change, one Undo). `duplicates`: already waiting there, not added again. */
+  | { kind: 'shopping'; added: ChatShoppingItem[]; duplicates: ChatShoppingItem[]; undoId?: string }
+  /** Level 1 or paused: nothing added, an "Add to the list" button instead. */
+  | { kind: 'shopping-suggest'; items: ChatShoppingItem[]; reason: 'level1' | 'paused' }
   /** T5.3: a screenshot read by the model. Everything created is proposed. */
   | { kind: 'extracted'; created: ExtractedEntry[]; skipped: SkippedExtraction[]; dropped: number; signUp?: SignUpInfo }
   /** `model`: the model failed or gave nothing usable. `image`: the same, for a screenshot. `change`: the board refused the change. */
   | { kind: 'failed'; reason: 'model' | 'image' | 'change' | 'not_configured'; code: string; message: string };
+
+/** One thing to buy on a chat card: what, how many, and at which store (with the store's words). */
+export interface ChatShoppingItem {
+  storeId: string;
+  store: string;
+  storeZh?: string;
+  name: string;
+  nameZh?: string;
+  qty: number;
+  note?: string;
+}
 
 export interface ChatTurnData {
   lang: HomemindLang;
@@ -1720,6 +1735,55 @@ export function chatTurn(input: ChatTurnData): HomemindTurn {
       data.why = whyRows(e, view, lang, outcome.ppma);
       if (!e.why) children.push(text('why-note', C.whyOwn[lang]));
       title = titleById(e.itemId) || C.whyTitle[lang];
+      break;
+    }
+    case 'shopping':
+    case 'shopping-suggest': {
+      const list = outcome.kind === 'shopping' ? outcome.added : outcome.items;
+      // The family's own words go inside screen text, so link and bold marks are dropped there.
+      const plain = (s: string) => s.replace(/[[\]()*`_\\]/g, '');
+      const label = (i: ChatShoppingItem) => `${plain(lang === 'zh' && i.nameZh ? i.nameZh : i.name)}${i.qty > 1 ? ` ×${i.qty}` : ''}`;
+      const where = (i: ChatShoppingItem) => (lang === 'zh' && i.storeZh ? i.storeZh : i.store);
+      const rows = list.map(i => ({ label: where(i), value: [label(i), i.note ? plain(i.note) : ''].filter(Boolean).join(' · '), tone: 'muted' }));
+      if (outcome.kind === 'shopping') {
+        const parts: string[] = [];
+        if (outcome.added.length) parts.push(lang === 'zh' ? '已加到购物清单。全家都能看到。' : 'Added to the shopping list. The whole family sees it.');
+        if (outcome.duplicates.length) {
+          const twins = outcome.duplicates.map(d => `${label(d)}（${where(d)}）`.replace('（', lang === 'zh' ? '（' : ' (').replace('）', lang === 'zh' ? '）' : ')'));
+          parts.push(lang === 'zh' ? `已经在清单上，没有重复添加：${twins.join('、')}。` : `Already on the list, not added again: ${twins.join(', ')}.`);
+        }
+        if (outcome.undoId) parts.push(C.undoHint[lang]);
+        message = parts.join(' ');
+        if (rows.length) children.push({ id: 'shop', component: 'InfoRows', title: lang === 'zh' ? '购物清单' : 'Shopping list', dataPath: '/shop' });
+        data.shop = rows;
+        if (outcome.undoId) {
+          children.push({
+            id: 'actions',
+            component: 'ActionBar',
+            actions: [{ id: `homemind.shop-undo:${outcome.undoId}`, label: hx(lang, 'undo'), variant: 'secondary', kind: 'homemind', args: { verb: 'shop-undo', undoId: outcome.undoId } }]
+          });
+        }
+      } else {
+        message = outcome.reason === 'paused'
+          ? (lang === 'zh' ? 'Homemind 已暂停，所以什么都没加。点下面的按钮就会加到清单。' : 'Homemind is paused, so nothing was added. Tap below to add it to the list.')
+          : (lang === 'zh' ? '在等级 1，Homemind 只提建议。点下面的按钮就会加到清单。' : 'At level 1 Homemind only suggests. Tap below to add it to the list.');
+        children.push({ id: 'shop', component: 'InfoRows', title: C.suggestion[lang], dataPath: '/shop' });
+        data.shop = rows;
+        children.push({
+          id: 'actions',
+          component: 'ActionBar',
+          actions: [
+            {
+              id: 'homemind.shop-add-many',
+              label: lang === 'zh' ? '加到清单' : 'Add to the list',
+              variant: 'primary',
+              kind: 'homemind',
+              args: { verb: 'shop-add-many', items: list.map(i => ({ storeId: i.storeId, name: i.name, qty: i.qty, ...(i.note ? { note: i.note } : {}) })) }
+            }
+          ]
+        });
+      }
+      title = lang === 'zh' ? '购物清单' : 'Shopping list';
       break;
     }
     case 'preference': {
@@ -2739,7 +2803,12 @@ function shoppingScreen(input: HomemindScreenData): HomemindTurn {
     }
     const actions: A2uiAction[] = [];
     if (!store.run && open.length) actions.push(shop('shop-claim', t("I'll go", '我去买'), 'secondary', { storeId: store.id }, store.id));
-    if (store.run?.memberId === view.memberId) actions.push(shop('shop-release', t('Release the run', '不去了'), 'ghost', { storeId: store.id }, store.id));
+    if (store.run?.memberId === view.memberId) {
+      // Back from the store: what was marked bought leaves the list, the rest stays for next time.
+      children.push(text(`${key}-finish-hint`, t('Mark what you bought, then tap **Finished shopping**: the bought items leave the list and the rest stay for next time.', '把买到的标记为“已买”，再点**买完了**：已买的会从清单上去掉，其余的留到下次。')));
+      actions.push(shop('shop-finish', t(`Finished shopping (${bought.length} bought)`, `买完了（已买 ${bought.length}）`), 'primary', { storeId: store.id }, store.id));
+      actions.push(shop('shop-release', t('Release the run', '不去了'), 'ghost', { storeId: store.id }, store.id));
+    }
     if (bought.length) actions.push(shop('shop-clear', t(`Clear bought (${bought.length})`, `清除已买（${bought.length}）`), 'ghost', { storeId: store.id }, store.id));
     if (store.custom && !items.length) actions.push(shop('shop-remove-store', t('Remove this store', '删除这家店'), 'ghost', { storeId: store.id }, store.id));
     if (actions.length) children.push({ id: `${key}-actions`, component: 'ActionBar', actions });

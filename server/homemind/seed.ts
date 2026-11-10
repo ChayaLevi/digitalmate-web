@@ -12,8 +12,9 @@
  */
 import { addDays, localParts, toIso, zonedToUtc } from './clock';
 import { seedServices } from './fakes';
+import { DEFAULT_STORES } from './shopping';
 import { STATE_SCHEMA_VERSION } from './types';
-import type { Family, HomemindState, Item, Preference, Rule } from './types';
+import type { Family, HomemindState, Item, Preference, Rule, ShoppingItem, ShoppingState } from './types';
 
 /** The demo family lives in the zone of the machine running the bridge, so the board matches its clock. */
 export function machineTimezone(): string {
@@ -212,6 +213,38 @@ function seedRules(): Rule[] {
   ];
 }
 
+/** A few things already on the shopping lists, so the demo has something to take and tick off. Nobody is going yet. */
+function seedShopping(now: number): ShoppingState {
+  const addedAt = toIso(now - 3 * 60 * 60 * 1000);
+  const item = (n: number, storeId: string, addedBy: string, name: string, nameZh: string, qty = 1, note?: string, noteZh?: string): ShoppingItem => ({
+    id: `shop-${n}`,
+    storeId,
+    name,
+    nameZh,
+    qty,
+    ...(note ? { note, noteZh } : {}),
+    addedBy,
+    addedAt
+  });
+  const items = [
+    item(1, 'supermarket', 'mom', 'Milk', '牛奶', 2),
+    item(2, 'supermarket', 'dad', 'Eggs', '鸡蛋', 1, 'a pack of 12', '一盒 12 个'),
+    item(3, 'supermarket', 'maya', 'Apples', '苹果', 1, '1 kg', '1 公斤'),
+    item(4, 'supermarket', 'mom', 'Bread', '面包', 2),
+    item(5, 'pharmacy', 'mom', 'Vitamin D drops', '维生素 D 滴剂', 1, 'for Noa', '给诺娅'),
+    item(6, 'pharmacy', 'dad', 'Plasters', '创可贴', 3),
+    item(7, 'post-office', 'mom', 'Pick up the parcel', '取包裹', 1, 'the slip is on the fridge', '取件单在冰箱上'),
+    item(8, 'mall', 'maya', 'Sneakers for Maya', '玛雅的运动鞋', 1, 'size 38', '38 码'),
+    item(9, 'mall', 'mom', 'Birthday gift for Grandma', '给奶奶的生日礼物', 1, 'a warm scarf', '一条暖和的围巾'),
+    item(10, 'hardware', 'dad', 'Light bulbs', '灯泡', 2, 'E27', 'E27'),
+    item(11, 'hardware', 'dad', 'AA batteries', '5 号电池', 4, 'for the remote', '给遥控器用'),
+    item(12, 'market', 'mom', 'Tomatoes', '西红柿', 1, '1 kg', '1 公斤'),
+    item(13, 'market', 'maya', 'Bananas', '香蕉', 6),
+    item(14, 'market', 'mom', 'Fresh herbs', '新鲜香草', 1, 'parsley and coriander', '欧芹和香菜')
+  ];
+  return { stores: DEFAULT_STORES.map(s => ({ ...s })), items, lastItem: items.length };
+}
+
 export function seedState(options: SeedOptions): HomemindState {
   const timezone = options.timezone ?? machineTimezone();
   return {
@@ -225,6 +258,7 @@ export function seedState(options: SeedOptions): HomemindState {
     activity: [],
     whys: [],
     services: seedServices(),
+    shopping: seedShopping(options.now),
     clockOffsetMs: 0,
     seededAt: toIso(options.realNow ?? options.now),
     // T8.2: summaries count from the seed, so a reset after 20:00 does not send tonight's at once.

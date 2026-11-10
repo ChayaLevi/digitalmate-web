@@ -52,6 +52,18 @@ describe('shopping lists (core)', () => {
     expect(shopping.stores.map(s => s.id)).toEqual(expect.arrayContaining(['supermarket', 'pharmacy', 'mall', 'post-office']));
   });
 
+  it('seeds a few things to buy for the demo, in both languages, with nobody going yet', () => {
+    const shopping = shoppingOf(seedState({ now: NOW, timezone: 'Asia/Shanghai' }));
+    expect(shopping.items.length).toBeGreaterThanOrEqual(6);
+    expect(new Set(shopping.items.map(i => i.storeId))).toEqual(new Set(['supermarket', 'pharmacy', 'post-office', 'mall', 'hardware', 'market']));
+    expect(shopping.stores.map(s => s.id)).toEqual(DEFAULT_STORES.map(s => s.id));
+    expect(shopping.items.every(i => i.nameZh && !i.bought && ['mom', 'dad', 'maya'].includes(i.addedBy))).toBe(true);
+    expect(shopping.stores.some(s => s.run)).toBe(false);
+    // The next item continues after the seeded ids.
+    const added = ok(applyShopping(seedState({ now: NOW, timezone: 'Asia/Shanghai' }), { action: 'add-item', storeId: 'mall', name: 'Socks' }, 'mom', NOW));
+    expect(added.itemId).toBe(`shop-${shopping.items.length + 1}`);
+  });
+
   it('never gives a deleted item’s id to a new one', () => {
     const state = run(fresh(), ['mom', { action: 'add-item', storeId: 'mall', name: 'A' }], ['mom', { action: 'add-item', storeId: 'mall', name: 'B' }], ['mom', { action: 'remove-item', itemId: 'shop-2' }]);
     expect(ok(applyShopping(state, { action: 'add-item', storeId: 'mall', name: 'C' }, 'mom', NOW)).itemId).toBe('shop-3');
@@ -205,6 +217,9 @@ describe('no duplicates, and the quantity', () => {
     expect(ok(applyShopping(state, { action: 'add-item', storeId: 'market', name: 'Milk' }, 'dad', NOW)).changed).toBe(true);
     const bought = run(state, ['dad', { action: 'bought', itemId: 'shop-1', bought: true }]);
     expect(ok(applyShopping(bought, { action: 'add-item', storeId: 'supermarket', name: 'Milk' }, 'dad', NOW)).changed).toBe(true);
+    // The seeded Chinese name counts too.
+    const seeded = seedState({ now: NOW, timezone: 'Asia/Shanghai' });
+    expect(ok(applyShopping(seeded, { action: 'add-item', storeId: 'supermarket', name: '牛奶' }, 'dad', NOW)).duplicateOf).toBe('shop-1');
   });
 
   it('counts one more and one less, never below one, and takes a typed quantity', () => {
@@ -373,6 +388,8 @@ describe('shopping through the bridge', () => {
     const screen = await dad.screen();
     expect(screen.data['shop-supermarket']).toBeUndefined();
     expect(String(screen.components['shop-quiet'].text)).toContain('Supermarket');
+    // The other stores keep their lists.
+    expect(screen.data['shop-pharmacy']).toBeDefined();
   });
 
   it('needs a session', async () => {

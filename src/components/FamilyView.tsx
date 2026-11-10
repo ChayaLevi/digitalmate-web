@@ -487,12 +487,12 @@ export function FamilyView({
       const result = await homemindShopping(session.token, request);
       if (result.duplicateOf) {
         // Already on that list: the Shopping screen asks what to do (+1, the typed quantity, or keep it).
-        go({ screen: 'shopping', params: { id: result.duplicateOf, q: request.action === 'add-item' && request.qty && request.qty > 1 ? String(request.qty) : '' } }, { replace: nav.screen === 'shopping' });
+        go({ screen: 'shopping', params: { ...(nav.screen === 'shopping' && nav.params.task ? { task: nav.params.task } : {}), id: result.duplicateOf, q: request.action === 'add-item' && request.qty && request.qty > 1 ? String(request.qty) : '' } }, { replace: nav.screen === 'shopping' });
         return;
       }
       if (clear.length) setForm(f => Object.fromEntries(Object.entries(f).filter(([k]) => !clear.includes(k))));
       // An answered "already on the list?" question goes away with the change.
-      if (nav.screen === 'shopping' && nav.params.id) go({ screen: 'shopping', params: {} }, { replace: true });
+      if (nav.screen === 'shopping' && nav.params.id) go({ screen: 'shopping', params: nav.params.task ? { task: nav.params.task } : {} }, { replace: true });
       else refresh();
       // Undo: a list change has its own record; taking or finishing a run is a board task with the board's Undo.
       const undo = result.undoId ? { shopUndoId: result.undoId } : result.activityId && result.taskId ? { itemId: result.taskId, activityId: result.activityId } : undefined;
@@ -514,6 +514,9 @@ export function FamilyView({
     const str = (value: unknown) => (typeof value === 'string' ? value : undefined);
     if (verb === 'add') return go({ screen: 'edit', params: { parent: str(args.parentEventId) } });
     if (verb === 'edit') return go({ screen: 'edit', params: { id: str(args.itemId) } });
+    // A "Shopping at ..." task (My day, the board): that store's list, to mark what was bought and finish.
+    if (verb === 'shop-open') return go({ screen: 'shopping', params: { task: str(args.itemId) } });
+    if (verb === 'shop-all') return go({ screen: 'shopping', params: {} }, { replace: true });
     if (verb === 'back') return back();
     // T8.2: correct a saved preference (Scene 5): the Memory tab's small form.
     if (verb === 'open-correct-preference') return go({ screen: 'memory', params: { id: str(args.preferenceId) } });
@@ -546,7 +549,7 @@ export function FamilyView({
           if (!field('shopItem')) return setNotice({ text: tr('Write what to buy first.', '请先写下要买什么。'), tone: 'error' });
           const qty = Number(field('shopQty') || '1');
           if (!Number.isInteger(qty) || qty < 1 || qty > 99) return setNotice({ text: tr('The quantity is a whole number from 1 to 99.', '数量是 1 到 99 之间的整数。'), tone: 'error' });
-          return shoppingRequest({ action: 'add-item', storeId: field('shopStore'), name: field('shopItem'), qty, ...(field('shopNote') ? { note: field('shopNote') } : {}) }, ['shopItem', 'shopQty', 'shopNote'], tr('Added to the list.', '已加到清单。'));
+          return shoppingRequest({ action: 'add-item', storeId: str(args.storeId) ?? field('shopStore'), name: field('shopItem'), qty, ...(field('shopNote') ? { note: field('shopNote') } : {}) }, ['shopItem', 'shopQty', 'shopNote'], tr('Added to the list.', '已加到清单。'));
         }
         case 'shop-add-store': {
           if (!field('shopStoreName')) return setNotice({ text: tr('Write the name of the store first.', '请先写下商店名称。'), tone: 'error' });
@@ -569,7 +572,7 @@ export function FamilyView({
         case 'shop-set-qty':
           return shoppingRequest({ action: 'set-qty', itemId: str(args.itemId) ?? '', qty: typeof args.qty === 'number' ? args.qty : 1 }, [], tr('Quantity changed.', '数量已更改。'));
         case 'shop-keep':
-          return go({ screen: 'shopping', params: {} }, { replace: true });
+          return go({ screen: 'shopping', params: nav.params.task ? { task: nav.params.task } : {} }, { replace: true });
         case 'shop-finish':
           return shoppingRequest({ action: 'finish', storeId: str(args.storeId) ?? '' }, [], r =>
             tr(`Shopping done. ${r.cleared ?? 0} bought item(s) left the list; the rest stay for next time.`, `买完了。${r.cleared ?? 0} 件已买的从清单上去掉了，其余的留到下次。`)

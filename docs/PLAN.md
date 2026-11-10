@@ -532,6 +532,10 @@ test); **Undo** for every list change (a record per change, put back only while 
 **adding from the Family chat** with a new intent `add_to_shopping` (validated by hand: store ids from the family's stores, 1 to 10 items,
 quantity 1 to 99), which follows the autonomy level like a board item. Details: `docs/PROGRESS.md`, log entry "S.2".
 
+**Follow-up S.3 (2026-11-10, the human's request).** Tapping the "Shopping at <store>" task (My day or any board row) opens that store's list
+(`/screen/shopping?task=`): only that store, Bought / Not bought, quantities, an add form for it, "Finished shopping", and "All stores".
+Details: `docs/PROGRESS.md`, log entry "S.3".
+
 ### P10 to P14: Homemind in the cloud (several families)
 
 **Added 2026-11-10, after T9.1, for the human's review. No code yet.** Checked against the code on that date.

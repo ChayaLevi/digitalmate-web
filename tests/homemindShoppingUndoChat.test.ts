@@ -15,7 +15,7 @@ import { addShoppingItems, applyShopping, parseShoppingBody, parseShoppingItems,
 import type { ShoppingRequest, ShoppingResult } from '../server/homemind/shopping';
 import type { HomemindState } from '../server/homemind/types';
 import { viewFor } from '../server/homemind/visibility';
-import { chatTurn } from '../src/lib/homemindSurfaces';
+import { chatTurn, screenTurn } from '../src/lib/homemindSurfaces';
 import { A2uiSurfaceStore } from '../src/protocol/a2ui/store';
 
 // Shopping lists: Undo for every list change, "Finished shopping" (only the bought items leave), and adding
@@ -213,6 +213,36 @@ describe('the add_to_shopping intent', () => {
   });
 });
 
+describe('a shopping task opens its store\'s list', () => {
+  it('on My day the task row opens the list, not the edit form', () => {
+    const claimed = apply(seeded(), 'dad', { action: 'claim', storeId: 'supermarket' });
+    const view = viewFor(claimed.state, 'dad')!;
+    const surface = A2uiSurfaceStore.fromJsonl(screenTurn('my-day', { lang: 'en', now: new Date(NOW).toISOString(), view }).jsonl).list()[0];
+    const rows = Object.values(surface.data).flatMap(v => (Array.isArray(v) ? (v as Array<{ id?: string; title?: string; open?: { args?: Record<string, unknown> } }>) : []));
+    const row = rows.find(r => r.id === claimed.taskId);
+    expect(row?.title).toBe('Shopping at Supermarket');
+    expect(row?.open?.args).toEqual({ verb: 'shop-open', itemId: claimed.taskId });
+  });
+
+  it('the focused screen shows only that store, with its own add form and a way back', () => {
+    const claimed = apply(seeded(), 'dad', { action: 'claim', storeId: 'supermarket' });
+    const view = viewFor(claimed.state, 'dad')!;
+    const build = (lang: 'en' | 'zh') =>
+      A2uiSurfaceStore.fromJsonl(
+        screenTurn('shopping', { lang, now: new Date(NOW).toISOString(), view, shopping: shoppingOf(claimed.state), shoppingFocus: 'supermarket' }).jsonl
+      ).list()[0];
+    const en = build('en');
+    expect(en.title).toBe('Shopping at Supermarket');
+    expect(Object.keys(en.data).filter(k => k.startsWith('shop-'))).toEqual(['shop-supermarket']);
+    expect(en.components['shop-quiet']).toBeUndefined();
+    expect(en.components['f-shopStore']).toBeUndefined();
+    expect(en.components['shop-add'].actions?.[0].args).toEqual({ verb: 'shop-add', storeId: 'supermarket' });
+    expect(en.components['shop-all'].actions?.[0].args).toEqual({ verb: 'shop-all' });
+    expect((en.components['shop-supermarket-actions'].actions ?? []).map(a => a.args?.verb)).toEqual(['shop-finish', 'shop-release']);
+    expect(build('zh').title).toBe('去超市购物');
+  });
+});
+
 // --- through the bridge ----------------------------------------------------------------------------------
 
 const ENV_KEYS = ['HOMEMIND_ENABLED', 'HOMEMIND_SECRET', 'HOMEMIND_DEMO', 'HOMEMIND_DATA_FILE', 'HOMEMIND_LLM'] as const;
@@ -292,6 +322,19 @@ describe('shopping Undo, finish and chat through the bridge', () => {
     const back = await stateNow();
     expect(back.shopping?.items.filter(i => i.storeId === 'supermarket').map(i => i.name).sort()).toEqual(['Apples', 'Bread', 'Eggs', 'Milk']);
     expect(shoppingOf(back).stores.find(s => s.id === 'supermarket')?.run?.memberId).toBe('dad');
+  });
+
+  it('?task= focuses the Shopping screen on that run\'s store, also after it was finished', async () => {
+    const dad = await login('dad');
+    const claim = (await (await post(dad, '/shopping', { action: 'claim', storeId: 'pharmacy' })).json()) as { taskId: string };
+    const screen = async (task: string) =>
+      A2uiSurfaceStore.fromJsonl(((await (await fetch(`${base}/api/homemind/screen/shopping?lang=en&task=${task}`, { headers: { [SESSION_HEADER]: dad } })).json()) as { jsonl: string }).jsonl).list()[0];
+    expect((await screen(claim.taskId)).title).toBe('Shopping at Pharmacy');
+    await post(dad, '/shopping', { action: 'finish', storeId: 'pharmacy' });
+    expect((await screen(claim.taskId)).title).toBe('Shopping at Pharmacy');
+    // An unknown task: the whole Shopping screen. A bad id: 400.
+    expect((await screen('task-nope')).title).toBe('Shopping');
+    expect((await fetch(`${base}/api/homemind/screen/shopping?lang=en&task=..%2F`, { headers: { [SESSION_HEADER]: dad } })).status).toBe(400);
   });
 
   it('the Family chat adds to the list, with one Undo; the card button adds at level 1', async () => {

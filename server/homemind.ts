@@ -1204,6 +1204,16 @@ function chatShoppingItem(state: HomemindState, item: ShoppingEntry & { nameZh?:
   return { storeId: item.storeId, store: store?.name ?? item.storeId, ...(store?.nameZh ? { storeZh: store.nameZh } : {}), name: item.name, ...(item.nameZh ? { nameZh: item.nameZh } : {}), qty: item.qty ?? 1, ...(item.note ? { note: item.note } : {}) };
 }
 
+/** The store a shopping task belongs to, from its run (kept after the run ends while nobody took the store again). */
+function shoppingFocusFor(state: HomemindState, taskId: string): { shoppingFocus?: string } {
+  const store = state.shopping?.stores.find(s => s.run?.itemId === taskId);
+  if (store) return { shoppingFocus: store.id };
+  // Released or replaced since: the task's label is the store's name.
+  const task = state.items.find(i => i.id === taskId && i.source.kind === 'shopping');
+  const byName = task ? shoppingOf(state).stores.find(s => s.name === task.source.label) : undefined;
+  return byName ? { shoppingFocus: byName.id } : {};
+}
+
 /** The lists as a screen shows them: no Undo records or settled runs (those stay on the server). */
 function shoppingForScreen(shopping: ShoppingState): ShoppingState {
   const { undo: _undo, lastUndo: _lastUndo, ...rest } = shopping;
@@ -1319,6 +1329,8 @@ const routes: Route[] = [
         ...(name === 'shopping'
           ? {
               shopping: shoppingForScreen(shoppingOf(ctx.rt.state)),
+              // `?task=`: a "Shopping at ..." task was tapped: the store whose run it is (a finished run still counts).
+              ...(ctx.url.searchParams.get('task') ? shoppingFocusFor(ctx.rt.state, idOf(ctx.url.searchParams.get('task') as string, 'task')) : {}),
               ...(ctx.url.searchParams.get('id') ? { shoppingAsk: { itemId: idOf(ctx.url.searchParams.get('id') as string, 'id'), ...(/^[1-9]\d?$/.test(query) ? { qty: Number(query) } : {}) } } : {})
             }
           : {}),

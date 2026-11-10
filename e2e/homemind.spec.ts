@@ -677,6 +677,44 @@ test('shopping (S.1): Undo, Finished shopping keeps what was not bought, live in
   }
 });
 
+test('shopping: the "Shopping at ..." task on My day opens that store\'s list, to mark what was bought, add and finish', async ({ page }) => {
+  await openFamily(page, 'zh', 'dad');
+  await expect(family(page)).toHaveAttribute('data-member', 'dad');
+  const nav = family(page).getByRole('navigation', { name: '家庭页面' });
+  const row = (name: string) => page.locator('li[data-task-id]', { hasText: name });
+  await nav.getByRole('button', { name: '购物', exact: true }).click();
+  await page.locator('.hm-tasks', { has: page.locator('.block-title', { hasText: /^超市 ·/ }) }).locator('xpath=following-sibling::div[contains(@class, "a2ui-actions")][1]').getByRole('button', { name: '我去买' }).click();
+  await expect(page.locator('.block-title', { hasText: /^超市 · 你去买/ })).toBeVisible();
+
+  // My day: the run is a task; tapping it opens the supermarket list only.
+  await nav.getByRole('button', { name: '我的一天', exact: true }).click();
+  await page.getByRole('button', { name: '打开购物清单: 去超市购物' }).click();
+  await expect(page.locator('.a2ui-surface')).toContainText('去超市购物');
+  await expect(row('牛奶')).toBeVisible();
+  await expect(page.locator('.block-title', { hasText: /^药店 ·/ })).toHaveCount(0);
+  await expect(page.getByLabel('在哪儿买')).toHaveCount(0);
+  await noOverflow(page);
+  expect(await seriousIssues(page)).toEqual([]);
+  await page.screenshot({ path: test.info().outputPath('shopping-focus-zh.png'), fullPage: true });
+
+  // Mark the eggs bought, add yogurt to this store, and finish: the eggs leave, the rest stays.
+  await row('鸡蛋').getByRole('button', { name: '已买: 鸡蛋' }).click();
+  await expect(row('鸡蛋')).toHaveAttribute('data-state', 'done');
+  await page.getByLabel('要买什么').fill('酸奶');
+  await page.getByRole('button', { name: '加到清单' }).click();
+  await expect(row('酸奶')).toBeVisible();
+  await page.getByRole('button', { name: '买完了（已买 1）' }).click();
+  await expect(family(page)).toContainText('买完了。1 件已买的从清单上去掉了，其余的留到下次。');
+  await expect(row('鸡蛋')).toHaveCount(0);
+  await expect(row('牛奶')).toBeVisible();
+  await expect(row('酸奶')).toBeVisible();
+  await expect(page.locator('.a2ui-surface')).toContainText('去超市购物');
+
+  // Back to every store.
+  await page.getByRole('button', { name: '所有商店' }).click();
+  await expect(page.locator('.block-title', { hasText: /^药店 ·/ })).toBeVisible();
+});
+
 test('chat (T5.2): a teen asking about a Parents-only item gets no trace of it', async ({ page }) => {
   await openFamily(page, 'en', 'maya', 'family');
   await expect(family(page)).toHaveAttribute('data-member', 'maya');

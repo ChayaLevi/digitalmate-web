@@ -92,6 +92,8 @@ export interface HomemindScreenData {
   shopping?: ShoppingState;
   /** The `shopping` screen: an item someone tried to add again, and the quantity they asked for. */
   shoppingAsk?: { itemId: string; qty?: number };
+  /** The store whose run a "Shopping at ..." task is (`?task=`): the Shopping screen shows that store's list only. */
+  shoppingFocus?: string;
 }
 
 /** What the bridge sends the browser for every Homemind screen. Same shape as a Fridge2Table turn. */
@@ -483,6 +485,8 @@ function boardActions(item: Item, view: HomemindViewData, lang: HomemindLang): A
 function openAction(item: Item, view: HomemindViewData, lang: HomemindLang): A2uiAction | undefined {
   const me = memberOf(view.family, view.memberId);
   if (!me?.hasAccount || !live(item)) return undefined;
+  // "Shopping at <store>": a tap opens that store's list (mark bought, add, finish), not the edit form.
+  if (item.source.kind === 'shopping') return { id: `homemind.shop-open:${item.id}`, label: lang === 'zh' ? '打开购物清单' : 'Open the shopping list', variant: 'ghost', kind: 'homemind', args: { verb: 'shop-open', itemId: item.id } };
   return { id: `homemind.edit:${item.id}`, label: hx(lang, 'edit'), variant: 'ghost', kind: 'homemind', args: { verb: 'edit', itemId: item.id } };
 }
 
@@ -2750,7 +2754,11 @@ function shoppingScreen(input: HomemindScreenData): HomemindTurn {
     children.push({ id: 'shop-ask-actions', component: 'ActionBar', actions: asks });
   }
 
-  if (shopping.stores.length) {
+  const focus = input.shoppingFocus ? shopping.stores.find(s => s.id === input.shoppingFocus) : undefined;
+  if (focus) {
+    // Opened from a "Shopping at ..." task (My day): this store's list only, with the add form for it.
+    children.push({ id: 'shop-all', component: 'ActionBar', actions: [shop('shop-all', t('All stores', '所有商店'), 'ghost', {}, 'all')] });
+  } else if (shopping.stores.length) {
     children.push({ id: 'f-shopItem', component: 'TextField', name: 'shopItem', label: t('What to buy', '要买什么'), default: '', maxLength: 80 });
     children.push({ id: 'f-shopQty', component: 'TextField', name: 'shopQty', label: t('Quantity', '数量'), default: '1', inputType: 'number', maxLength: 2 });
     children.push({ id: 'f-shopNote', component: 'TextField', name: 'shopNote', label: t('Note (optional)', '备注（可选）'), default: '', maxLength: 120 });
@@ -2770,9 +2778,9 @@ function shoppingScreen(input: HomemindScreenData): HomemindTurn {
   };
 
   const quiet: string[] = [];
-  for (const store of shopping.stores) {
+  for (const store of focus ? [focus] : shopping.stores) {
     const items = shopping.items.filter(i => i.storeId === store.id);
-    if (!items.length && !store.run && !store.custom) {
+    if (!focus && !items.length && !store.run && !store.custom) {
       quiet.push(storeName(store));
       continue;
     }
@@ -2810,9 +2818,18 @@ function shoppingScreen(input: HomemindScreenData): HomemindTurn {
       actions.push(shop('shop-release', t('Release the run', '不去了'), 'ghost', { storeId: store.id }, store.id));
     }
     if (bought.length) actions.push(shop('shop-clear', t(`Clear bought (${bought.length})`, `清除已买（${bought.length}）`), 'ghost', { storeId: store.id }, store.id));
-    if (store.custom && !items.length) actions.push(shop('shop-remove-store', t('Remove this store', '删除这家店'), 'ghost', { storeId: store.id }, store.id));
+    if (store.custom && !items.length && !focus) actions.push(shop('shop-remove-store', t('Remove this store', '删除这家店'), 'ghost', { storeId: store.id }, store.id));
     if (actions.length) children.push({ id: `${key}-actions`, component: 'ActionBar', actions });
+    if (focus) {
+      // Something else to get while there: added to this store's list.
+      children.push(text('shop-focus-add-title', `**${t(`Add to the ${storeName(store)} list`, `加到${storeName(store)}清单`)}**`));
+      children.push({ id: 'f-shopItem', component: 'TextField', name: 'shopItem', label: t('What to buy', '要买什么'), default: '', maxLength: 80 });
+      children.push({ id: 'f-shopQty', component: 'TextField', name: 'shopQty', label: t('Quantity', '数量'), default: '1', inputType: 'number', maxLength: 2 });
+      children.push({ id: 'f-shopNote', component: 'TextField', name: 'shopNote', label: t('Note (optional)', '备注（可选）'), default: '', maxLength: 120 });
+      children.push({ id: 'shop-add', component: 'ActionBar', actions: [shop('shop-add', t('Add to list', '加到清单'), 'primary', { storeId: store.id }, 'form')] });
+    }
   }
+  if (focus) return turn('shopping', t(`Shopping at ${focus.name}`, `去${focus.nameZh ?? focus.name}购物`), undefined, children, data);
   if (quiet.length) children.push(text('shop-quiet', `${t('Nothing on the list for', '这些商店的清单是空的')}${colon(lang)}${quiet.join(lang === 'zh' ? '、' : ', ')}`));
 
   children.push(text('shop-store-title', `**${t('Another store', '其他商店')}**`));

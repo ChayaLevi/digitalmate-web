@@ -140,6 +140,8 @@ export interface ScreenParams {
   parent?: string;
   /** T8.2: `week` for the week ahead on the summary screen. */
   period?: string;
+  /** Shopping: a "Shopping at ..." task, so the screen shows that store's list only. */
+  task?: string;
 }
 
 export async function fetchHomemindScreen(token: string, name: HomemindScreenName, lang: Language, params: ScreenParams = {}): Promise<HomemindScreen> {

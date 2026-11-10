@@ -90,6 +90,8 @@ export interface HomemindScreenData {
   ruleNext?: { at: string; prepareAt: string };
   /** The `shopping` screen: the family's lists per store (the whole family sees them). */
   shopping?: ShoppingState;
+  /** The `shopping` screen: an item someone tried to add again. */
+  shoppingAsk?: { itemId: string };
 }
 
 /** What the bridge sends the browser for every Homemind screen. Same shape as a Fridge2Table turn. */
@@ -2660,6 +2662,23 @@ function shoppingScreen(input: HomemindScreenData): HomemindTurn {
   const shop = (verb: string, label: string, variant: A2uiAction['variant'], args: Record<string, unknown>, id: string): A2uiAction => ({ id: `homemind.${verb}:${id}`, label, variant, kind: 'homemind', args: { verb, ...args } });
   const children: A2uiComponent[] = [];
   const data: Record<string, unknown> = {};
+  // Tried to add something that is already waiting at that store: say so, instead of listing it twice.
+  const twin = input.shoppingAsk ? shopping.items.find(i => i.id === input.shoppingAsk?.itemId && !i.bought) : undefined;
+  if (twin) {
+    // The family's own words go inside screen text, so link and bold marks are dropped there.
+    const plain = (s: string) => s.replace(/[[\]()*`_\\]/g, '');
+    const twinStore = shopping.stores.find(s => s.id === twin.storeId);
+    const twinName = plain(lang === 'zh' && twin.nameZh ? twin.nameZh : twin.name);
+    const where = twinStore ? storeName(twinStore) : '';
+    children.push(
+      text(
+        'shop-ask',
+        t(`**${twinName}** is already on the ${where} list, added by ${who(twin.addedBy)}. It was not added again.`, `**${twinName}**已经在${where}清单上了，是${who(twin.addedBy)}加的，没有重复添加。`)
+      )
+    );
+    children.push({ id: 'shop-ask-actions', component: 'ActionBar', actions: [shop('shop-keep', t('OK', '好的'), 'secondary', {}, twin.id)] });
+  }
+
   if (shopping.stores.length) {
     children.push({ id: 'f-shopItem', component: 'TextField', name: 'shopItem', label: t('What to buy', '要买什么'), default: '', maxLength: 80 });
     children.push({ id: 'f-shopNote', component: 'TextField', name: 'shopNote', label: t('Quantity or note (optional)', '数量或备注（可选）'), default: '', maxLength: 120 });

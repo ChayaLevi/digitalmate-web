@@ -1101,7 +1101,7 @@ async function shoppingHandler(ctx: Ctx): Promise<void> {
     }
     rt.hub.broadcast({ event: 'shopping.changed', data: {} });
   }
-  json(ctx.response, 200, { ok: true, changed: result.changed, items: [], opened: [], conflicts: [], ...(result.itemId ? { itemId: result.itemId } : {}), ...(result.storeId ? { storeId: result.storeId } : {}) });
+  json(ctx.response, 200, { ok: true, changed: result.changed, items: [], opened: [], conflicts: [], ...(result.itemId ? { itemId: result.itemId } : {}), ...(result.storeId ? { storeId: result.storeId } : {}), ...(result.duplicateOf ? { duplicateOf: result.duplicateOf } : {}) });
 }
 
 // --- handlers -----------------------------------------------------------------------------------------
@@ -1204,7 +1204,13 @@ const routes: Route[] = [
         ...(name === 'my-day' ? { situations: situationsView(ctx.rt.state, ctx.member.id, ctx.rt.clock.now()) } : {}),
         ...(name === 'rules' ? { demo: demo(), ...ruleDetailFor(ctx) } : {}),
         // The family's shopping lists, per store. The whole family sees them.
-        ...(name === 'shopping' ? { shopping: shoppingOf(ctx.rt.state) } : {}),
+        // `?id=`: an item someone tried to add twice: the screen says so.
+        ...(name === 'shopping'
+          ? {
+              shopping: shoppingOf(ctx.rt.state),
+              ...(ctx.url.searchParams.get('id') ? { shoppingAsk: { itemId: idOf(ctx.url.searchParams.get('id') as string, 'id') } } : {})
+            }
+          : {}),
         // T8.2: the memory screen's correction form for one saved preference (`?id=`, checked like any id).
         ...(name === 'memory' && ctx.url.searchParams.get('id') ? { correctPreferenceId: idOf(ctx.url.searchParams.get('id') as string, 'id') } : {}),
         // T8.2: the evening summary or the week ahead (`?period=week`), from this member's view only.

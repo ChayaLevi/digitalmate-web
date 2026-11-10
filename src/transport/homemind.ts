@@ -200,7 +200,7 @@ export type ShoppingRequest =
   | { action: 'add-store'; name: string }
   | { action: 'remove-store'; storeId: string };
 
-export async function homemindShopping(token: string, request: ShoppingRequest): Promise<{ ok: true; changed: boolean; itemId?: string; storeId?: string }> {
+export async function homemindShopping(token: string, request: ShoppingRequest): Promise<{ ok: true; changed: boolean; itemId?: string; storeId?: string; duplicateOf?: string }> {
   return call('/api/homemind/shopping', { method: 'POST', token, body: JSON.stringify(request) });
 }
 

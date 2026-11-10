@@ -77,6 +77,14 @@ export type ShoppingRequest =
   | { action: 'add-store'; name: string }
   | { action: 'remove-store'; storeId: string };
 
+/** How an item's name is compared: case, spaces and the Chinese name don't make it a different item. */
+const sameName = (a: string, b: string) => a.toLowerCase().replace(/\s+/g, ' ').trim() === b.toLowerCase().replace(/\s+/g, ' ').trim();
+
+/** The item already waiting to be bought at that store under that name, if there is one. */
+export function findDuplicate(shopping: ShoppingState, storeId: string, name: string): ShoppingItem | undefined {
+  return shopping.items.find(i => i.storeId === storeId && !i.bought && (sameName(i.name, name) || (!!i.nameZh && sameName(i.nameZh, name))));
+}
+
 export type ShoppingParse = { ok: true; value: ShoppingRequest } | { ok: false; message: string };
 
 const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -145,6 +153,8 @@ export type ShoppingResult =
       changed: boolean;
       itemId?: string;
       storeId?: string;
+      /** Nothing added: this item is already waiting to be bought there. The member is asked what to do with it. */
+      duplicateOf?: string;
       /** The board task a claim created or a release removed (core events, for the live streams and reminders). */
       events?: CoreEvent[];
       taskId?: string;
@@ -185,6 +195,9 @@ export function applyShopping(state: HomemindState, request: ShoppingRequest, me
   switch (request.action) {
     case 'add-item': {
       if (!store) return refuse(404, 'not_found', 'No such store');
+      // Already on that list (and not bought yet): nothing is added, and the member is told which item it is.
+      const twin = findDuplicate(current, store.id, request.name);
+      if (twin) return { ok: true, state, changed: false, duplicateOf: twin.id, itemId: twin.id, storeId: store.id };
       if (current.items.length >= SHOPPING_LIMITS.maxItems) return refuse(409, 'full', 'The shopping lists are full. Clear the bought items first.');
       const { id: itemId, n } = nextId('shop', new Set(current.items.map(i => i.id)), current.lastItem);
       const added: ShoppingItem = { id: itemId, storeId: store.id, name: request.name, ...(request.note ? { note: request.note } : {}), addedBy: memberId, addedAt: at };

@@ -484,9 +484,16 @@ export function FamilyView({
     if (!session) return;
     setBusy(true);
     try {
-      await homemindShopping(session.token, request);
+      const result = await homemindShopping(session.token, request);
+      if (result.duplicateOf) {
+        // Already on that list: the Shopping screen says which item it is.
+        go({ screen: 'shopping', params: { id: result.duplicateOf } }, { replace: nav.screen === 'shopping' });
+        return;
+      }
       if (clear.length) setForm(f => Object.fromEntries(Object.entries(f).filter(([k]) => !clear.includes(k))));
-      refresh();
+      // An answered "already on the list?" question goes away with the change.
+      if (nav.screen === 'shopping' && nav.params.id) go({ screen: 'shopping', params: {} }, { replace: true });
+      else refresh();
       setNotice({ text: done, tone: 'info' });
     } catch (error) {
       if (error instanceof HomemindError && error.status === 401) return signOut(tr('Your demo sign-in ended. Pick a member again.', '演示登录已结束，请重新选择成员。'));
@@ -551,6 +558,8 @@ export function FamilyView({
           return shoppingRequest({ action: 'release', storeId: str(args.storeId) ?? '' }, [], tr('Released. Someone else can take it.', '已放弃，其他人可以认领。'));
         case 'shop-clear':
           return shoppingRequest({ action: 'clear-bought', storeId: str(args.storeId) ?? '' }, [], tr('Bought items cleared.', '已清除已买的东西。'));
+        case 'shop-keep':
+          return go({ screen: 'shopping', params: {} }, { replace: true });
         case 'shop-remove-store':
           return shoppingRequest({ action: 'remove-store', storeId: str(args.storeId) ?? '' }, [], tr('Store removed.', '已删除商店。'));
       }

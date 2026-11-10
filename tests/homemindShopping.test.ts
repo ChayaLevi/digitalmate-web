@@ -191,6 +191,34 @@ describe('shopping lists (core)', () => {
   });
 });
 
+describe('no duplicates', () => {
+  const base = () => run(fresh(), ['mom', { action: 'add-item', storeId: 'supermarket', name: 'Milk', note: '2 cartons' }]);
+
+  it('does not add an item already waiting at that store, and says which one it is', () => {
+    const state = base();
+    for (const name of ['milk', '  MILK ', 'Milk']) {
+      const result = ok(applyShopping(state, { action: 'add-item', storeId: 'supermarket', name }, 'dad', NOW));
+      expect(result).toMatchObject({ changed: false, duplicateOf: 'shop-1' });
+      expect(result.state).toBe(state);
+    }
+    // Another store, or the same thing already bought: a new line.
+    expect(ok(applyShopping(state, { action: 'add-item', storeId: 'market', name: 'Milk' }, 'dad', NOW)).changed).toBe(true);
+    const bought = run(state, ['dad', { action: 'bought', itemId: 'shop-1', bought: true }]);
+    expect(ok(applyShopping(bought, { action: 'add-item', storeId: 'supermarket', name: 'Milk' }, 'dad', NOW)).changed).toBe(true);
+  });
+
+  it('says so on the Shopping screen', () => {
+    const state = base();
+    const surface = A2uiSurfaceStore.fromJsonl(
+      screenTurn('shopping', { lang: 'en', now: new Date(NOW).toISOString(), view: viewFor(state, 'dad')!, shopping: shoppingOf(state), shoppingAsk: { itemId: 'shop-1' } }).jsonl
+    ).list()[0];
+    expect(surface.components['shop-ask'].text).toBe('**Milk** is already on the Supermarket list, added by Mom. It was not added again.');
+    expect((surface.components['shop-ask-actions'].actions ?? []).map(a => [a.label, a.args?.verb])).toEqual([['OK', 'shop-keep']]);
+    const plain = A2uiSurfaceStore.fromJsonl(screenTurn('shopping', { lang: 'en', now: new Date(NOW).toISOString(), view: viewFor(state, 'dad')!, shopping: shoppingOf(state) }).jsonl).list()[0];
+    expect(plain.components['shop-ask']).toBeUndefined();
+  });
+});
+
 describe('the Shopping screen', () => {
   it('shows each store with something on it, who is going, and the right buttons per member', () => {
     const state = run(
@@ -287,6 +315,9 @@ describe('shopping through the bridge', () => {
     const added = await mom.post({ action: 'add-item', storeId: 'pharmacy', name: 'Cough syrup', note: 'kids' });
     expect(added.status).toBe(200);
     const { itemId } = (await added.json()) as { itemId: string };
+    // The same again: nothing added, the bridge says which item it already is.
+    const twice = await dad.post({ action: 'add-item', storeId: 'pharmacy', name: 'cough SYRUP' });
+    expect(await twice.json()).toMatchObject({ ok: true, changed: false, duplicateOf: itemId });
     expect((await dad.post({ action: 'claim', storeId: 'pharmacy' })).status).toBe(200);
     expect((await mom.post({ action: 'claim', storeId: 'pharmacy' })).status).toBe(409);
     expect((await mom.post({ action: 'release', storeId: 'pharmacy' })).status).toBe(403);

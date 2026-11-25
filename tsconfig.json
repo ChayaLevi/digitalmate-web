@@ -16,5 +16,5 @@
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "server/homemind"]
+  "include": ["src", "server/homemind", "scripts/family-fixtures"]
 }

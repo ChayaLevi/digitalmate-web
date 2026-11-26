@@ -33,7 +33,7 @@ const ms = (iso: string) => Date.parse(iso);
 // ---------------------------------------------------------------------------------------------
 // Shared: a v1 log with explicit times, and the Homemind state for a v1 state
 
-interface TimedStep {
+export interface TimedStep {
   by: Who;
   scope?: Scope;
   /** ISO time in UTC, on a whole minute: when the op is written (its `at`). */
@@ -41,7 +41,7 @@ interface TimedStep {
   op: { kind: string; [field: string]: unknown };
 }
 
-function timedLog(name: string, steps: TimedStep[]): LogEntry[] {
+export function timedLog(name: string, steps: TimedStep[]): LogEntry[] {
   return steps.map((step, n) => ({
     seq: n + 1,
     scope: step.scope ?? 'family',
@@ -51,11 +51,11 @@ function timedLog(name: string, steps: TimedStep[]): LogEntry[] {
   }));
 }
 
-function withTimezone(state: V1State, timezone?: string): V1State {
+export function withTimezone(state: V1State, timezone?: string): V1State {
   return timezone ? { ...clone(state), family: { ...clone(state.family), timezone } } : clone(state);
 }
 
-function apply(state: V1State, entry: LogEntry, name: string): V1State {
+export function apply(state: V1State, entry: LogEntry, name: string): V1State {
   const step = applyEntry(state, entry);
   if (step.kind !== 'applied') throw new Error(`${name}: seq ${entry.seq} (${entry.op.kind}) was not applied`);
   return step.state;
@@ -64,7 +64,7 @@ function apply(state: V1State, entry: LogEntry, name: string): V1State {
 const asItem = (item: V1Item, visibility: Scope): Item => ({ ...clone(item), visibility }) as Item;
 
 /** Homemind's state for a device holding `scopes`: the seed's extras, the v1 roster, no quiet hours. */
-function homemindOf(v1: V1State, scopes: readonly Scope[], backup: boolean): HomemindState {
+export function homemindOf(v1: V1State, scopes: readonly Scope[], backup: boolean): HomemindState {
   const seed = seedState({ now: SEED_NOW, timezone: TIMEZONE });
   const members: Member[] = seed.family.members.map(({ quietHours: _quiet, ...m }) => m);
   const family = { ...seed.family, timezone: v1.family.timezone, members };

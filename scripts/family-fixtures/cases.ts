@@ -42,7 +42,7 @@ export interface CaseDef {
 /** What PLAN.md S.2 asks the fixtures to cover. The generator fails if one is missing. */
 export const REQUIRED_COVERAGE = ['create', 'assign', 'claim', 'handback', 'done', 'undo', 'stale', 'cross-scope', 'visibility-change'] as const;
 
-export const MIN_CASES = 25;
+export const MIN_CASES = 60;
 
 const task = (id: string, title: string, extra: Record<string, unknown> = {}) => ({ kind: 'create', item: { id, type: 'task', title, ...extra } });
 const event = (id: string, title: string, start: string, end: string, extra: Record<string, unknown> = {}) => ({
@@ -560,6 +560,145 @@ export const CASES: CaseDef[] = [
       { by: 'dad', op: on('cancel', 'family-dinner', 1), expect: 'applied' },
       { by: 'dad', scope: 'parents', op: event('dinner-p', "Family dinner at Grandma's", '2026-11-15T16:00:00.000Z', '2026-11-15T18:00:00.000Z'), expect: 'applied' },
       { by: 'dad', scope: 'parents', op: prep('dinner-p-flowers', 'Buy flowers for Grandma', 'dinner-p', { start: '2026-11-15T10:00:00.000Z' }), expect: 'applied' }
+    ]
+  },
+
+  // ------------------------------------------------------------------ scope helpers (C1)
+  // These ops are what HOPA's `core/family` scope helpers write (`VisibilityMove`, `BusyDerivation`);
+  // its tests rebuild them and compare, so the helpers and the fixtures cannot drift apart.
+  {
+    name: 'derive-busy-event-for-family',
+    group: 'scopes',
+    covers: ['cross-scope', 'create', 'open'],
+    description:
+      "D11: Mom's doctor appointment is parents-only. Her device derives a family event that says only that she is busy (no title, no notes), and a family open may cite that one.",
+    steps: [
+      {
+        by: 'mom',
+        scope: 'parents',
+        op: event('mom-doctor', 'Doctor appointment', '2026-11-11T14:00:00.000Z', '2026-11-11T15:30:00.000Z', {
+          notes: 'Second opinion, bring the scans',
+          unavailableMemberIds: ['mom']
+        }),
+        expect: 'applied'
+      },
+      {
+        by: 'mom',
+        op: event('mom-busy', 'Busy', '2026-11-11T14:00:00.000Z', '2026-11-11T15:30:00.000Z', { unavailableMemberIds: ['mom'] }),
+        expect: 'applied'
+      },
+      {
+        by: 'mom',
+        op: on('open', 'pickup-today', 1, { reason: { kind: 'unavailable', memberId: 'mom', eventId: 'mom-busy', date: '2026-11-11' } }),
+        expect: 'applied'
+      }
+    ]
+  },
+  {
+    name: 'move-open-task-to-parents-narrows-candidates',
+    group: 'visibility',
+    covers: ['visibility-change', 'cancel', 'create'],
+    description: 'Moving a task open to Mom, Dad and Maya into parents keeps only the parents as candidates, and keeps its time, all-day flag and source.',
+    steps: [
+      { by: 'dad', op: on('cancel', 'library-books', 1), expect: 'applied' },
+      {
+        by: 'dad',
+        scope: 'parents',
+        op: task('library-books-p', 'Return the library books', {
+          start: '2026-11-11T22:00:00.000Z',
+          allDay: true,
+          ownership: { state: 'open', candidateIds: ['mom', 'dad'] },
+          source: { kind: 'manual', label: 'Added by Mom' }
+        }),
+        expect: 'applied'
+      }
+    ]
+  },
+  {
+    name: 'move-task-owned-by-teen-opens-to-parents',
+    group: 'visibility',
+    covers: ['visibility-change', 'assign', 'cancel', 'create'],
+    description: 'Maya cannot own a parents item, so moving her task into parents opens it to the parents instead of dropping it silently.',
+    steps: [
+      { by: 'mom', op: on('assign', 'library-books', 1, { ownerId: 'maya' }), expect: 'applied' },
+      { by: 'mom', op: on('cancel', 'library-books', 2), expect: 'applied' },
+      {
+        by: 'mom',
+        scope: 'parents',
+        op: task('library-books-p', 'Return the library books', {
+          start: '2026-11-11T22:00:00.000Z',
+          allDay: true,
+          ownership: { state: 'open' },
+          source: { kind: 'manual', label: 'Added by Mom' }
+        }),
+        expect: 'applied'
+      }
+    ]
+  },
+  {
+    name: 'move-recurring-event-keeps-exceptions',
+    group: 'visibility',
+    covers: ['visibility-change', 'cancel_occurrence', 'cancel', 'create'],
+    description: 'A weekly event moves with its repetition and its cancelled dates.',
+    steps: [
+      {
+        by: 'mom',
+        op: event('swim-weekly', 'Swimming', '2026-11-11T15:30:00.000Z', '2026-11-11T16:30:00.000Z', {
+          recurrence: { freq: 'weekly', byWeekday: [3] }
+        }),
+        expect: 'applied'
+      },
+      { by: 'mom', op: on('cancel_occurrence', 'swim-weekly', 1, { date: '2026-11-18' }), expect: 'applied' },
+      { by: 'mom', op: on('cancel', 'swim-weekly', 2), expect: 'applied' },
+      {
+        by: 'mom',
+        scope: 'parents',
+        op: event('swim-weekly-p', 'Swimming', '2026-11-11T15:30:00.000Z', '2026-11-11T16:30:00.000Z', {
+          recurrence: { freq: 'weekly', byWeekday: [3], exceptions: ['2026-11-18'] },
+          source: { kind: 'manual', label: 'Added by Mom' }
+        }),
+        expect: 'applied'
+      }
+    ]
+  },
+  {
+    name: 'undo-a-move-is-two-undos',
+    group: 'visibility',
+    covers: ['visibility-change', 'undo'],
+    description: 'Undoing a move undoes its two ops, newest first: the parents copy goes, then the family item comes back.',
+    steps: [
+      { by: 'mom', op: on('cancel', 'pickup-tuesday', 1), expect: 'applied' },
+      {
+        by: 'mom',
+        scope: 'parents',
+        op: event('pickup-tuesday-p', 'Kindergarten pickup', '2026-11-17T14:30:00.000Z', '2026-11-17T15:00:00.000Z', {
+          forMemberIds: ['noa'],
+          importance: 'critical',
+          ownership: { state: 'assigned', ownerId: 'mom' },
+          source: { kind: 'manual', label: 'Added by Mom' }
+        }),
+        expect: 'applied'
+      },
+      { by: 'mom', scope: 'parents', op: undo(2), expect: 'applied' },
+      { by: 'mom', op: undo(1), expect: 'applied' }
+    ]
+  },
+  {
+    name: 'weekly-event-near-midnight-uses-family-zone',
+    group: 'time',
+    covers: ['cancel_occurrence', 'time-zone'],
+    description:
+      "A weekly Thursday and Friday event that starts at 00:30 on Friday in Jerusalem, which is still Thursday in UTC. Its first occurrence is Friday the 13th in the family's zone, so Thursday the 12th is not an occurrence: a reducer that read dates in UTC (or in the device's zone) would accept it.",
+    steps: [
+      {
+        by: 'mom',
+        op: event('night-shift', 'Night shift', '2026-11-12T22:30:00.000Z', '2026-11-13T04:30:00.000Z', {
+          recurrence: { freq: 'weekly', byWeekday: [4, 5] }
+        }),
+        expect: 'applied'
+      },
+      { by: 'mom', op: on('cancel_occurrence', 'night-shift', 1, { date: '2026-11-12' }), expect: 'invalid' },
+      { by: 'mom', op: on('cancel_occurrence', 'night-shift', 1, { date: '2026-11-13' }), expect: 'applied' }
     ]
   },
 

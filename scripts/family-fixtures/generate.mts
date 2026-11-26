@@ -22,7 +22,7 @@ if ((mode !== '--out' && mode !== '--check') || !dir) {
 
 const { seed, files: boardFiles } = buildFixtures();
 const timeFiles = buildTimeFixtures();
-const logicFiles = buildLogicFixtures();
+const logicFiles = await buildLogicFixtures();
 const files = new Map<string, unknown>([...boardFiles, ...timeFiles, ...logicFiles]);
 const problems: string[] = [];
 const text = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;

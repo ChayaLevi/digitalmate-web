@@ -12,7 +12,22 @@ import { applyChange } from '../../server/homemind/core';
 import { fixedClock } from '../../server/homemind/clock';
 import { addShoppingItems, applyShopping, settleShoppingRuns, shoppingOf } from '../../server/homemind/shopping';
 import type { ShoppingEntry, ShoppingRequest } from '../../server/homemind/shopping';
-import type { HomemindState, Item } from '../../server/homemind/types';
+import type { HomemindState, Item, Preference } from '../../server/homemind/types';
+import {
+  appliesTo,
+  applyPreferenceRequest,
+  parsePreferenceInput,
+  avoidedTerms,
+  blockedChange,
+  checkChoice,
+  itemContext,
+  scopeTerms
+} from '../../server/homemind/preferences';
+import type { PreferenceContext, PreferenceRequest } from '../../server/homemind/preferences';
+import type { Change } from '../../server/homemind/core';
+import { applyRuleRequest, nextOccurrence } from '../../server/homemind/rules';
+import type { RuleRequest } from '../../server/homemind/rules';
+import type { Rule } from '../../server/homemind/types';
 import { SCOPES } from './adapter';
 import type { V1State } from './adapter';
 import { seedV1 } from './build';
@@ -322,8 +337,244 @@ function snapshot(state: HomemindState) {
   return { shopping: visibleShopping(state), board: state.items.filter(i => i.visibility === 'family').map(stripItem) };
 }
 
+// ---------------------------------------------------------------------------------------------
+// preferences
+
+type PrefStep = { by: string; at: string; request: PreferenceRequest | { op: 'undo'; step: number } };
+
+const PREFERENCE_CASES: Array<{ name: string; description: string; steps: PrefStep[] }> = [
+  {
+    name: 'save-correct-remove',
+    description: 'Anyone adds; the same words for the same person and scope correct the saved one instead of adding a twin; only a parent makes a soft one hard, corrects or removes a hard one.',
+    steps: [
+      { by: 'maya', at: at('12:31'), request: { op: 'save', input: { text: 'Likes chocolate cake', aboutMemberId: 'noa', strength: 'soft', scope: 'birthday' } } },
+      { by: 'dad', at: at('12:32'), request: { op: 'save', input: { text: 'likes  CHOCOLATE cake!', reason: 'She said so', aboutMemberId: 'noa', strength: 'soft', scope: 'birthday' } } },
+      { by: 'maya', at: at('12:33'), request: { op: 'save', input: { text: 'Likes chocolate cake', aboutMemberId: 'noa', strength: 'hard', scope: 'birthday' } } },
+      { by: 'mom', at: at('12:34'), request: { op: 'save', input: { text: 'No peanuts', reason: 'Allergy', aboutMemberId: 'noa', strength: 'hard' } } },
+      { by: 'maya', at: at('12:35'), request: { op: 'remove', id: 'STEP4' } },
+      { by: 'maya', at: at('12:36'), request: { op: 'save', id: 'STEP4', input: { text: 'No peanuts at all', aboutMemberId: 'noa', strength: 'hard' } } },
+      { by: 'dad', at: at('12:37'), request: { op: 'save', id: 'STEP4', input: { text: 'No peanuts or tree nuts', reason: 'Allergy', aboutMemberId: 'noa', strength: 'hard' } } },
+      { by: 'dad', at: at('12:38'), request: { op: 'save', id: 'STEP4', input: { text: 'No peanuts or tree nuts', reason: 'Allergy', aboutMemberId: 'noa', strength: 'hard' } } },
+      { by: 'mom', at: at('12:39'), request: { op: 'remove', id: 'STEP1' } },
+      { by: 'mom', at: at('12:40'), request: { op: 'remove', id: 'no-such-pref' } },
+      { by: 'noa', at: at('12:41'), request: { op: 'save', input: { text: 'Pink', strength: 'soft' } } }
+    ]
+  },
+  {
+    name: 'undo',
+    description: 'Undo by the member who made the change or a parent; only the latest change to that preference; once.',
+    steps: [
+      { by: 'maya', at: at('12:31'), request: { op: 'save', input: { text: 'Pasta on Mondays', strength: 'soft', scope: 'dinner' } } },
+      { by: 'maya', at: at('12:32'), request: { op: 'save', id: 'STEP1', input: { text: 'Pasta on Tuesdays', strength: 'soft', scope: 'dinner' } } },
+      { by: 'maya', at: at('12:33'), request: { op: 'undo', step: 1 } },
+      { by: 'dad', at: at('12:34'), request: { op: 'undo', step: 2 } },
+      { by: 'maya', at: at('12:35'), request: { op: 'undo', step: 2 } },
+      { by: 'maya', at: at('12:36'), request: { op: 'undo', step: 2 } },
+      { by: 'mom', at: at('12:37'), request: { op: 'remove', id: 'STEP1' } },
+      { by: 'maya', at: at('12:38'), request: { op: 'undo', step: 7 } },
+      { by: 'dad', at: at('12:39'), request: { op: 'undo', step: 7 } }
+    ]
+  }
+];
+
+function preferences(seed: V1State) {
+  const cases = PREFERENCE_CASES.map(c => {
+    let state: HomemindState = { ...homemindOf(seed, SCOPES, false), preferences: [], activity: [] };
+    const log: Entry[] = [];
+    const results: Array<{ seq: number; outcome: string; code?: string }> = [];
+    const after: Preference[][] = [];
+    const prefOfStep: Record<number, string> = {};
+    const activityOfStep: Record<number, { hm: string; op: string }> = {};
+    c.steps.forEach((step, index) => {
+      const stepNo = index + 1;
+      const opId = `op-p${stepNo}`;
+      const resolve = (id: string) => (id.startsWith('STEP') ? prefOfStep[Number(id.slice(4))] ?? id : id);
+      let request: PreferenceRequest;
+      const r = step.request;
+      if (r.op === 'undo' && 'step' in r) request = { op: 'undo', activityId: activityOfStep[r.step]?.hm ?? 'act-none' };
+      else if (r.op === 'remove') request = { op: 'remove', id: resolve(r.id) };
+      else if (r.op === 'save') {
+        // As Homemind's server does: the fields are cleaned (spaces collapsed, scope lower case) first.
+        const parsed = parsePreferenceInput(r.input as unknown as Record<string, unknown>, state.family.members);
+        if (!parsed.ok) throw new Error(`${c.name}: step ${stepNo}: ${parsed.message}`);
+        request = { op: 'save', ...(r.id ? { id: resolve(r.id) } : {}), input: parsed.value };
+      }
+      else request = r as PreferenceRequest;
+      const result = applyPreferenceRequest(state, request, step.by, Date.parse(step.at));
+      let op: Op;
+      if (request.op === 'save') {
+        const newId = result.ok && result.action === 'added' && result.preference ? result.preference.id : `pref-${opId}`;
+        op = { v: 2, ns: 'preferences', nsv: 1, kind: 'save', opId, at: step.at, newId, ...(request.id ? { id: request.id } : {}), ...request.input };
+      } else if (request.op === 'remove') {
+        op = { v: 2, ns: 'preferences', nsv: 1, kind: 'remove', opId, at: step.at, id: request.id };
+      } else {
+        const target = 'step' in r ? activityOfStep[r.step]?.op ?? 'op-none' : 'op-none';
+        op = { v: 2, ns: 'preferences', nsv: 1, kind: 'undo', opId, at: step.at, targetOpId: target };
+      }
+      log.push({ seq: stepNo, scope: 'family', memberId: step.by, fromDevice: DEVICE[step.by], op });
+      if (result.ok) {
+        results.push({ seq: stepNo, outcome: 'applied' });
+        if (result.preference && request.op === 'save') prefOfStep[stepNo] = result.preference.id;
+        if (result.activity) activityOfStep[stepNo] = { hm: result.activity.id, op: opId };
+        state = result.state;
+      } else {
+        // HOPA refuses a member without an account before any capability sees the op: forbidden.
+        const noAccount = !state.family.members.some(m => m.id === step.by && m.hasAccount);
+        results.push({ seq: stepNo, outcome: 'rejected', code: noAccount ? 'forbidden' : result.code });
+      }
+      after.push(state.preferences);
+    });
+    return { name: c.name, description: c.description, steps: c.steps, log, results, after };
+  });
+  return {
+    description:
+      "The `preferences` capability (Homemind's preferences.ts). Each case starts with no preferences. `log` holds the `preferences` ops (v2: save, remove, undo) HOPA devices send for what members did; `results` the outcome of each; `after` the preferences after each step. Fields are cleaned as Homemind's server cleans them (spaces collapsed, the scope in lower case). A member without an account is refused as `forbidden` (HOPA's rule for every capability; Homemind says not_found). A save carries `newId` for a new preference, `id` to correct a given one; a save whose words match a saved one (same person and scope) corrects it. An Undo names the op of the change it undoes. Generated; do not edit by hand.",
+    generator: GENERATOR,
+    seed: 'seed.state.json',
+    cases
+  };
+}
+
+/** Where preferences apply and what a hard one blocks, from Homemind's functions, with its seed preferences. */
+function preferenceLogic(seed: V1State) {
+  const hm = homemindOf(seed, SCOPES, false);
+  const prefs: Preference[] = [
+    ...hm.preferences,
+    { id: 'pref-maya-veg', aboutMemberId: 'maya', text: "Doesn't eat meat or fish", strength: 'hard' },
+    { id: 'pref-family-pork', text: '不吃猪肉、火腿', strength: 'hard' },
+    { id: 'pref-dad-coffee', aboutMemberId: 'dad', text: 'Strong coffee in the morning', strength: 'soft', scope: 'breakfast' },
+    { id: 'pref-noa-kiwi', aboutMemberId: 'noa', text: 'Allergic to kiwi and sesame.', strength: 'hard' },
+    { id: 'pref-gluten', text: 'Gluten-free please', strength: 'hard' }
+  ];
+  const scopes = ['kindergarten-party', 'school lunch', '幼儿园聚会', 'birthday-party', 'swimming', 'party for grandma', 'and the events', 'violin_lessons', 'x'];
+  const contexts: Array<{ name: string; context: PreferenceContext }> = [
+    { name: 'noa-kindergarten-party', context: { memberIds: ['noa'], texts: ['Kindergarten party', '幼儿园聚会'] } },
+    { name: 'noa-swim', context: { memberIds: ['noa'], texts: ["Noa's swimming lesson"] } },
+    { name: 'nobody-preschool-celebration', context: { memberIds: [], texts: ['Preschool celebration on Friday'] } },
+    { name: 'group-tag', context: { memberIds: [], texts: ['周五水果'], tags: ['kindergarten', 'party'] } },
+    { name: 'dad-breakfast', context: { memberIds: ['dad'], texts: ['Breakfast'] } },
+    { name: 'family-dinner', context: { memberIds: ['mom', 'dad', 'maya', 'noa'], texts: ["Family dinner at Grandma's"] } }
+  ];
+  const choices = [['Peanut butter cookies'], ['Fruit salad with kiwis'], ['花生糖'], ['Ham sandwiches'], ['Grilled chicken'], ['Sesame bars', '芝麻棒'], ['Wheat bread'], ['Apples']];
+  const items = hm.items;
+  const changes: Array<{ name: string; change: Change }> = [
+    { name: 'prep-peanuts-for-dinner', change: { kind: 'create', item: { type: 'preparation', title: 'Bring peanut snacks', parentEventId: 'family-dinner', visibility: 'family' } } as Change },
+    { name: 'task-for-maya-chicken', change: { kind: 'create', item: { type: 'task', title: 'Cook chicken for Maya', forMemberIds: ['maya'], visibility: 'family' } } as Change },
+    { name: 'event-is-not-a-choice', change: { kind: 'create', item: { type: 'event', title: 'Peanut festival', start: at('10:00', '2026-11-20'), forMemberIds: ['noa'], visibility: 'family' } } as Change },
+    { name: 'retitle-flowers-to-ham', change: { kind: 'edit', itemId: 'family-dinner-flowers', version: 1, patch: { title: 'Bring ham' } } },
+    { name: 'edit-time-only', change: { kind: 'edit', itemId: 'family-dinner-flowers', version: 1, patch: { start: at('09:00', '2026-11-15') } } }
+  ];
+  return {
+    description:
+      "Where preferences apply and what a hard one rules out (Homemind's preferences.ts): scopeTerms (a scope's concepts and literal words), appliesTo per preference and context, avoidedTerms per hard preference, checkChoice for a few choices in each context, and blockedChange for board changes (with the family's preferences below and the seed's board). Words in English and Chinese. Generated; do not edit by hand.",
+    generator: GENERATOR,
+    preferences: prefs,
+    scopeTerms: scopes.map(scope => ({ scope, ...scopeTerms(scope) })),
+    appliesTo: contexts.map(c => ({ ...c, applies: prefs.filter(p => appliesTo(p, c.context)).map(p => p.id) })),
+    avoidedTerms: prefs.map(p => ({ id: p.id, terms: avoidedTerms(p) })),
+    checkChoice: contexts.flatMap(c => choices.map(choice => ({ context: c.name, choice, blocked: checkChoice(prefs, c.context, choice).map(b => ({ id: b.preference.id, term: b.term })) }))),
+    itemContexts: items.map(item => ({ itemId: item.id, context: itemContext(items, hm.family.members, item) })),
+    blockedChange: changes.map(c => ({ ...c, blocked: blockedChange({ ...hm, preferences: prefs }, c.change).map(b => ({ id: b.preference.id, term: b.term })) }))
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// rules
+
+type RuleStep = { by: string; at: string; request: RuleRequest | { action: 'restore'; step: number } };
+
+const PIZZA = { action: 'create' as const, title: 'Friday pizza night', titleZh: '周五披萨之夜', weekday: 5, time: '18:30', leadMinutes: 30, items: [{ id: 'margherita-l', qty: 2 }], maxPrice: 250 };
+
+const RULE_CASES: Array<{ name: string; description: string; steps: RuleStep[] }> = [
+  {
+    name: 'parents-only',
+    description: 'Only a parent creates, changes, turns on or off, deletes and restores a rule (every rule here spends money); a teen sees it but cannot change it.',
+    steps: [
+      { by: 'maya', at: at('12:31'), request: PIZZA },
+      { by: 'mom', at: at('12:32'), request: PIZZA },
+      { by: 'maya', at: at('12:33'), request: { action: 'disable', id: 'rule-1' } },
+      { by: 'dad', at: at('12:34'), request: { action: 'update', id: 'rule-1', time: '19:00' } },
+      { by: 'dad', at: at('12:35'), request: { action: 'update', id: 'rule-1', time: '19:00' } },
+      { by: 'dad', at: at('12:36'), request: { action: 'update', id: 'rule-1', maxPrice: 300 } },
+      { by: 'mom', at: at('12:37'), request: { action: 'disable', id: 'rule-1' } },
+      { by: 'mom', at: at('12:38'), request: { action: 'disable', id: 'rule-1' } },
+      { by: 'dad', at: at('12:39'), request: { action: 'enable', id: 'rule-1' } },
+      { by: 'mom', at: at('12:40'), request: { action: 'delete', id: 'rule-1' } },
+      { by: 'maya', at: at('12:41'), request: { action: 'restore', step: 10 } },
+      { by: 'dad', at: at('12:42'), request: { action: 'restore', step: 10 } },
+      { by: 'dad', at: at('12:43'), request: { action: 'restore', step: 10 } },
+      { by: 'mom', at: at('12:44'), request: { action: 'enable', id: 'no-such-rule' } }
+    ]
+  }
+];
+
+function rules(seed: V1State) {
+  const cases = RULE_CASES.map(c => {
+    let state: HomemindState = { ...homemindOf(seed, SCOPES, false), rules: [], activity: [], actionCards: [], ruleRuns: [] };
+    const log: Entry[] = [];
+    const results: Array<{ seq: number; outcome: string; code?: string }> = [];
+    const after: Rule[][] = [];
+    const activityOfStep: Record<number, { hm: string; op: string }> = {};
+    c.steps.forEach((step, index) => {
+      const stepNo = index + 1;
+      const opId = `op-r${stepNo}`;
+      const r = step.request;
+      const request: RuleRequest = 'step' in r ? { action: 'restore', activityId: activityOfStep[r.step]?.hm ?? 'act-none' } : r;
+      const result = applyRuleRequest(state, request, step.by, Date.parse(step.at));
+      const base = { v: 2, ns: 'rules', nsv: 1, opId, at: step.at };
+      let op: Op;
+      if (request.action === 'create') {
+        // The device builds the rule (its action from its own adapter: here the simulated pizza shop's quote).
+        const rule = result.ok ? result.rule : { id: `rule-${opId}`, title: request.title, titleZh: request.titleZh, trigger: { kind: 'weekly', weekday: request.weekday, time: request.time, leadMinutes: request.leadMinutes }, actionTemplate: { adapter: 'pizza', payload: { vendor: 'sim-pizza', items: request.items, total: 178, currency: 'CNY' } }, limits: { maxPrice: request.maxPrice, currency: 'CNY' }, area: 'food' };
+        const { enabled: _e, createdBy: _c, ...fields } = rule as Rule;
+        op = { ...base, kind: 'create', rule: fields };
+      } else if (request.action === 'restore') {
+        op = { ...base, kind: 'restore', targetOpId: 'step' in r ? activityOfStep[r.step]?.op ?? 'op-none' : 'op-none' };
+      } else if (request.action === 'update') {
+        op = { ...base, kind: 'update', id: request.id, ...(request.time !== undefined ? { time: request.time } : {}), ...(request.maxPrice !== undefined ? { maxPrice: request.maxPrice } : {}) };
+      } else {
+        op = { ...base, kind: request.action, id: request.id };
+      }
+      log.push({ seq: stepNo, scope: 'family', memberId: step.by, fromDevice: DEVICE[step.by], op });
+      if (result.ok) {
+        results.push({ seq: stepNo, outcome: 'applied' });
+        if (result.activityId) activityOfStep[stepNo] = { hm: result.activityId, op: opId };
+        state = result.state;
+      } else {
+        results.push({ seq: stepNo, outcome: 'rejected', code: ({ forbidden: 'forbidden', not_found: 'not_found', invalid: 'invalid' } as Record<string, string>)[result.code] ?? 'conflict' });
+      }
+      after.push(state.rules);
+    });
+    return { name: c.name, description: c.description, steps: c.steps, log, results, after };
+  });
+  const rule = { trigger: { kind: 'weekly', weekday: 5, time: '18:30', leadMinutes: 30 } } as Rule;
+  const occurrences = [
+    { now: at('12:30'), timezone: 'Asia/Jerusalem', weekday: 5, time: '18:30' },
+    { now: at('16:29', '2026-11-13'), timezone: 'Asia/Jerusalem', weekday: 5, time: '18:30' },
+    { now: at('16:30', '2026-11-13'), timezone: 'Asia/Jerusalem', weekday: 5, time: '18:30' },
+    { now: at('12:00', '2026-10-28'), timezone: 'America/New_York', weekday: 0, time: '01:30' },
+    { now: at('23:30', '2026-11-11'), timezone: 'Asia/Shanghai', weekday: 4, time: '07:00' }
+  ].map(o => {
+    const next = nextOccurrence({ ...rule, trigger: { ...rule.trigger, weekday: o.weekday, time: o.time } }, Date.parse(o.now), o.timezone);
+    return { ...o, date: next.date, at: new Date(next.at).toISOString() };
+  });
+  return {
+    description:
+      "The `rules` capability (Homemind's rules.ts): a standing rule only prepares an action that waits for a parent's tap; it never acts. In the family scope, visible to everyone, changed only by a parent (every rule here spends money). `log` holds the `rules` ops (v2: create, update, enable, disable, delete, restore); a create carries the whole rule (its action built by the device's own adapter); a restore names the op of the delete it undoes. `after`: the rules after each step. `nextOccurrence`: the next time of a weekly rule strictly after `now`, in the family's zone. Running a rule (sizing, price cap, the card) belongs to the device's actions and ActionExecutor. Generated; do not edit by hand.",
+    generator: GENERATOR,
+    seed: 'seed.state.json',
+    cases,
+    nextOccurrence: occurrences
+  };
+}
+
 /** Every namespace fixture file, by file name. */
 export function buildNamespaceFixtures(): Map<string, unknown> {
   const seed = seedV1();
-  return new Map<string, unknown>([['ns-shopping.json', shopping(seed)]]);
+  return new Map<string, unknown>([
+    ['ns-shopping.json', shopping(seed)],
+    ['ns-preferences.json', preferences(seed)],
+    ['logic-preferences.json', preferenceLogic(seed)],
+    ['ns-rules.json', rules(seed)]
+  ]);
 }
